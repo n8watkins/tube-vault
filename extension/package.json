@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "scripts": {
     "build": "tsc",
+    "postbuild": "cp manifest.json /mnt/c/Users/natha/Projects/Tools/tube-vault/extension/manifest.json && cp dist/content-script.js dist/service-worker.js /mnt/c/Users/natha/Projects/Tools/tube-vault/extension/dist/",
     "watch": "tsc --watch"
   },
   "devDependencies": {

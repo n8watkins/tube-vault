@@ -1,0 +1,9 @@
+{
+  "name": "com.tube_vault.helper",
+  "description": "TubeVault local archive helper",
+  "path": "C:\\Users\\natha\\personal\\tools\\tube-vault\\scripts\\run-helper.bat",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://REPLACE_WITH_EXTENSION_ID/"
+  ]
+}

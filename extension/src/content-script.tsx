@@ -68,37 +68,41 @@ function injectVideoButton(): void {
   const isShorts = location.pathname.startsWith('/shorts/');
 
   if (isShorts) {
-    const rightControls = document.querySelector('#right-controls');
-    if (!rightControls) return; // caller will retry
+    // Insert above the like button in the vertical actions column
+    const actionsContainer = document.querySelector('.ytReelPlayerOverlayViewModelActionsContainer');
+    if (!actionsContainer) return; // caller will retry
 
     const container = makeContainer(BUTTON_ID);
-    const settingsBtn = rightControls.querySelector('.ytp-settings-button');
-    if (settingsBtn) {
-      rightControls.insertBefore(container, settingsBtn);
+    if (actionsContainer.firstElementChild) {
+      actionsContainer.insertBefore(container, actionsContainer.firstElementChild);
     } else {
-      rightControls.appendChild(container);
+      actionsContainer.appendChild(container);
     }
     videoRoot = createRoot(container);
     videoRoot.render(
       <ArchiveButton getUrl={getVideoUrl} playlist={false} compact />
     );
   } else {
-    // Watch / Live: inject into the action row
-    const selectors = [
+    // Watch / Live: replace YouTube's native download button
+    const actionRowSelectors = [
       '#actions-inner #top-level-buttons-computed',
       'ytd-watch-metadata #actions #top-level-buttons-computed',
       '#above-the-fold #top-level-buttons-computed',
       'ytm-slim-video-action-bar-renderer',
     ];
     let target: Element | null = null;
-    for (const sel of selectors) {
+    for (const sel of actionRowSelectors) {
       target = document.querySelector(sel);
       if (target) break;
     }
 
     const container = makeContainer(BUTTON_ID);
-    if (target) {
-      target.appendChild(container);
+    const downloadBtn = (target ?? document).querySelector('ytd-download-button-renderer');
+    if (downloadBtn) {
+      downloadBtn.parentElement!.insertBefore(container, downloadBtn);
+      downloadBtn.remove();
+    } else if (target) {
+      target.prepend(container);
     } else {
       Object.assign(container.style, {
         position: 'fixed',
@@ -123,29 +127,37 @@ function injectPlaylistButton(): void {
   if (document.getElementById(PLAYLIST_BTN_ID)) return;
   if (!isPlaylistPage()) return;
 
-  const selectors = [
-    'ytd-playlist-header-renderer #button-sheet',
-    'ytd-playlist-header-renderer #buttons',
-    'ytd-playlist-header-renderer .metadata-buttons-wrapper',
-    'ytd-playlist-header-renderer yt-button-shape',
-  ];
-  let target: Element | null = null;
-  for (const sel of selectors) {
-    target = document.querySelector(sel);
-    if (target) break;
-  }
-
   const container = makeContainer(PLAYLIST_BTN_ID);
-  if (target) {
-    target.appendChild(container);
+
+  // Prefer inserting directly after the shuffle button
+  const shuffleBtn = document.querySelector('ytd-playlist-shuffle-button-renderer')
+    ?? document.querySelector('yt-button-shape[aria-label*="Shuffle"]');
+
+  if (shuffleBtn) {
+    shuffleBtn.insertAdjacentElement('afterend', container);
   } else {
-    Object.assign(container.style, {
-      position: 'fixed',
-      bottom: '24px',
-      right: '100px',
-      zIndex: '9998',
-    });
-    document.body.appendChild(container);
+    const selectors = [
+      'ytd-playlist-header-renderer #button-sheet',
+      'ytd-playlist-header-renderer #buttons',
+      'ytd-playlist-header-renderer .metadata-buttons-wrapper',
+      'ytd-playlist-header-renderer yt-button-shape',
+    ];
+    let target: Element | null = null;
+    for (const sel of selectors) {
+      target = document.querySelector(sel);
+      if (target) break;
+    }
+    if (target) {
+      target.appendChild(container);
+    } else {
+      Object.assign(container.style, {
+        position: 'fixed',
+        bottom: '24px',
+        right: '100px',
+        zIndex: '9998',
+      });
+      document.body.appendChild(container);
+    }
   }
   playlistRoot = createRoot(container);
   playlistRoot.render(

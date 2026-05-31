@@ -62,12 +62,20 @@ if (watchMode) {
       outfile: 'dist/service-worker.js',
       format: 'iife',
     }),
+    esbuild.build({
+      ...shared,
+      entryPoints: ['src/popup.tsx'],
+      outfile: 'dist/popup.js',
+      format: 'iife',
+      jsx: 'automatic',
+      minify: true,
+    }),
   ]);
 
   // Sync built files to Windows (Chrome loads from there)
   execSync(
-    `cp manifest.json ${WIN_EXT}/manifest.json && ` +
-    `cp dist/content-script.js dist/service-worker.js ${WIN_EXT}/dist/`,
+    `cp manifest.json popup.html ${WIN_EXT}/ && ` +
+    `cp dist/content-script.js dist/service-worker.js dist/popup.js ${WIN_EXT}/dist/`,
     { cwd: __dirname },
   );
   console.log('Synced to Windows.');

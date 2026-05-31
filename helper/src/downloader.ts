@@ -41,6 +41,7 @@ export interface DownloadResult {
   folderPath?: string;
   windowsFolderPath?: string;
   error?: string;
+  warnings?: string[];
   diagnostics?: Record<string, string | null>;
 }
 
@@ -65,6 +66,14 @@ function playlistTemplate(root: string): string {
 
 function ensureDir(p: string): void {
   fs.mkdirSync(p, { recursive: true });
+}
+
+// Strip yt-dlp template variables so we return a real path to the user.
+// e.g. /mnt/c/.../%(uploader)s/... → /mnt/c/...
+function resolvedFolder(templatePath: string): string {
+  const idx = templatePath.indexOf('%(');
+  const real = idx === -1 ? templatePath : templatePath.slice(0, idx);
+  return real.replace(/[/\\]+$/, '');
 }
 
 function videoFormatFlag(quality: VideoQuality): string {
@@ -110,7 +119,8 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
 
         if (hasThumb) {
           args.push('--write-thumbnail', '--convert-thumbnails', 'jpg');
-          if (hasVideo) args.push('-o', `thumbnail:${base}/thumbnail.%(ext)s`);
+          // Always add the type-specific override so thumbnail lands at a predictable path
+          args.push('-o', `thumbnail:${base}/thumbnail.%(ext)s`);
         }
 
         if (hasMeta) {
@@ -137,8 +147,23 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
       }
 
       const results = await Promise.all(jobs);
-      const failed = results.find(r => r.code !== 0);
-      return result(failed?.code ?? 0, base, failed?.err ?? '');
+      const failures = results.filter(r => r.code !== 0);
+
+      if (failures.length === results.length) {
+        // Everything failed
+        return { ok: false, status: 'failed', error: failures[0].err.slice(-800) };
+      }
+
+      const folder = resolvedFolder(base);
+      return {
+        ok: true,
+        status: 'complete',
+        folderPath: folder,
+        windowsFolderPath: wslToWindowsPath(folder),
+        ...(failures.length > 0 && {
+          warnings: failures.map(r => r.err.slice(-200)),
+        }),
+      };
     }
 
     case 'download_best': {
@@ -231,14 +256,15 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
   }
 }
 
-function result(code: number, folderPath: string, stderr: string): DownloadResult {
+function result(code: number, templatePath: string, stderr: string): DownloadResult {
   if (code !== 0) {
     return { ok: false, status: 'failed', error: stderr.slice(-800) };
   }
+  const folder = resolvedFolder(templatePath);
   return {
     ok: true,
     status: 'complete',
-    folderPath,
-    windowsFolderPath: wslToWindowsPath(folderPath),
+    folderPath: folder,
+    windowsFolderPath: wslToWindowsPath(folder),
   };
 }

@@ -5,9 +5,11 @@ export function isValidYouTubeUrl(url: string): boolean {
     const parsed = new URL(url);
     if (!['https:', 'http:'].includes(parsed.protocol)) return false;
     if (!ALLOWED_HOSTS.includes(parsed.hostname)) return false;
-    const isWatch = parsed.pathname === '/watch' && parsed.searchParams.has('v');
-    const isShorts = /^\/shorts\/[A-Za-z0-9_-]+$/.test(parsed.pathname);
-    return isWatch || isShorts;
+    const isWatch    = parsed.pathname === '/watch' && parsed.searchParams.has('v');
+    const isShorts   = /^\/shorts\/[A-Za-z0-9_-]+$/.test(parsed.pathname);
+    const isLive     = /^\/live\/[A-Za-z0-9_-]+$/.test(parsed.pathname);
+    const isPlaylist = parsed.pathname === '/playlist' && parsed.searchParams.has('list');
+    return isWatch || isShorts || isLive || isPlaylist;
   } catch {
     return false;
   }

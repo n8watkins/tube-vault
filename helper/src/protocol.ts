@@ -20,7 +20,9 @@ export function readMessages(onMessage: (msg: unknown) => Promise<void>): void {
       const json = buf.subarray(4, 4 + len).toString('utf8');
       buf = buf.subarray(4 + len);
       try {
-        onMessage(JSON.parse(json)).catch(() => {});
+        onMessage(JSON.parse(json)).catch((err: unknown) => {
+          writeMessage({ ok: false, status: 'failed', error: String(err) });
+        });
       } catch {
         // skip malformed JSON
       }

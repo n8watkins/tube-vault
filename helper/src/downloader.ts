@@ -5,7 +5,19 @@ import { wslToWindowsPath } from './sanitize';
 
 const DEFAULT_OUTPUT_ROOT = '/mnt/c/Users/natha/Downloads/YouTube Archive';
 
+export type VideoQuality = 'best' | '1080' | '720' | '480' | '360';
+export type VideoFormat = 'mp4' | 'webm' | 'mkv';
+export type AudioFormat = 'm4a' | 'mp3' | 'wav' | 'opus';
+
+export interface DownloadComponents {
+  video?: { quality: VideoQuality; format: VideoFormat };
+  audio?: { format: AudioFormat };
+  metadata?: boolean;
+  thumbnail?: boolean;
+}
+
 export type Action =
+  | 'custom'
   | 'download_best'
   | 'download_audio'
   | 'download_thumbnail'
@@ -16,6 +28,8 @@ export type Action =
 export interface DownloadRequest {
   action: Action;
   url: string;
+  components?: DownloadComponents;
+  playlist?: boolean;
   options?: {
     outputRoot?: string;
   };
@@ -45,16 +59,88 @@ function folderTemplate(root: string): string {
   return path.join(root, '%(uploader)s', '%(upload_date>%Y-%m-%d)s - %(title)s [%(id)s]');
 }
 
+function playlistTemplate(root: string): string {
+  return path.join(root, '%(uploader)s', 'Playlists', '%(playlist_title)s', '%(playlist_index)02d - %(title)s [%(id)s]');
+}
+
 function ensureDir(p: string): void {
   fs.mkdirSync(p, { recursive: true });
+}
+
+function videoFormatFlag(quality: VideoQuality): string {
+  if (quality === 'best') return 'bv*+ba/b';
+  return `bv*[height<=${quality}]+ba/b[height<=${quality}]`;
 }
 
 export async function handle(req: DownloadRequest): Promise<DownloadResult> {
   const root = req.options?.outputRoot ?? DEFAULT_OUTPUT_ROOT;
   ensureDir(root);
-  const base = folderTemplate(root);
+
+  const isPlaylist = !!req.playlist;
+  const base = isPlaylist ? playlistTemplate(root) : folderTemplate(root);
+  const noPlaylistFlag = isPlaylist ? [] : ['--no-playlist'];
 
   switch (req.action) {
+    case 'custom': {
+      const comp = req.components ?? {};
+      const hasVideo = !!comp.video;
+      const hasAudio = !!comp.audio;
+      const hasMeta = !!comp.metadata;
+      const hasThumb = !!comp.thumbnail;
+
+      if (!hasVideo && !hasAudio && !hasMeta && !hasThumb) {
+        return { ok: false, status: 'failed', error: 'No components selected' };
+      }
+
+      const jobs: Promise<{ out: string; err: string; code: number }>[] = [];
+
+      // Video download run (also carries thumbnail/metadata flags when applicable)
+      if (hasVideo || hasMeta || hasThumb) {
+        const args: string[] = [];
+
+        if (hasVideo) {
+          args.push('-f', videoFormatFlag(comp.video!.quality));
+          args.push('--merge-output-format', comp.video!.format);
+          args.push('-o', `${base}/video.%(ext)s`);
+        } else {
+          // metadata or thumbnail only — skip the actual video download
+          args.push('--skip-download');
+          args.push('-o', `${base}/%(title)s [%(id)s].%(ext)s`);
+        }
+
+        if (hasThumb) {
+          args.push('--write-thumbnail', '--convert-thumbnails', 'jpg');
+          if (hasVideo) args.push('-o', `thumbnail:${base}/thumbnail.%(ext)s`);
+        }
+
+        if (hasMeta) {
+          args.push('--write-info-json', '--write-description');
+          if (hasVideo) {
+            args.push('-o', `description:${base}/description.%(ext)s`);
+            args.push('-o', `infojson:${base}/metadata.%(ext)s`);
+          }
+        }
+
+        args.push(...noPlaylistFlag, req.url);
+        jobs.push(run('yt-dlp', args));
+      }
+
+      // Separate audio extraction run (format conversion requires its own pass)
+      if (hasAudio) {
+        const args: string[] = [
+          '-f', 'ba/b',
+          '-x', '--audio-format', comp.audio!.format,
+          '-o', `${base}/audio.%(ext)s`,
+          ...noPlaylistFlag, req.url,
+        ];
+        jobs.push(run('yt-dlp', args));
+      }
+
+      const results = await Promise.all(jobs);
+      const failed = results.find(r => r.code !== 0);
+      return result(failed?.code ?? 0, base, failed?.err ?? '');
+    }
+
     case 'download_best': {
       const { err, code } = await run('yt-dlp', [
         '-f', 'bv*+ba/b',

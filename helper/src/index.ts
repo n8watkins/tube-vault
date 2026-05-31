@@ -3,6 +3,7 @@ import { handle, type DownloadRequest, type Action } from './downloader';
 import { isValidYouTubeUrl } from './sanitize';
 
 const ALLOWED_ACTIONS: Action[] = [
+  'custom',
   'download_best',
   'download_audio',
   'download_thumbnail',

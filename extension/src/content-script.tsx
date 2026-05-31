@@ -1,6 +1,6 @@
 // Injected into all youtube.com pages.
 // - Watch/Live pages: button in the video action row.
-// - Shorts pages:     compact icon button in #right-controls, left of settings.
+// - Shorts pages:     button at top of reel-action-bar-view-model, above like button.
 // - Playlist pages:   "Archive Playlist" button near the Shuffle control.
 
 import React from 'react';
@@ -14,13 +14,15 @@ let currentUrl = location.href;
 let videoInjected = false;
 let playlistInjected = false;
 
-// Stored so we can unmount (not just remove the DOM node) on navigation.
 let videoRoot: Root | null = null;
 let playlistRoot: Root | null = null;
 
-// Stored so rapid navigation can cancel in-flight retry timers.
 let videoTimerId: ReturnType<typeof setTimeout> | null = null;
 let playlistTimerId: ReturnType<typeof setTimeout> | null = null;
+
+// Shorts-specific observers — kept alive across scroll navigation
+let shortsIo: IntersectionObserver | null = null;
+let shortsMo: MutationObserver | null = null;
 
 // ── Page detection ────────────────────────────────────────────────────────────
 
@@ -59,8 +61,6 @@ function makeContainer(id: string): HTMLDivElement {
   return el;
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
 function getVisibleReelActionBar(): Element | null {
   const bars = document.querySelectorAll('reel-action-bar-view-model');
   for (const bar of bars) {
@@ -68,6 +68,62 @@ function getVisibleReelActionBar(): Element | null {
     if (r.width > 0 && r.height > 0) return bar;
   }
   return null;
+}
+
+// ── Shorts observer (handles re-injection on every scroll) ────────────────────
+
+function mountShortsButton(actionBar: Element): void {
+  if (actionBar.querySelector(`#${BUTTON_ID}`)) return;
+
+  document.getElementById(BUTTON_ID)?.remove();
+  videoRoot?.unmount();
+  videoRoot = null;
+
+  const container = makeContainer(BUTTON_ID);
+  container.style.marginBottom = '16px';
+
+  if (actionBar.firstElementChild) {
+    actionBar.insertBefore(container, actionBar.firstElementChild);
+  } else {
+    actionBar.appendChild(container);
+  }
+  videoRoot = createRoot(container);
+  videoRoot.render(<ArchiveButton getUrl={getVideoUrl} playlist={false} compact />);
+  videoInjected = true;
+}
+
+function startShortsObservers(): void {
+  if (shortsIo) return;
+
+  // Fire whenever a reel-action-bar-view-model enters the viewport
+  shortsIo = new IntersectionObserver((entries) => {
+    for (const entry of entries) {
+      if (entry.isIntersecting) mountShortsButton(entry.target);
+    }
+  }, { threshold: 0.5 });
+
+  document.querySelectorAll('reel-action-bar-view-model').forEach(el => shortsIo!.observe(el));
+
+  // Watch for new action bars added as more shorts load
+  shortsMo = new MutationObserver((mutations) => {
+    for (const mutation of mutations) {
+      for (const node of mutation.addedNodes) {
+        if (!(node instanceof Element)) continue;
+        if (node.tagName.toLowerCase() === 'reel-action-bar-view-model') {
+          shortsIo!.observe(node);
+        }
+        node.querySelectorAll('reel-action-bar-view-model').forEach(el => shortsIo!.observe(el));
+      }
+    }
+  });
+  shortsMo.observe(document.body, { childList: true, subtree: true });
+}
+
+function stopShortsObservers(): void {
+  shortsIo?.disconnect();
+  shortsIo = null;
+  shortsMo?.disconnect();
+  shortsMo = null;
 }
 
 // ── Video / Shorts injection ──────────────────────────────────────────────────
@@ -79,20 +135,10 @@ function injectVideoButton(): void {
   const isShorts = location.pathname.startsWith('/shorts/');
 
   if (isShorts) {
-    // Insert above the like button inside the visible reel action bar
+    startShortsObservers(); // sets up IO+MO for scroll re-injection
     const actionBar = getVisibleReelActionBar();
     if (!actionBar) return; // caller will retry
-
-    const container = makeContainer(BUTTON_ID);
-    if (actionBar.firstElementChild) {
-      actionBar.insertBefore(container, actionBar.firstElementChild);
-    } else {
-      actionBar.appendChild(container);
-    }
-    videoRoot = createRoot(container);
-    videoRoot.render(
-      <ArchiveButton getUrl={getVideoUrl} playlist={false} compact />
-    );
+    mountShortsButton(actionBar);
   } else {
     // Watch / Live: replace YouTube's native download button
     const actionRowSelectors = [
@@ -124,12 +170,9 @@ function injectVideoButton(): void {
       document.body.appendChild(container);
     }
     videoRoot = createRoot(container);
-    videoRoot.render(
-      <ArchiveButton getUrl={getVideoUrl} playlist={false} />
-    );
+    videoRoot.render(<ArchiveButton getUrl={getVideoUrl} playlist={false} />);
+    videoInjected = true;
   }
-
-  videoInjected = true;
 }
 
 // ── Playlist injection ────────────────────────────────────────────────────────
@@ -140,7 +183,6 @@ function injectPlaylistButton(): void {
 
   const container = makeContainer(PLAYLIST_BTN_ID);
 
-  // Prefer inserting directly after the shuffle button
   const shuffleBtn = document.querySelector('ytd-playlist-shuffle-button-renderer')
     ?? document.querySelector('yt-button-shape[aria-label*="Shuffle"]');
 
@@ -171,9 +213,7 @@ function injectPlaylistButton(): void {
     }
   }
   playlistRoot = createRoot(container);
-  playlistRoot.render(
-    <ArchiveButton getUrl={getPlaylistUrl} playlist={true} />
-  );
+  playlistRoot.render(<ArchiveButton getUrl={getPlaylistUrl} playlist={true} />);
   playlistInjected = true;
 }
 
@@ -197,10 +237,16 @@ function removePlaylistButton() {
 
 function onNavigate() {
   if (location.href === currentUrl) return;
+  const wasShorts = currentUrl.includes('/shorts/');
   currentUrl = location.href;
-  // Cancel any in-flight retry chains before tearing down buttons
+  const isNowShorts = location.pathname.startsWith('/shorts/');
+
   if (videoTimerId !== null) { clearTimeout(videoTimerId); videoTimerId = null; }
   if (playlistTimerId !== null) { clearTimeout(playlistTimerId); playlistTimerId = null; }
+
+  // Stop observers only when fully leaving Shorts
+  if (wasShorts && !isNowShorts) stopShortsObservers();
+
   removeVideoButton();
   removePlaylistButton();
   if (isWatchPage()) videoTimerId = setTimeout(() => tryInjectVideo(10), 500);

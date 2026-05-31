@@ -59,6 +59,17 @@ function makeContainer(id: string): HTMLDivElement {
   return el;
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function getVisibleReelActionBar(): Element | null {
+  const bars = document.querySelectorAll('reel-action-bar-view-model');
+  for (const bar of bars) {
+    const r = bar.getBoundingClientRect();
+    if (r.width > 0 && r.height > 0) return bar;
+  }
+  return null;
+}
+
 // ── Video / Shorts injection ──────────────────────────────────────────────────
 
 function injectVideoButton(): void {
@@ -68,15 +79,15 @@ function injectVideoButton(): void {
   const isShorts = location.pathname.startsWith('/shorts/');
 
   if (isShorts) {
-    // Insert above the like button in the vertical actions column
-    const actionsContainer = document.querySelector('.ytReelPlayerOverlayViewModelActionsContainer');
-    if (!actionsContainer) return; // caller will retry
+    // Insert above the like button inside the visible reel action bar
+    const actionBar = getVisibleReelActionBar();
+    if (!actionBar) return; // caller will retry
 
     const container = makeContainer(BUTTON_ID);
-    if (actionsContainer.firstElementChild) {
-      actionsContainer.insertBefore(container, actionsContainer.firstElementChild);
+    if (actionBar.firstElementChild) {
+      actionBar.insertBefore(container, actionBar.firstElementChild);
     } else {
-      actionsContainer.appendChild(container);
+      actionBar.appendChild(container);
     }
     videoRoot = createRoot(container);
     videoRoot.render(
@@ -213,10 +224,12 @@ function tryInjectPlaylist(attempts: number) {
 }
 
 const _pushState = history.pushState.bind(history);
-history.pushState = (...args) => {
-  _pushState(...args);
-  onNavigate();
-};
+history.pushState = (...args) => { _pushState(...args); onNavigate(); };
+
+// Shorts scroll uses replaceState, not pushState
+const _replaceState = history.replaceState.bind(history);
+history.replaceState = (...args) => { _replaceState(...args); onNavigate(); };
+
 window.addEventListener('popstate', onNavigate);
 
 if (isWatchPage()) tryInjectVideo(15);

@@ -91,10 +91,12 @@ export function ArchiveButton({ getUrl, playlist, compact }: Props) {
         style={{
           display: 'inline-flex',
           alignItems: 'center',
+          justifyContent: 'center',
           gap: compact ? 0 : 6,
-          padding: compact ? '0 10px' : '0 16px',
-          height: 36,
-          borderRadius: 18,
+          padding: compact ? 0 : '0 16px',
+          height: compact ? 48 : 36,
+          width: compact ? 48 : undefined,
+          borderRadius: compact ? '50%' : 18,
           border: 'none',
           background: BTN_COLOR[btnState],
           color: '#fff',
@@ -107,7 +109,7 @@ export function ArchiveButton({ getUrl, playlist, compact }: Props) {
           whiteSpace: 'nowrap',
         }}
       >
-        <FiArchive size={14} />
+        <FiArchive size={compact ? 20 : 14} />
         {!compact && <span>{labelSet[btnState]}</span>}
       </button>
 

@@ -1,9 +1,8 @@
 {
   "name": "tube-vault-extension",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "scripts": {
     "build": "node build.mjs",
-    "postbuild": "cp manifest.json /mnt/c/Users/natha/Projects/Tools/tube-vault/extension/manifest.json && cp dist/content-script.js dist/service-worker.js /mnt/c/Users/natha/Projects/Tools/tube-vault/extension/dist/",
     "watch": "node build.mjs --watch"
   },
   "dependencies": {

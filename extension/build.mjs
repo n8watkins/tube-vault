@@ -1,14 +1,38 @@
 import esbuild from 'esbuild';
+import { execSync } from 'child_process';
+import { readFileSync, writeFileSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { dirname, resolve, join } from 'path';
 
-const watch = process.argv.includes('--watch');
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(__dirname, '../..');
+const WIN_EXT = '/mnt/c/Users/natha/Projects/Tools/tube-vault/extension';
 
-const shared = {
-  bundle: true,
-  target: 'chrome120',
-  logLevel: 'info',
-};
+const watchMode = process.argv.includes('--watch');
 
-if (watch) {
+function bumpPatch() {
+  const pkgPath = join(__dirname, 'package.json');
+  const mfPath  = join(__dirname, 'manifest.json');
+
+  const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+  const parts = pkg.version.split('.').map(Number);
+  parts[2]++;
+  const version = parts.join('.');
+
+  pkg.version = version;
+  writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
+
+  const mf = JSON.parse(readFileSync(mfPath, 'utf8'));
+  mf.version = version;
+  writeFileSync(mfPath, JSON.stringify(mf, null, 2) + '\n');
+
+  return version;
+}
+
+const shared = { bundle: true, target: 'chrome120', logLevel: 'info' };
+
+if (watchMode) {
+  // Watch mode: no version bump, no commit, no Windows sync
   const ctx = await esbuild.context({
     ...shared,
     entryPoints: ['src/content-script.tsx'],
@@ -18,8 +42,11 @@ if (watch) {
     sourcemap: 'inline',
   });
   await ctx.watch();
-  console.log('Watching…');
+  console.log('Watching for changes…');
 } else {
+  const version = bumpPatch();
+  console.log(`\nBuilding TubeVault v${version}…`);
+
   await Promise.all([
     esbuild.build({
       ...shared,
@@ -36,4 +63,20 @@ if (watch) {
       format: 'iife',
     }),
   ]);
+
+  // Sync built files to Windows (Chrome loads from there)
+  execSync(
+    `cp manifest.json ${WIN_EXT}/manifest.json && ` +
+    `cp dist/content-script.js dist/service-worker.js ${WIN_EXT}/dist/`,
+    { cwd: __dirname },
+  );
+  console.log('Synced to Windows.');
+
+  // Commit everything in tube-vault/extension/
+  execSync('git add tube-vault/extension/', { cwd: repoRoot });
+  execSync(
+    `git commit -m "build(tube-vault): v${version}"`,
+    { cwd: repoRoot },
+  );
+  console.log(`Committed v${version}.`);
 }

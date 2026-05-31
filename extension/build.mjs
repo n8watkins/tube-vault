@@ -73,10 +73,11 @@ if (watchMode) {
   console.log('Synced to Windows.');
 
   // Commit everything in tube-vault/extension/
-  execSync('git add tube-vault/extension/', { cwd: repoRoot });
-  execSync(
-    `git commit -m "build(tube-vault): v${version}"`,
-    { cwd: repoRoot },
-  );
-  console.log(`Committed v${version}.`);
+  try {
+    execSync('git add tube-vault/extension/', { cwd: repoRoot });
+    execSync(`git commit -m "build(tube-vault): v${version}"`, { cwd: repoRoot });
+    console.log(`Committed v${version}.`);
+  } catch (err) {
+    console.warn(`Warning: git commit failed — ${err.message?.split('\n')[0]}`);
+  }
 }

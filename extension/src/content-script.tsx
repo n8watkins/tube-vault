@@ -4,7 +4,7 @@
 // - Playlist pages:   "Archive Playlist" button near the Shuffle control.
 
 import React from 'react';
-import { createRoot } from 'react-dom/client';
+import { createRoot, Root } from 'react-dom/client';
 import { ArchiveButton } from './components/ArchiveButton';
 
 const BUTTON_ID = 'tube-vault-btn';
@@ -13,6 +13,14 @@ const PLAYLIST_BTN_ID = 'tube-vault-playlist-btn';
 let currentUrl = location.href;
 let videoInjected = false;
 let playlistInjected = false;
+
+// Stored so we can unmount (not just remove the DOM node) on navigation.
+let videoRoot: Root | null = null;
+let playlistRoot: Root | null = null;
+
+// Stored so rapid navigation can cancel in-flight retry timers.
+let videoTimerId: ReturnType<typeof setTimeout> | null = null;
+let playlistTimerId: ReturnType<typeof setTimeout> | null = null;
 
 // ── Page detection ────────────────────────────────────────────────────────────
 
@@ -70,7 +78,8 @@ function injectVideoButton(): void {
     } else {
       rightControls.appendChild(container);
     }
-    createRoot(container).render(
+    videoRoot = createRoot(container);
+    videoRoot.render(
       <ArchiveButton getUrl={getVideoUrl} playlist={false} compact />
     );
   } else {
@@ -99,7 +108,8 @@ function injectVideoButton(): void {
       });
       document.body.appendChild(container);
     }
-    createRoot(container).render(
+    videoRoot = createRoot(container);
+    videoRoot.render(
       <ArchiveButton getUrl={getVideoUrl} playlist={false} />
     );
   }
@@ -137,7 +147,8 @@ function injectPlaylistButton(): void {
     });
     document.body.appendChild(container);
   }
-  createRoot(container).render(
+  playlistRoot = createRoot(container);
+  playlistRoot.render(
     <ArchiveButton getUrl={getPlaylistUrl} playlist={true} />
   );
   playlistInjected = true;
@@ -146,11 +157,15 @@ function injectPlaylistButton(): void {
 // ── Cleanup ───────────────────────────────────────────────────────────────────
 
 function removeVideoButton() {
+  videoRoot?.unmount();
+  videoRoot = null;
   document.getElementById(BUTTON_ID)?.remove();
   videoInjected = false;
 }
 
 function removePlaylistButton() {
+  playlistRoot?.unmount();
+  playlistRoot = null;
   document.getElementById(PLAYLIST_BTN_ID)?.remove();
   playlistInjected = false;
 }
@@ -160,22 +175,29 @@ function removePlaylistButton() {
 function onNavigate() {
   if (location.href === currentUrl) return;
   currentUrl = location.href;
+  // Cancel any in-flight retry chains before tearing down buttons
+  if (videoTimerId !== null) { clearTimeout(videoTimerId); videoTimerId = null; }
+  if (playlistTimerId !== null) { clearTimeout(playlistTimerId); playlistTimerId = null; }
   removeVideoButton();
   removePlaylistButton();
-  if (isWatchPage()) setTimeout(() => tryInjectVideo(10), 500);
-  if (isPlaylistPage()) setTimeout(() => tryInjectPlaylist(10), 500);
+  if (isWatchPage()) videoTimerId = setTimeout(() => tryInjectVideo(10), 500);
+  if (isPlaylistPage()) playlistTimerId = setTimeout(() => tryInjectPlaylist(10), 500);
 }
 
 function tryInjectVideo(attempts: number) {
   if (document.getElementById(BUTTON_ID)) return;
   injectVideoButton();
-  if (!videoInjected && attempts > 0) setTimeout(() => tryInjectVideo(attempts - 1), 400);
+  if (!videoInjected && attempts > 0) {
+    videoTimerId = setTimeout(() => tryInjectVideo(attempts - 1), 400);
+  }
 }
 
 function tryInjectPlaylist(attempts: number) {
   if (document.getElementById(PLAYLIST_BTN_ID)) return;
   injectPlaylistButton();
-  if (!playlistInjected && attempts > 0) setTimeout(() => tryInjectPlaylist(attempts - 1), 400);
+  if (!playlistInjected && attempts > 0) {
+    playlistTimerId = setTimeout(() => tryInjectPlaylist(attempts - 1), 400);
+  }
 }
 
 const _pushState = history.pushState.bind(history);
@@ -184,10 +206,6 @@ history.pushState = (...args) => {
   onNavigate();
 };
 window.addEventListener('popstate', onNavigate);
-new MutationObserver(onNavigate).observe(document.documentElement, {
-  childList: true,
-  subtree: false,
-});
 
 if (isWatchPage()) tryInjectVideo(15);
 if (isPlaylistPage()) tryInjectPlaylist(15);

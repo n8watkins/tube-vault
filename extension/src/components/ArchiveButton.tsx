@@ -68,6 +68,9 @@ export function ArchiveButton({ getUrl, playlist, compact }: Props) {
           setBtnState('done');
           const folder = response.windowsFolderPath ?? response.folderPath ?? '';
           showToast(folder ? `Saved to ${folder}` : 'Archived successfully');
+          if (response.warnings?.length) {
+            showToast(`Partial failure: ${response.warnings[0]}`, true);
+          }
         }
         setTimeout(() => setBtnState('idle'), 3000);
       }

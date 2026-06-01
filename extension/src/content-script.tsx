@@ -142,31 +142,26 @@ function injectVideoButton(): void {
     if (!actionBar) return; // caller will retry
     mountShortsButton(actionBar);
   } else {
-    // Watch / Live: inject into the action row, replacing YouTube's download button if present.
-    // ytd-watch-metadata scopes this to the video action row (not the playlist panel's buttons).
-    const actionRowSelectors = [
-      'ytd-watch-metadata #top-level-buttons-computed',
-      '#actions-inner #top-level-buttons-computed',
-      'ytd-watch-metadata #actions #top-level-buttons-computed',
-      '#above-the-fold #top-level-buttons-computed',
-      'ytm-slim-video-action-bar-renderer',
-    ];
-    let target: Element | null = null;
-    for (const sel of actionRowSelectors) {
-      target = document.querySelector(sel);
-      if (target) break;
-    }
+    // Watch / Live: anchor to the like button — always present and in light DOM.
+    // Replace YouTube's download button if it exists, otherwise insert before like.
+    const likeBtn =
+      document.querySelector('#top-level-buttons-computed ytd-like-button-renderer') ??
+      document.querySelector('ytd-watch-metadata ytd-like-button-renderer') ??
+      document.querySelector('ytd-like-button-renderer') ??
+      document.querySelector('like-button-view-model');
 
-    if (!target) return; // caller will retry — do NOT fall back to fixed position prematurely
+    if (!likeBtn) return; // caller will retry
 
     const container = makeContainer(BUTTON_ID);
-    const downloadBtn = target.querySelector('ytd-download-button-renderer');
+    const downloadBtn = document.querySelector('ytd-download-button-renderer');
+
     if (downloadBtn) {
       downloadBtn.parentElement!.insertBefore(container, downloadBtn);
       downloadBtn.remove();
     } else {
-      target.prepend(container);
+      likeBtn.parentElement!.insertBefore(container, likeBtn);
     }
+
     videoRoot = createRoot(container);
     videoRoot.render(<ArchiveButton getUrl={getVideoUrl} playlist={false} />);
     videoInjected = true;

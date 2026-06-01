@@ -454,10 +454,19 @@ window.addEventListener('yt-navigate-finish', onYtNav);
 document.addEventListener('yt-navigate-finish', onYtNav);
 document.addEventListener('yt-page-data-updated', onYtNav);
 
+// Diagnostic markers readable from the PAGE console (shared DOM): confirms which
+// content-script version is live and that its timer is actually ticking.
+//   document.documentElement.dataset.tvVersion  → loaded version
+//   document.documentElement.dataset.tvBeat      → updates every 1.5s if alive
+try { document.documentElement.dataset.tvVersion = chrome.runtime.getManifest().version; } catch { /* ignore */ }
+
 // Guaranteed safety net: a cheap periodic check re-injects any missing button
 // even if every signal above is somehow missed. When buttons are already present
 // this is just a few getElementById checks.
-setInterval(syncForCurrentPage, 1500);
+setInterval(() => {
+  document.documentElement.dataset.tvBeat = String(Date.now());
+  syncForCurrentPage();
+}, 1500);
 
 // Initial injection on first load.
 syncForCurrentPage();

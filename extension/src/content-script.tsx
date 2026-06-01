@@ -199,7 +199,7 @@ function injectVideoButton(): void {
       actionRow.appendChild(container);
     }
 
-    container.style.marginLeft = '8px';
+    container.style.margin = '0 8px';
     videoRoot = createRoot(container);
     videoRoot.render(<ArchiveButton getUrl={getVideoUrl} playlist={false} dropUp />);
     videoInjected = true;

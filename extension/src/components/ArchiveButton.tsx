@@ -237,16 +237,16 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
           display: 'inline-flex',
           alignItems: 'center',
           justifyContent: 'center',
-          gap: compact ? 0 : 6,
-          padding: compact ? 0 : '0 12px',
-          height: compact ? 48 : 32,
+          gap: compact ? 0 : 8,
+          padding: compact ? 0 : '0 16px',
+          height: compact ? 48 : 36,
           width: compact ? 48 : undefined,
-          borderRadius: compact ? '50%' : 16,
+          borderRadius: compact ? '50%' : 18,
           border: 'none',
           background: BTN_COLOR[btnState],
           color: '#fff',
-          fontSize: 14,
-          fontWeight: 500,
+          fontSize: compact ? 14 : 15,
+          fontWeight: 600,
           fontFamily: 'inherit',
           cursor: btnState === 'loading' ? 'default' : 'pointer',
           flexShrink: 0,
@@ -254,7 +254,7 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
           whiteSpace: 'nowrap',
         }}
       >
-        <FiDownload size={compact ? 20 : 14} />
+        <FiDownload size={compact ? 20 : 20} />
         {!compact && <span>{labelSet[btnState]}</span>}
       </button>
 

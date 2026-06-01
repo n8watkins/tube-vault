@@ -270,6 +270,14 @@ function tryInjectPlaylist(attempts: number) {
   }
 }
 
+// Ensure our buttons exist for the current page, re-injecting any that are
+// missing. Unlike onNavigate this never early-returns on an unchanged URL, so
+// it can recover a button that failed to inject or was torn out by YouTube.
+function ensureButtons() {
+  if (isWatchPage() && !document.getElementById(BUTTON_ID)) tryInjectVideo(15);
+  if (isPlaylistContext() && !document.getElementById(PLAYLIST_BTN_ID)) tryInjectPlaylist(15);
+}
+
 const _pushState = history.pushState.bind(history);
 history.pushState = (...args) => { _pushState(...args); onNavigate(); };
 
@@ -278,6 +286,14 @@ const _replaceState = history.replaceState.bind(history);
 history.replaceState = (...args) => { _replaceState(...args); onNavigate(); };
 
 window.addEventListener('popstate', onNavigate);
+
+// YouTube's own SPA navigation-complete event — the most reliable signal, and
+// it fires when the new page's DOM is actually ready. If the URL changed, do a
+// full teardown first; then ensure the buttons are present regardless.
+window.addEventListener('yt-navigate-finish', () => {
+  if (location.href !== currentUrl) onNavigate();
+  ensureButtons();
+});
 
 if (isWatchPage()) tryInjectVideo(15);
 if (isPlaylistContext()) tryInjectPlaylist(15);

@@ -80,7 +80,7 @@ export function ArchiveButton({ getUrl, playlist, compact }: Props) {
   return (
     <div
       ref={rootRef}
-      style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}
+      style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', zIndex: 2147483647 }}
     >
       <button
         onClick={(e) => {

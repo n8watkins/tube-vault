@@ -137,7 +137,7 @@ export function ArchiveMenu({ state, onChange, playlist, onArchive }: Props) {
 const panel: React.CSSProperties = {
   position: 'absolute',
   top: '100%',
-  right: 0,
+  left: 0,
   marginTop: 6,
   background: '#212121',
   borderRadius: 10,

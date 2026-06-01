@@ -270,30 +270,36 @@ function tryInjectPlaylist(attempts: number) {
   }
 }
 
-// Ensure our buttons exist for the current page, re-injecting any that are
-// missing. Unlike onNavigate this never early-returns on an unchanged URL, so
-// it can recover a button that failed to inject or was torn out by YouTube.
+// Re-inject any button that's missing for the current page. The observer below
+// calls this repeatedly as YouTube builds the new page, so injection lands as
+// soon as the anchor element exists — no fixed retry budget needed.
 function ensureButtons() {
-  if (isWatchPage() && !document.getElementById(BUTTON_ID)) tryInjectVideo(15);
-  if (isPlaylistContext() && !document.getElementById(PLAYLIST_BTN_ID)) tryInjectPlaylist(15);
+  if (isWatchPage() && !document.getElementById(BUTTON_ID)) injectVideoButton();
+  if (isPlaylistContext() && !document.getElementById(PLAYLIST_BTN_ID)) injectPlaylistButton();
 }
 
-const _pushState = history.pushState.bind(history);
-history.pushState = (...args) => { _pushState(...args); onNavigate(); };
-
-// Shorts scroll uses replaceState, not pushState
-const _replaceState = history.replaceState.bind(history);
-history.replaceState = (...args) => { _replaceState(...args); onNavigate(); };
-
-window.addEventListener('popstate', onNavigate);
-
-// YouTube's own SPA navigation-complete event — the most reliable signal, and
-// it fires when the new page's DOM is actually ready. If the URL changed, do a
-// full teardown first; then ensure the buttons are present regardless.
-window.addEventListener('yt-navigate-finish', () => {
-  if (location.href !== currentUrl) onNavigate();
+function syncForCurrentPage() {
+  if (location.href !== currentUrl) onNavigate(); // URL changed → tear down old page's buttons
   ensureButtons();
-});
+}
 
-if (isWatchPage()) tryInjectVideo(15);
-if (isPlaylistContext()) tryInjectPlaylist(15);
+// YouTube is an SPA, but a content script runs in an ISOLATED world: it cannot
+// intercept the page's history.pushState (a different world's object), and the
+// page's yt-navigate-* events don't reliably cross the world boundary. The one
+// thing both worlds share is the DOM — which YouTube rebuilds on every nav — so
+// we watch that directly. Throttled so steady-state mutations stay cheap.
+let syncQueued = false;
+function queueSync() {
+  if (syncQueued) return;
+  syncQueued = true;
+  setTimeout(() => { syncQueued = false; syncForCurrentPage(); }, 200);
+}
+
+const navObserver = new MutationObserver(queueSync);
+navObserver.observe(document.documentElement, { childList: true, subtree: true });
+
+// popstate (back/forward) DOES reach the isolated world — handle it promptly.
+window.addEventListener('popstate', syncForCurrentPage);
+
+// Initial injection on first load.
+syncForCurrentPage();

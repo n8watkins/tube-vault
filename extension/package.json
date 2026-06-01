@@ -1,6 +1,6 @@
 {
   "name": "tube-vault-extension",
-  "version": "0.3.30",
+  "version": "0.3.31",
   "scripts": {
     "build": "node build.mjs",
     "watch": "node build.mjs --watch"

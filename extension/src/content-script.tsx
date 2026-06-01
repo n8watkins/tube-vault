@@ -444,8 +444,20 @@ function queueSync() {
 const navObserver = new MutationObserver(queueSync);
 navObserver.observe(document.documentElement, { childList: true, subtree: true });
 
-// popstate (back/forward) DOES reach the isolated world — handle it promptly.
+// Belt-and-suspenders nav signals — ensureButtons is idempotent, so firing from
+// several sources is harmless and just makes injection land sooner.
 window.addEventListener('popstate', syncForCurrentPage);
+// YouTube's own SPA nav events DO reach content-script listeners on document/
+// window (DOM events cross the isolated world even though page JS variables don't).
+const onYtNav = () => syncForCurrentPage();
+window.addEventListener('yt-navigate-finish', onYtNav);
+document.addEventListener('yt-navigate-finish', onYtNav);
+document.addEventListener('yt-page-data-updated', onYtNav);
+
+// Guaranteed safety net: a cheap periodic check re-injects any missing button
+// even if every signal above is somehow missed. When buttons are already present
+// this is just a few getElementById checks.
+setInterval(syncForCurrentPage, 1500);
 
 // Initial injection on first load.
 syncForCurrentPage();

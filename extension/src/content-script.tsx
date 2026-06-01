@@ -362,17 +362,24 @@ function injectChannelButton(): void {
   if (document.getElementById(CHANNEL_BTN_ID)) return;
   if (!isChannelPage()) return;
 
-  const subscribe =
-    document.querySelector('#subscribe-button ytd-subscribe-button-renderer') ??
-    document.querySelector('ytd-subscribe-button-renderer') ??
-    document.querySelector('yt-subscribe-button-view-model') ??
-    document.querySelector('#subscribe-button');
-
-  if (!subscribe?.parentElement) return; // caller will retry
-
   const container = makeContainer(CHANNEL_BTN_ID);
-  container.style.marginLeft = '8px';
-  subscribe.parentElement.insertBefore(container, subscribe.nextSibling);
+
+  // New layout (yt-page-header-view-model): drop into the flexible actions row,
+  // alongside Subscribe. Fall back to the old subscribe-button layout.
+  const flexActions = document.querySelector('yt-flexible-actions-view-model');
+  if (flexActions) {
+    container.style.marginLeft = '8px';
+    flexActions.appendChild(container);
+  } else {
+    const subscribe =
+      document.querySelector('#subscribe-button ytd-subscribe-button-renderer') ??
+      document.querySelector('ytd-subscribe-button-renderer') ??
+      document.querySelector('yt-subscribe-button-view-model') ??
+      document.querySelector('#subscribe-button');
+    if (!subscribe?.parentElement) return; // caller will retry
+    container.style.marginLeft = '8px';
+    subscribe.parentElement.insertBefore(container, subscribe.nextSibling);
+  }
 
   channelRoot = createRoot(container);
   channelRoot.render(

@@ -34,14 +34,19 @@ export function ArchiveButton({ getUrl, playlist, compact }: Props) {
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    const handler = (e: MouseEvent) => {
+    const onClickOutside = (e: MouseEvent) => {
       const t = e.target as Node;
       if (!rootRef.current?.contains(t) && !menuRef.current?.contains(t)) {
         setOpen(false);
       }
     };
-    document.addEventListener('click', handler, true);
-    return () => document.removeEventListener('click', handler, true);
+    const onScroll = () => setOpen(false);
+    document.addEventListener('click', onClickOutside, true);
+    window.addEventListener('scroll', onScroll, true);
+    return () => {
+      document.removeEventListener('click', onClickOutside, true);
+      window.removeEventListener('scroll', onScroll, true);
+    };
   }, []);
 
   const labelSet = playlist ? LABEL.playlist : LABEL.video;

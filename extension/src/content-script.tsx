@@ -43,7 +43,16 @@ function isPlaylistContext() {
 }
 
 function getVideoUrl() {
-  return location.href.split('&')[0];
+  // Reconstruct a canonical URL from the ID so param order/extras never matter
+  // (e.g. ?app=desktop&v=ID or ?si=...&v=ID would break naive ?-splitting).
+  if (location.pathname.startsWith('/shorts/')) {
+    return `https://www.youtube.com/shorts/${location.pathname.split('/')[2]}`;
+  }
+  if (location.pathname.startsWith('/live/')) {
+    return `https://www.youtube.com/live/${location.pathname.split('/')[2]}`;
+  }
+  const v = new URLSearchParams(location.search).get('v');
+  return v ? `https://www.youtube.com/watch?v=${v}` : location.href;
 }
 
 function getPlaylistUrl() {

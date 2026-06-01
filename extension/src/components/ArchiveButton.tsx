@@ -8,7 +8,7 @@ type BtnState = 'idle' | 'loading' | 'done' | 'error';
 interface Props {
   getUrl: () => string;
   playlist: boolean;
-  compact?: boolean; // icon-only, for #right-controls
+  compact?: boolean;
 }
 
 const LABEL: Record<string, Record<BtnState, string>> = {
@@ -26,21 +26,34 @@ const BTN_COLOR: Record<BtnState, string> = {
 export function ArchiveButton({ getUrl, playlist, compact }: Props) {
   const [open, setOpen] = useState(false);
   const [btnState, setBtnState] = useState<BtnState>('idle');
-  // State lifted here so selections survive menu close/reopen
   const [menuState, setMenuState] = useState<MenuState>(defaultMenuState);
+  const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
+
   const rootRef = useRef<HTMLDivElement>(null);
+  const btnRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) {
+      const t = e.target as Node;
+      if (!rootRef.current?.contains(t) && !menuRef.current?.contains(t)) {
         setOpen(false);
       }
     };
-    document.addEventListener('click', handler);
-    return () => document.removeEventListener('click', handler);
+    document.addEventListener('click', handler, true);
+    return () => document.removeEventListener('click', handler, true);
   }, []);
 
   const labelSet = playlist ? LABEL.playlist : LABEL.video;
+
+  function handleToggle(e: React.MouseEvent) {
+    e.stopPropagation();
+    if (btnState === 'loading') return;
+    if (!open && btnRef.current) {
+      setAnchorRect(btnRef.current.getBoundingClientRect());
+    }
+    setOpen(o => !o);
+  }
 
   function handleArchive() {
     setOpen(false);
@@ -80,13 +93,11 @@ export function ArchiveButton({ getUrl, playlist, compact }: Props) {
   return (
     <div
       ref={rootRef}
-      style={{ position: 'relative', display: 'inline-flex', alignItems: 'center', zIndex: 2147483647 }}
+      style={{ display: 'inline-flex', alignItems: 'center' }}
     >
       <button
-        onClick={(e) => {
-          e.stopPropagation();
-          if (btnState !== 'loading') setOpen((o) => !o);
-        }}
+        ref={btnRef}
+        onClick={handleToggle}
         title={labelSet.idle}
         style={{
           display: 'inline-flex',
@@ -113,8 +124,10 @@ export function ArchiveButton({ getUrl, playlist, compact }: Props) {
         {!compact && <span>{labelSet[btnState]}</span>}
       </button>
 
-      {open && (
+      {open && anchorRect && (
         <ArchiveMenu
+          menuRef={menuRef}
+          anchorRect={anchorRect}
           state={menuState}
           onChange={(updates) => setMenuState((s) => ({ ...s, ...updates }))}
           playlist={playlist}

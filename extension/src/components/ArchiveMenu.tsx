@@ -1,25 +1,36 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import { FiVideo, FiHeadphones, FiFileText, FiImage, FiPackage } from 'react-icons/fi';
 import { MenuState, VideoQuality, VideoFormat, AudioFormat } from '../types';
 
 interface Props {
+  menuRef: React.RefObject<HTMLDivElement>;
+  anchorRect: DOMRect;
   state: MenuState;
   onChange: (updates: Partial<MenuState>) => void;
   playlist: boolean;
   onArchive: () => void;
 }
 
-export function ArchiveMenu({ state, onChange, playlist, onArchive }: Props) {
+export function ArchiveMenu({ menuRef, anchorRect, state, onChange, playlist, onArchive }: Props) {
   const noneSelected = !state.video && !state.audio && !state.metadata && !state.thumbnail;
 
   const bundleAll = () =>
     onChange({ video: true, audio: true, metadata: true, thumbnail: true });
 
-  return (
-    <div style={panel} onClick={(e) => e.stopPropagation()}>
+  const content = (
+    <div
+      ref={menuRef}
+      style={{
+        ...panel,
+        top: anchorRect.bottom + 6,
+        left: anchorRect.left,
+      }}
+      onClick={(e) => e.stopPropagation()}
+    >
       <div style={headerStyle}>{playlist ? 'Archive Playlist' : 'Archive Options'}</div>
 
-      {/* Video — selects always visible, disabled when unchecked */}
+      {/* Video */}
       <div style={optRow}>
         <label style={checkLabel} onClick={(e) => e.stopPropagation()}>
           <input
@@ -59,7 +70,7 @@ export function ArchiveMenu({ state, onChange, playlist, onArchive }: Props) {
         </div>
       </div>
 
-      {/* Audio — format select always visible, disabled when unchecked */}
+      {/* Audio */}
       <div style={optRow}>
         <label style={checkLabel} onClick={(e) => e.stopPropagation()}>
           <input
@@ -130,20 +141,20 @@ export function ArchiveMenu({ state, onChange, playlist, onArchive }: Props) {
       </button>
     </div>
   );
+
+  return createPortal(content, document.body);
 }
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const panel: React.CSSProperties = {
-  position: 'absolute',
-  top: '100%',
-  left: 0,
-  marginTop: 6,
+  position: 'fixed',
+  marginTop: 0,
   background: '#212121',
   borderRadius: 10,
   boxShadow: '0 4px 24px rgba(0,0,0,0.6)',
   padding: '12px 14px 10px',
-  zIndex: 9999,
+  zIndex: 2147483647,
   minWidth: 310,
   color: '#fff',
   fontFamily: 'Roboto, Arial, sans-serif',

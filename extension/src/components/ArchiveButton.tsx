@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { FiArchive } from 'react-icons/fi';
+import { FiArchive, FiDownload } from 'react-icons/fi';
 import { ArchiveMenu } from './ArchiveMenu';
 import { MenuState, defaultMenuState } from '../types';
 
@@ -9,10 +9,11 @@ interface Props {
   getUrl: () => string;
   playlist: boolean;
   compact?: boolean;
+  dropUp?: boolean;
 }
 
 const LABEL: Record<string, Record<BtnState, string>> = {
-  video: { idle: 'Archive', loading: 'Archiving…', done: 'Saved ✓', error: 'Failed ✗' },
+  video: { idle: 'Download', loading: 'Downloading…', done: 'Saved ✓', error: 'Failed ✗' },
   playlist: { idle: 'Archive Playlist', loading: 'Archiving…', done: 'Saved ✓', error: 'Failed ✗' },
 };
 
@@ -23,7 +24,7 @@ const BTN_COLOR: Record<BtnState, string> = {
   error: '#b71c1c',
 };
 
-export function ArchiveButton({ getUrl, playlist, compact }: Props) {
+export function ArchiveButton({ getUrl, playlist, compact, dropUp }: Props) {
   const [open, setOpen] = useState(false);
   const [btnState, setBtnState] = useState<BtnState>('idle');
   const [menuState, setMenuState] = useState<MenuState>(defaultMenuState);
@@ -109,10 +110,10 @@ export function ArchiveButton({ getUrl, playlist, compact }: Props) {
           alignItems: 'center',
           justifyContent: 'center',
           gap: compact ? 0 : 6,
-          padding: compact ? 0 : '0 16px',
-          height: compact ? 48 : 36,
+          padding: compact ? 0 : '0 12px',
+          height: compact ? 48 : 32,
           width: compact ? 48 : undefined,
-          borderRadius: compact ? '50%' : 18,
+          borderRadius: compact ? '50%' : 16,
           border: 'none',
           background: BTN_COLOR[btnState],
           color: '#fff',
@@ -125,7 +126,7 @@ export function ArchiveButton({ getUrl, playlist, compact }: Props) {
           whiteSpace: 'nowrap',
         }}
       >
-        <FiArchive size={compact ? 20 : 14} />
+        {compact || playlist ? <FiArchive size={compact ? 20 : 14} /> : <FiDownload size={14} />}
         {!compact && <span>{labelSet[btnState]}</span>}
       </button>
 
@@ -133,6 +134,7 @@ export function ArchiveButton({ getUrl, playlist, compact }: Props) {
         <ArchiveMenu
           menuRef={menuRef}
           anchorRect={anchorRect}
+          dropUp={dropUp}
           state={menuState}
           onChange={(updates) => setMenuState((s) => ({ ...s, ...updates }))}
           playlist={playlist}

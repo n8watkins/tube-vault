@@ -162,8 +162,9 @@ function injectVideoButton(): void {
       likeBtn.parentElement!.insertBefore(container, likeBtn);
     }
 
+    container.style.marginLeft = '8px';
     videoRoot = createRoot(container);
-    videoRoot.render(<ArchiveButton getUrl={getVideoUrl} playlist={false} />);
+    videoRoot.render(<ArchiveButton getUrl={getVideoUrl} playlist={false} dropUp />);
     videoInjected = true;
   }
 }

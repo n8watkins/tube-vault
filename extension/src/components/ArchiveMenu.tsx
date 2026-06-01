@@ -6,26 +6,27 @@ import { MenuState, VideoQuality, VideoFormat, AudioFormat } from '../types';
 interface Props {
   menuRef: React.RefObject<HTMLDivElement>;
   anchorRect: DOMRect;
+  dropUp?: boolean;
   state: MenuState;
   onChange: (updates: Partial<MenuState>) => void;
   playlist: boolean;
   onArchive: () => void;
 }
 
-export function ArchiveMenu({ menuRef, anchorRect, state, onChange, playlist, onArchive }: Props) {
+export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, playlist, onArchive }: Props) {
   const noneSelected = !state.video && !state.audio && !state.metadata && !state.thumbnail;
 
   const bundleAll = () =>
     onChange({ video: true, audio: true, metadata: true, thumbnail: true });
 
+  const posStyle = dropUp
+    ? { bottom: window.innerHeight - anchorRect.top + 6, left: anchorRect.left }
+    : { top: anchorRect.bottom + 6, left: anchorRect.left };
+
   const content = (
     <div
       ref={menuRef}
-      style={{
-        ...panel,
-        top: anchorRect.bottom + 6,
-        left: anchorRect.left,
-      }}
+      style={{ ...panel, ...posStyle }}
       onClick={(e) => e.stopPropagation()}
     >
       <div style={headerStyle}>{playlist ? 'Archive Playlist' : 'Archive Options'}</div>

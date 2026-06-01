@@ -1,7 +1,8 @@
 // Injected into all youtube.com pages.
-// - Watch/Live pages: button in the video action row.
+// - Watch/Live pages: button in the video action row (replaces download button).
 // - Shorts pages:     button at top of reel-action-bar-view-model, above like button.
-// - Playlist pages:   "Archive Playlist" button near the Shuffle control.
+// - Playlist pages:   "Archive Playlist" button after shuffle button.
+//   Works on both standalone /playlist pages and /watch?list= pages (sidebar panel).
 
 import React from 'react';
 import { createRoot, Root } from 'react-dom/client';
@@ -34,8 +35,11 @@ function isWatchPage() {
   );
 }
 
-function isPlaylistPage() {
-  return location.pathname === '/playlist';
+function isPlaylistContext() {
+  if (location.pathname === '/playlist') return true;
+  // Watch page with a playlist in the sidebar
+  if (isWatchPage() && new URLSearchParams(location.search).has('list')) return true;
+  return false;
 }
 
 function getVideoUrl() {
@@ -95,7 +99,6 @@ function mountShortsButton(actionBar: Element): void {
 function startShortsObservers(): void {
   if (shortsIo) return;
 
-  // Fire whenever a reel-action-bar-view-model enters the viewport
   shortsIo = new IntersectionObserver((entries) => {
     for (const entry of entries) {
       if (entry.isIntersecting) mountShortsButton(entry.target);
@@ -104,7 +107,6 @@ function startShortsObservers(): void {
 
   document.querySelectorAll('reel-action-bar-view-model').forEach(el => shortsIo!.observe(el));
 
-  // Watch for new action bars added as more shorts load
   shortsMo = new MutationObserver((mutations) => {
     for (const mutation of mutations) {
       for (const node of mutation.addedNodes) {
@@ -135,13 +137,15 @@ function injectVideoButton(): void {
   const isShorts = location.pathname.startsWith('/shorts/');
 
   if (isShorts) {
-    startShortsObservers(); // sets up IO+MO for scroll re-injection
+    startShortsObservers();
     const actionBar = getVisibleReelActionBar();
     if (!actionBar) return; // caller will retry
     mountShortsButton(actionBar);
   } else {
-    // Watch / Live: replace YouTube's native download button
+    // Watch / Live: inject into the action row, replacing YouTube's download button if present.
+    // ytd-watch-metadata scopes this to the video action row (not the playlist panel's buttons).
     const actionRowSelectors = [
+      'ytd-watch-metadata #top-level-buttons-computed',
       '#actions-inner #top-level-buttons-computed',
       'ytd-watch-metadata #actions #top-level-buttons-computed',
       '#above-the-fold #top-level-buttons-computed',
@@ -153,21 +157,15 @@ function injectVideoButton(): void {
       if (target) break;
     }
 
+    if (!target) return; // caller will retry — do NOT fall back to fixed position prematurely
+
     const container = makeContainer(BUTTON_ID);
-    const downloadBtn = (target ?? document).querySelector('ytd-download-button-renderer');
+    const downloadBtn = target.querySelector('ytd-download-button-renderer');
     if (downloadBtn) {
       downloadBtn.parentElement!.insertBefore(container, downloadBtn);
       downloadBtn.remove();
-    } else if (target) {
-      target.prepend(container);
     } else {
-      Object.assign(container.style, {
-        position: 'fixed',
-        bottom: '24px',
-        right: '24px',
-        zIndex: '9998',
-      });
-      document.body.appendChild(container);
+      target.prepend(container);
     }
     videoRoot = createRoot(container);
     videoRoot.render(<ArchiveButton getUrl={getVideoUrl} playlist={false} />);
@@ -179,39 +177,38 @@ function injectVideoButton(): void {
 
 function injectPlaylistButton(): void {
   if (document.getElementById(PLAYLIST_BTN_ID)) return;
-  if (!isPlaylistPage()) return;
+  if (!isPlaylistContext()) return;
+
+  // Find the shuffle button — scoped first to the playlist panel (watch+playlist),
+  // then to the standalone playlist header (/playlist page).
+  const shuffleEl =
+    document.querySelector('ytd-playlist-panel-renderer button[aria-label*="Shuffle"]') ??
+    document.querySelector('ytd-playlist-panel-renderer [aria-label*="Shuffle"]') ??
+    document.querySelector('ytd-playlist-header-renderer button[aria-label*="Shuffle"]') ??
+    document.querySelector('ytd-playlist-header-renderer [aria-label*="Shuffle"]') ??
+    document.querySelector('ytd-playlist-shuffle-button-renderer');
+
+  const shuffleAnchor =
+    shuffleEl?.closest('ytd-toggle-button-renderer') ??
+    shuffleEl?.closest('yt-button-shape') ??
+    shuffleEl?.closest('ytd-playlist-shuffle-button-renderer') ??
+    shuffleEl;
 
   const container = makeContainer(PLAYLIST_BTN_ID);
 
-  const shuffleBtn = document.querySelector('ytd-playlist-shuffle-button-renderer')
-    ?? document.querySelector('yt-button-shape[aria-label*="Shuffle"]');
-
-  if (shuffleBtn) {
-    shuffleBtn.insertAdjacentElement('afterend', container);
+  if (shuffleAnchor) {
+    shuffleAnchor.insertAdjacentElement('afterend', container);
   } else {
-    const selectors = [
-      'ytd-playlist-header-renderer #button-sheet',
-      'ytd-playlist-header-renderer #buttons',
-      'ytd-playlist-header-renderer .metadata-buttons-wrapper',
-      'ytd-playlist-header-renderer yt-button-shape',
-    ];
-    let target: Element | null = null;
-    for (const sel of selectors) {
-      target = document.querySelector(sel);
-      if (target) break;
-    }
-    if (target) {
-      target.appendChild(container);
-    } else {
-      Object.assign(container.style, {
-        position: 'fixed',
-        bottom: '24px',
-        right: '100px',
-        zIndex: '9998',
-      });
-      document.body.appendChild(container);
-    }
+    // Fallback: append to the buttons container
+    const fallback =
+      document.querySelector('ytd-playlist-panel-renderer #top-level-buttons-computed') ??
+      document.querySelector('ytd-playlist-header-renderer #button-sheet') ??
+      document.querySelector('ytd-playlist-header-renderer #buttons');
+
+    if (!fallback) return; // caller will retry
+    fallback.appendChild(container);
   }
+
   playlistRoot = createRoot(container);
   playlistRoot.render(<ArchiveButton getUrl={getPlaylistUrl} playlist={true} />);
   playlistInjected = true;
@@ -244,13 +241,12 @@ function onNavigate() {
   if (videoTimerId !== null) { clearTimeout(videoTimerId); videoTimerId = null; }
   if (playlistTimerId !== null) { clearTimeout(playlistTimerId); playlistTimerId = null; }
 
-  // Stop observers only when fully leaving Shorts
   if (wasShorts && !isNowShorts) stopShortsObservers();
 
   removeVideoButton();
   removePlaylistButton();
   if (isWatchPage()) videoTimerId = setTimeout(() => tryInjectVideo(10), 500);
-  if (isPlaylistPage()) playlistTimerId = setTimeout(() => tryInjectPlaylist(10), 500);
+  if (isPlaylistContext()) playlistTimerId = setTimeout(() => tryInjectPlaylist(10), 500);
 }
 
 function tryInjectVideo(attempts: number) {
@@ -279,4 +275,4 @@ history.replaceState = (...args) => { _replaceState(...args); onNavigate(); };
 window.addEventListener('popstate', onNavigate);
 
 if (isWatchPage()) tryInjectVideo(15);
-if (isPlaylistPage()) tryInjectPlaylist(15);
+if (isPlaylistContext()) tryInjectPlaylist(15);

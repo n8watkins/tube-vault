@@ -50,7 +50,7 @@ function App() {
       setHelper(chrome.runtime.lastError || !response?.ok ? 'error' : 'ok');
     });
 
-    chrome.storage.sync.get({ outputRoot: DEFAULT_OUTPUT_ROOT }, (s) => {
+    chrome.storage.local.get({ outputRoot: DEFAULT_OUTPUT_ROOT }, (s) => {
       setOutputRoot(s.outputRoot || DEFAULT_OUTPUT_ROOT);
     });
   }, []);

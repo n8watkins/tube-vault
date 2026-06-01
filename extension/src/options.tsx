@@ -9,7 +9,7 @@ function App() {
   const [status, setStatus] = useState<'idle' | 'saved'>('idle');
 
   useEffect(() => {
-    chrome.storage.sync.get(
+    chrome.storage.local.get(
       { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: true },
       (s) => {
         setOutputRoot(s.outputRoot);
@@ -20,7 +20,7 @@ function App() {
 
   function save() {
     const root = outputRoot.trim() || DEFAULT_OUTPUT_ROOT;
-    chrome.storage.sync.set({ outputRoot: root, autoOpenFolder: autoOpen }, () => {
+    chrome.storage.local.set({ outputRoot: root, autoOpenFolder: autoOpen }, () => {
       setOutputRoot(root);
       setStatus('saved');
       setTimeout(() => setStatus('idle'), 2000);

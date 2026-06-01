@@ -283,23 +283,43 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
 
 function showToast(msg: string, isError = false): void {
   const toast = document.createElement('div');
-  toast.textContent = msg;
+
+  const dot = document.createElement('span');
+  Object.assign(dot.style, {
+    width: '9px', height: '9px', borderRadius: '50%', flexShrink: '0',
+    background: isError ? '#ff5252' : '#4caf50',
+    boxShadow: `0 0 10px ${isError ? '#ff5252' : '#4caf50'}`,
+  });
+  const text = document.createElement('span');
+  text.textContent = msg;
+  toast.append(dot, text);
+
   Object.assign(toast.style, {
     position: 'fixed',
-    bottom: '80px',
-    right: '24px',
-    background: isError ? '#b71c1c' : '#2e7d32',
+    bottom: '28px',
+    right: '28px',
+    maxWidth: '380px',
+    display: 'flex',
+    alignItems: 'center',
+    gap: '12px',
+    background: '#1c1c1c',
+    border: `1px solid ${isError ? 'rgba(255,82,82,0.5)' : 'rgba(76,175,80,0.45)'}`,
     color: '#fff',
-    padding: '10px 18px',
-    borderRadius: '8px',
-    fontSize: '13px',
-    zIndex: '99999',
-    boxShadow: '0 2px 12px rgba(0,0,0,0.4)',
-    transition: 'opacity 0.3s',
+    padding: '16px 20px',
+    borderRadius: '14px',
+    fontSize: '15px',
+    fontWeight: '500',
+    lineHeight: '1.4',
+    fontFamily: 'Roboto, system-ui, Arial, sans-serif',
+    zIndex: '2147483647',
+    boxShadow: '0 8px 32px rgba(0,0,0,0.6)',
+    transition: 'opacity 0.3s, transform 0.3s',
+    transform: 'translateY(0)',
   });
   document.body.appendChild(toast);
   setTimeout(() => {
     toast.style.opacity = '0';
+    toast.style.transform = 'translateY(8px)';
     setTimeout(() => toast.remove(), 350);
-  }, 4000);
+  }, 4500);
 }

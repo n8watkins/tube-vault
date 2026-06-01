@@ -13,19 +13,6 @@ interface ChannelControls {
   onCount: (n: number) => void;
 }
 
-const CHANNEL_MODES: { key: ChannelMode; label: string }[] = [
-  { key: 'popular_alltime', label: 'Most popular · all-time' },
-  { key: 'popular_recent', label: `Most popular · recent ${RECENT_POOL}` },
-  { key: 'latest', label: 'Latest uploads' },
-  { key: 'all', label: 'Everything' },
-];
-
-// Rough: ~0.25s per video to fetch view counts (parallelized).
-function estimateRankSecs(videoCount: number): string {
-  const secs = Math.max(5, Math.round((videoCount * 0.25) / 5) * 5);
-  return secs < 90 ? `${secs}s` : `${Math.round(secs / 60)} min`;
-}
-
 interface Props {
   menuRef: React.RefObject<HTMLDivElement>;
   anchorRect: DOMRect;
@@ -37,179 +24,143 @@ interface Props {
   onArchive: () => void;
 }
 
+type TopLevel = 'popular' | 'latest' | 'all';
+
 export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, playlist, channel, onArchive }: Props) {
   const noneSelected = !state.video && !state.audio && !state.metadata && !state.thumbnail;
 
-  const bundleAll = () =>
-    onChange({ video: true, audio: true, metadata: true, thumbnail: true });
+  const bundleAll = () => onChange({ video: true, audio: true, metadata: true, thumbnail: true });
 
   const posStyle = dropUp
-    ? { bottom: window.innerHeight - anchorRect.top + 6, left: anchorRect.left }
-    : { top: anchorRect.bottom + 6, left: anchorRect.left };
+    ? { bottom: window.innerHeight - anchorRect.top + 8, left: anchorRect.left }
+    : { top: anchorRect.bottom + 8, left: anchorRect.left };
 
   const headerText = channel ? 'Download Channel' : playlist ? 'Download Playlist' : 'Download Options';
+
+  // ── Channel mode is stored as one of four values; the UI presents it as a
+  //    top-level choice plus a Popular sub-choice. ──────────────────────────────
+  const topLevel: TopLevel =
+    !channel ? 'latest'
+      : channel.mode === 'latest' ? 'latest'
+      : channel.mode === 'all' ? 'all'
+      : 'popular';
+  const popularSub: 'alltime' | 'recent' = channel?.mode === 'popular_alltime' ? 'alltime' : 'recent';
+  const popularActive = channel?.sortState === 'popular';
+
+  const pickTop = (t: TopLevel) => {
+    if (!channel) return;
+    if (t === 'latest') channel.onMode('latest');
+    else if (t === 'all') channel.onMode('all');
+    else channel.onMode(popularActive ? 'popular_alltime' : 'popular_recent');
+  };
+  const pickSub = (s: 'alltime' | 'recent') => {
+    if (!channel) return;
+    if (s === 'alltime') { if (popularActive) channel.onMode('popular_alltime'); }
+    else channel.onMode('popular_recent');
+  };
+
   const archiveLabel = channel
-    ? (channel.mode === 'all' ? 'Download All'
-        : channel.mode === 'latest' ? `Download Latest ${channel.count}`
-        : `Download Top ${channel.count}`)
+    ? (topLevel === 'all' ? 'Download Everything' : `Download Top ${channel.count}`)
     : playlist ? 'Download Playlist' : 'Download';
 
   const content = (
-    <div
-      ref={menuRef}
-      style={{ ...panel, ...posStyle }}
-      onClick={(e) => e.stopPropagation()}
-    >
+    <div ref={menuRef} style={{ ...panel, ...posStyle }} onClick={(e) => e.stopPropagation()}>
       <div style={headerStyle}>{headerText}</div>
 
       {channel && (
         <>
-          {/* Mode: radio list of the four ways to pick channel videos */}
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 1, marginBottom: 8 }}>
-            {CHANNEL_MODES.map(({ key, label }) => {
-              const active = channel.mode === key;
-              const popularActive = channel.sortState === 'popular';
-              return (
-                <div key={key}>
-                  <label style={radioRow} onClick={(e) => { e.stopPropagation(); channel.onMode(key); }}>
-                    <span style={{ ...radioDot, ...(active ? radioDotOn : {}) }} />
-                    <span style={{ flex: 1 }}>{label}</span>
-                    {key === 'popular_alltime' && popularActive && <span style={badgeOk}>✓ active</span>}
-                  </label>
-                  {key === 'popular_alltime' && active && !popularActive && (
-                    <div style={hintSub}>
-                      ⤷ Open the channel’s Videos tab and click “Popular” for all-time.
-                      Otherwise we’ll grab the recent-{RECENT_POOL} most-viewed.
-                    </div>
-                  )}
-                  {key === 'popular_recent' && active && (
-                    <div style={hintQuiet}>
-                      Ranks the {RECENT_POOL} newest uploads by views (~{estimateRankSecs(RECENT_POOL)}).
-                    </div>
-                  )}
-                </div>
-              );
-            })}
+          {/* Top-level: Most Popular / Latest / Everything */}
+          <div style={pillRow}>
+            {([['popular', 'Most Popular'], ['latest', 'Latest'], ['all', 'Everything']] as [TopLevel, string][]).map(([k, lbl]) => (
+              <button key={k} onClick={(e) => { e.stopPropagation(); pickTop(k); }}
+                style={{ ...pill, ...(topLevel === k ? pillOn : {}) }}>
+                {lbl}
+              </button>
+            ))}
           </div>
 
-          {/* Count — irrelevant for "all" */}
-          <div style={{ ...optRow, opacity: channel.mode === 'all' ? 0.35 : 1 }}>
-            <span style={{ fontSize: 12, color: '#ccc' }}>How many</span>
-            <select
-              disabled={channel.mode === 'all'}
-              value={channel.count}
-              onChange={(e) => channel.onCount(Number(e.target.value))}
-              style={selStyle(channel.mode !== 'all')}
-              onClick={(e) => e.stopPropagation()}
-            >
-              {channel.counts.map((n) => <option key={n} value={n}>{n}</option>)}
-            </select>
-          </div>
+          {/* Popular sub-choice only appears under Most Popular */}
+          {topLevel === 'popular' && (
+            <>
+              <div style={subPillRow}>
+                <button
+                  onClick={(e) => { e.stopPropagation(); pickSub('alltime'); }}
+                  disabled={!popularActive}
+                  style={{ ...subPill, ...(popularSub === 'alltime' && popularActive ? subPillOn : {}), ...(!popularActive ? subPillDisabled : {}) }}
+                >
+                  All-time{popularActive ? ' ✓' : ''}
+                </button>
+                <button
+                  onClick={(e) => { e.stopPropagation(); pickSub('recent'); }}
+                  style={{ ...subPill, ...(popularSub === 'recent' ? subPillOn : {}) }}
+                >
+                  Recent {RECENT_POOL}
+                </button>
+              </div>
+              {!popularActive && (
+                <div style={hintSub}>
+                  Sort the channel’s <b>Videos</b> tab by <b>“Popular”</b> to unlock all-time most-viewed.
+                </div>
+              )}
+              {popularSub === 'recent' && popularActive && (
+                <div style={hintQuiet}>Ranks the {RECENT_POOL} newest uploads by views.</div>
+              )}
+            </>
+          )}
+
+          {topLevel !== 'all' && (
+            <div style={countRow}>
+              <span style={countLabel}>How many</span>
+              <select value={channel.count} onChange={(e) => channel.onCount(Number(e.target.value))}
+                style={bigSelect} onClick={(e) => e.stopPropagation()}>
+                {channel.counts.map((n) => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+          )}
 
           <div style={divider} />
         </>
       )}
 
-      {/* Video */}
-      <div style={optRow}>
-        <label style={checkLabel} onClick={(e) => e.stopPropagation()}>
-          <input
-            type="checkbox"
-            checked={state.video}
-            onChange={(e) => onChange({ video: e.target.checked })}
-            style={cbStyle}
-          />
-          <FiVideo size={13} />
-          <span>Video</span>
-        </label>
-        <div style={selGroup}>
-          <select
-            disabled={!state.video}
-            value={state.videoQuality}
-            onChange={(e) => onChange({ videoQuality: e.target.value as VideoQuality })}
-            style={selStyle(state.video)}
-            onClick={(e) => e.stopPropagation()}
-          >
+      {/* Component toggles */}
+      <Card on={state.video} onToggle={() => onChange({ video: !state.video })} icon={<FiVideo size={17} />} label="Video">
+        <div style={selGroup} onClick={(e) => e.stopPropagation()}>
+          <select disabled={!state.video} value={state.videoQuality}
+            onChange={(e) => onChange({ videoQuality: e.target.value as VideoQuality })} style={inlineSelect(state.video)}>
             <option value="best">Best</option>
             <option value="1080">1080p</option>
             <option value="720">720p</option>
             <option value="480">480p</option>
             <option value="360">360p</option>
           </select>
-          <select
-            disabled={!state.video}
-            value={state.videoFormat}
-            onChange={(e) => onChange({ videoFormat: e.target.value as VideoFormat })}
-            style={selStyle(state.video)}
-            onClick={(e) => e.stopPropagation()}
-          >
+          <select disabled={!state.video} value={state.videoFormat}
+            onChange={(e) => onChange({ videoFormat: e.target.value as VideoFormat })} style={inlineSelect(state.video)}>
             <option value="mp4">MP4</option>
             <option value="webm">WebM</option>
             <option value="mkv">MKV</option>
           </select>
         </div>
-      </div>
+      </Card>
 
-      {/* Audio */}
-      <div style={optRow}>
-        <label style={checkLabel} onClick={(e) => e.stopPropagation()}>
-          <input
-            type="checkbox"
-            checked={state.audio}
-            onChange={(e) => onChange({ audio: e.target.checked })}
-            style={cbStyle}
-          />
-          <FiHeadphones size={13} />
-          <span>Audio</span>
-        </label>
-        <div style={selGroup}>
-          <select
-            disabled={!state.audio}
-            value={state.audioFormat}
-            onChange={(e) => onChange({ audioFormat: e.target.value as AudioFormat })}
-            style={selStyle(state.audio)}
-            onClick={(e) => e.stopPropagation()}
-          >
+      <Card on={state.audio} onToggle={() => onChange({ audio: !state.audio })} icon={<FiHeadphones size={17} />} label="Audio">
+        <div style={selGroup} onClick={(e) => e.stopPropagation()}>
+          <select disabled={!state.audio} value={state.audioFormat}
+            onChange={(e) => onChange({ audioFormat: e.target.value as AudioFormat })} style={inlineSelect(state.audio)}>
             <option value="m4a">M4A</option>
             <option value="mp3">MP3</option>
             <option value="wav">WAV</option>
             <option value="opus">Opus</option>
           </select>
         </div>
-      </div>
+      </Card>
 
-      <div style={divider} />
-
-      <div style={simpleRow}>
-        <label style={checkLabel} onClick={(e) => e.stopPropagation()}>
-          <input
-            type="checkbox"
-            checked={state.metadata}
-            onChange={(e) => onChange({ metadata: e.target.checked })}
-            style={cbStyle}
-          />
-          <FiFileText size={13} />
-          <span>Metadata</span>
-        </label>
-      </div>
-
-      <div style={simpleRow}>
-        <label style={checkLabel} onClick={(e) => e.stopPropagation()}>
-          <input
-            type="checkbox"
-            checked={state.thumbnail}
-            onChange={(e) => onChange({ thumbnail: e.target.checked })}
-            style={cbStyle}
-          />
-          <FiImage size={13} />
-          <span>Thumbnail</span>
-        </label>
-      </div>
+      <Card on={state.metadata} onToggle={() => onChange({ metadata: !state.metadata })} icon={<FiFileText size={17} />} label="Metadata" />
+      <Card on={state.thumbnail} onToggle={() => onChange({ thumbnail: !state.thumbnail })} icon={<FiImage size={17} />} label="Thumbnail" />
 
       <div style={divider} />
 
       <button onClick={(e) => { e.stopPropagation(); bundleAll(); }} style={bundleBtn}>
-        <FiPackage size={13} style={{ marginRight: 6 }} />
+        <FiPackage size={15} style={{ marginRight: 7 }} />
         Bundle All
       </button>
 
@@ -225,145 +176,177 @@ export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, play
   return createPortal(content, document.body);
 }
 
+// ── Selectable component card (replaces the old checkbox row) ──────────────────
+function Card({ on, onToggle, icon, label, children }: {
+  on: boolean; onToggle: () => void; icon: React.ReactNode; label: string; children?: React.ReactNode;
+}) {
+  return (
+    <div style={{ ...card, ...(on ? cardOn : {}) }} onClick={(e) => { e.stopPropagation(); onToggle(); }}>
+      <span style={{ ...iconWrap, color: on ? '#ff5252' : '#777' }}>{icon}</span>
+      <span style={{ flex: 1, fontSize: 14.5, fontWeight: 600, color: on ? '#fff' : '#aaa' }}>{label}</span>
+      {children}
+    </div>
+  );
+}
+
 // ── Styles ────────────────────────────────────────────────────────────────────
 
 const panel: React.CSSProperties = {
   position: 'fixed',
-  marginTop: 0,
-  background: '#212121',
-  borderRadius: 10,
-  boxShadow: '0 4px 24px rgba(0,0,0,0.6)',
-  padding: '12px 14px 10px',
+  background: '#1c1c1c',
+  borderRadius: 14,
+  boxShadow: '0 8px 32px rgba(0,0,0,0.7)',
+  border: '1px solid #2e2e2e',
+  padding: '14px 16px 12px',
   zIndex: 2147483647,
-  minWidth: 310,
+  minWidth: 340,
   color: '#fff',
-  fontFamily: 'Roboto, Arial, sans-serif',
-  fontSize: 13,
+  fontFamily: 'Roboto, system-ui, Arial, sans-serif',
+  fontSize: 14,
 };
 
 const headerStyle: React.CSSProperties = {
-  fontSize: 11,
+  fontSize: 12,
   fontWeight: 700,
-  color: '#aaa',
+  color: '#888',
   textTransform: 'uppercase',
-  letterSpacing: '0.06em',
-  marginBottom: 10,
+  letterSpacing: '0.08em',
+  marginBottom: 12,
 };
 
-const radioRow: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  gap: 9,
+const pillRow: React.CSSProperties = { display: 'flex', gap: 6, marginBottom: 8 };
+
+const pill: React.CSSProperties = {
+  flex: 1,
+  padding: '10px 0',
+  background: '#262626',
+  border: '1px solid #333',
+  borderRadius: 22,
+  color: '#bbb',
+  fontSize: 13.5,
+  fontWeight: 600,
   cursor: 'pointer',
-  userSelect: 'none',
-  padding: '5px 2px',
+  fontFamily: 'inherit',
+  transition: 'all 0.15s',
 };
 
-const radioDot: React.CSSProperties = {
-  width: 13,
-  height: 13,
-  borderRadius: '50%',
-  border: '2px solid #777',
-  flexShrink: 0,
-  boxSizing: 'border-box',
-};
-
-const radioDotOn: React.CSSProperties = {
+const pillOn: React.CSSProperties = {
+  background: '#cc0000',
   borderColor: '#cc0000',
-  background: 'radial-gradient(circle, #cc0000 0 4px, transparent 5px)',
+  color: '#fff',
 };
 
-const badgeOk: React.CSSProperties = {
-  fontSize: 10,
-  fontWeight: 700,
-  color: '#4caf50',
-  background: 'rgba(76,175,80,0.12)',
-  borderRadius: 8,
-  padding: '1px 6px',
+const subPillRow: React.CSSProperties = { display: 'flex', gap: 6, marginBottom: 6 };
+
+const subPill: React.CSSProperties = {
+  flex: 1,
+  padding: '7px 0',
+  background: '#222',
+  border: '1px solid #333',
+  borderRadius: 18,
+  color: '#bbb',
+  fontSize: 12.5,
+  fontWeight: 600,
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+};
+
+const subPillOn: React.CSSProperties = {
+  background: 'rgba(204,0,0,0.18)',
+  borderColor: '#cc0000',
+  color: '#fff',
+};
+
+const subPillDisabled: React.CSSProperties = {
+  opacity: 0.4,
+  cursor: 'not-allowed',
 };
 
 const hintSub: React.CSSProperties = {
-  margin: '0 0 4px 22px',
-  fontSize: 11,
-  lineHeight: 1.4,
+  margin: '2px 2px 4px',
+  fontSize: 12,
+  lineHeight: 1.45,
   color: '#ffca28',
 };
 
 const hintQuiet: React.CSSProperties = {
-  margin: '0 0 4px 22px',
-  fontSize: 11,
-  lineHeight: 1.4,
+  margin: '2px 2px 4px',
+  fontSize: 12,
+  lineHeight: 1.45,
   color: '#888',
 };
 
-const optRow: React.CSSProperties = {
+const countRow: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'space-between',
-  height: 30,
-  margin: '3px 0',
+  marginTop: 8,
 };
 
-const simpleRow: React.CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  height: 28,
-  margin: '3px 0',
+const countLabel: React.CSSProperties = { fontSize: 14, color: '#ccc', fontWeight: 500 };
+
+const bigSelect: React.CSSProperties = {
+  background: '#2b2b2b',
+  border: '1px solid #444',
+  borderRadius: 8,
+  color: '#fff',
+  fontSize: 14,
+  fontWeight: 600,
+  padding: '6px 10px',
+  cursor: 'pointer',
+  fontFamily: 'inherit',
 };
 
-const checkLabel: React.CSSProperties = {
+const divider: React.CSSProperties = { height: 1, background: '#2e2e2e', margin: '12px 0' };
+
+const card: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
-  gap: 6,
+  gap: 11,
+  padding: '11px 12px',
+  marginBottom: 7,
+  background: '#232323',
+  border: '1px solid transparent',
+  borderRadius: 10,
   cursor: 'pointer',
   userSelect: 'none',
-  minWidth: 100,
+  transition: 'all 0.15s',
 };
 
-const cbStyle: React.CSSProperties = {
-  width: 14,
-  height: 14,
-  cursor: 'pointer',
-  accentColor: '#cc0000',
-  flexShrink: 0,
-  margin: 0,
+const cardOn: React.CSSProperties = {
+  background: 'rgba(204,0,0,0.12)',
+  border: '1px solid rgba(204,0,0,0.6)',
 };
 
-const selGroup: React.CSSProperties = {
-  display: 'flex',
-  gap: 4,
-};
+const iconWrap: React.CSSProperties = { display: 'flex', alignItems: 'center', flexShrink: 0 };
 
-const selStyle = (enabled: boolean): React.CSSProperties => ({
-  background: '#383838',
-  border: '1px solid #555',
-  borderRadius: 4,
+const selGroup: React.CSSProperties = { display: 'flex', gap: 6 };
+
+const inlineSelect = (enabled: boolean): React.CSSProperties => ({
+  background: '#2b2b2b',
+  border: '1px solid #4a4a4a',
+  borderRadius: 7,
   color: '#fff',
-  fontSize: 11,
-  padding: '2px 4px',
+  fontSize: 12.5,
+  fontWeight: 500,
+  padding: '4px 7px',
   cursor: enabled ? 'pointer' : 'not-allowed',
   opacity: enabled ? 1 : 0.35,
   transition: 'opacity 0.15s',
 });
-
-const divider: React.CSSProperties = {
-  height: 1,
-  background: '#333',
-  margin: '8px 0',
-};
 
 const bundleBtn: React.CSSProperties = {
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
   width: '100%',
-  padding: '7px',
-  marginBottom: 6,
-  background: '#383838',
-  border: '1px solid #555',
-  borderRadius: 6,
+  padding: '9px',
+  marginBottom: 7,
+  background: '#2b2b2b',
+  border: '1px solid #444',
+  borderRadius: 9,
   color: '#fff',
-  fontSize: 12,
+  fontSize: 13.5,
   fontWeight: 600,
   cursor: 'pointer',
   fontFamily: 'inherit',
@@ -372,18 +355,15 @@ const bundleBtn: React.CSSProperties = {
 const archiveBtnBase: React.CSSProperties = {
   display: 'block',
   width: '100%',
-  padding: '8px',
+  padding: '12px',
   background: '#cc0000',
   border: 'none',
-  borderRadius: 6,
+  borderRadius: 10,
   color: '#fff',
-  fontSize: 13,
-  fontWeight: 600,
+  fontSize: 15,
+  fontWeight: 700,
   cursor: 'pointer',
   fontFamily: 'inherit',
 };
 
-const archiveBtnDisabled: React.CSSProperties = {
-  opacity: 0.4,
-  cursor: 'not-allowed',
-};
+const archiveBtnDisabled: React.CSSProperties = { opacity: 0.4, cursor: 'not-allowed' };

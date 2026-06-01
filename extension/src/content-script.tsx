@@ -268,6 +268,9 @@ function getSortState(): 'popular' | 'other' | null {
     'chip-bar-view-model button[role="tab"], chip-view-model button[role="tab"], ' +
     '#chips button[role="tab"], yt-chip-cloud-chip-renderer'
   );
+  // Only the sort chips (Latest/Popular/Oldest) count — ignore selected filter
+  // chips like "Members only" / "Public".
+  let sawOtherSort = false;
   for (const c of Array.from(chips)) {
     const selected =
       c.getAttribute('aria-selected') === 'true' ||
@@ -277,8 +280,9 @@ function getSortState(): 'popular' | 'other' | null {
     if (!selected) continue;
     const label = (c.getAttribute('aria-label') ?? c.textContent ?? '').trim().toLowerCase();
     if (label.includes('popular')) return 'popular';
-    if (label) return 'other';
+    if (/\b(latest|newest|oldest)\b/.test(label)) sawOtherSort = true;
   }
+  if (sawOtherSort) return 'other';
   // Older dropdown layout: the trigger's visible text is the current sort.
   const trig = document.querySelector('yt-sort-filter-sub-menu-renderer, ytd-channel-sub-menu-renderer');
   if (trig) {

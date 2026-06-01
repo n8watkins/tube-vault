@@ -364,12 +364,13 @@ function injectChannelButton(): void {
 
   const container = makeContainer(CHANNEL_BTN_ID);
 
-  // New layout (yt-page-header-view-model): drop into the flexible actions row,
-  // alongside Subscribe. Fall back to the old subscribe-button layout.
+  // New layout (yt-page-header-view-model): the action buttons live inside
+  // yt-flexible-actions-view-model, which collapses overflow into a "⋯" menu —
+  // so insert as the FIRST child to stay visible. Fall back to the old layout.
   const flexActions = document.querySelector('yt-flexible-actions-view-model');
   if (flexActions) {
-    container.style.marginLeft = '8px';
-    flexActions.appendChild(container);
+    container.style.marginRight = '8px';
+    flexActions.insertBefore(container, flexActions.firstChild);
   } else {
     const subscribe =
       document.querySelector('#subscribe-button ytd-subscribe-button-renderer') ??

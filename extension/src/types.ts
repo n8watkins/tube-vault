@@ -23,7 +23,10 @@ export const defaultMenuState: MenuState = {
 };
 
 // ── Channel button ──────────────────────────────────────────────────────────
-export type ChannelMode = 'popular' | 'latest' | 'all';
+export type ChannelMode = 'popular_alltime' | 'popular_recent' | 'latest' | 'all';
+
+// How many recent uploads "popular · recent" ranks (must match the helper).
+export const RECENT_POOL = 100;
 
 // Editable in the options page; presets for the channel count selector.
 export const DEFAULT_CHANNEL_COUNTS = [1, 5, 10, 30];

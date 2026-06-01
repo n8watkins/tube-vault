@@ -1,25 +1,29 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { FiVideo, FiHeadphones, FiFileText, FiImage, FiPackage } from 'react-icons/fi';
-import { MenuState, VideoQuality, VideoFormat, AudioFormat, ChannelMode } from '../types';
+import { MenuState, VideoQuality, VideoFormat, AudioFormat, ChannelMode, RECENT_POOL } from '../types';
 
 interface ChannelControls {
   mode: ChannelMode;
   count: number;
   counts: number[];
   videoCount: number | null;
+  sortState: 'popular' | 'other' | null;
   onMode: (m: ChannelMode) => void;
   onCount: (n: number) => void;
 }
 
-// Above this many uploads, ranking by views (popular) starts to take a while.
-const POPULAR_WARN_THRESHOLD = 150;
+const CHANNEL_MODES: { key: ChannelMode; label: string }[] = [
+  { key: 'popular_alltime', label: 'Most popular · all-time' },
+  { key: 'popular_recent', label: `Most popular · recent ${RECENT_POOL}` },
+  { key: 'latest', label: 'Latest uploads' },
+  { key: 'all', label: 'Everything' },
+];
 
 // Rough: ~0.25s per video to fetch view counts (parallelized).
-function estimateRankMinutes(videoCount: number): string {
-  const secs = videoCount * 0.25;
-  if (secs < 90) return `${Math.max(5, Math.round(secs / 5) * 5)}s`;
-  return `${Math.round(secs / 60)} min`;
+function estimateRankSecs(videoCount: number): string {
+  const secs = Math.max(5, Math.round((videoCount * 0.25) / 5) * 5);
+  return secs < 90 ? `${secs}s` : `${Math.round(secs / 60)} min`;
 }
 
 interface Props {
@@ -45,7 +49,9 @@ export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, play
 
   const headerText = channel ? 'Download Channel' : playlist ? 'Download Playlist' : 'Download Options';
   const archiveLabel = channel
-    ? (channel.mode === 'all' ? 'Download All' : channel.mode === 'latest' ? `Download Latest ${channel.count}` : `Download Top ${channel.count}`)
+    ? (channel.mode === 'all' ? 'Download All'
+        : channel.mode === 'latest' ? `Download Latest ${channel.count}`
+        : `Download Top ${channel.count}`)
     : playlist ? 'Download Playlist' : 'Download';
 
   const content = (
@@ -58,24 +64,37 @@ export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, play
 
       {channel && (
         <>
-          {/* Mode: Popular / Latest / All */}
-          <div style={segGroup}>
-            {(['popular', 'latest', 'all'] as ChannelMode[]).map((m) => (
-              <button
-                key={m}
-                onClick={(e) => { e.stopPropagation(); channel.onMode(m); }}
-                style={{ ...segBtn, ...(channel.mode === m ? segBtnActive : {}) }}
-              >
-                {m === 'popular' ? 'Popular' : m === 'latest' ? 'Latest' : 'All'}
-              </button>
-            ))}
+          {/* Mode: radio list of the four ways to pick channel videos */}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 1, marginBottom: 8 }}>
+            {CHANNEL_MODES.map(({ key, label }) => {
+              const active = channel.mode === key;
+              const popularActive = channel.sortState === 'popular';
+              return (
+                <div key={key}>
+                  <label style={radioRow} onClick={(e) => { e.stopPropagation(); channel.onMode(key); }}>
+                    <span style={{ ...radioDot, ...(active ? radioDotOn : {}) }} />
+                    <span style={{ flex: 1 }}>{label}</span>
+                    {key === 'popular_alltime' && popularActive && <span style={badgeOk}>✓ active</span>}
+                  </label>
+                  {key === 'popular_alltime' && active && !popularActive && (
+                    <div style={hintSub}>
+                      ⤷ Open the channel’s Videos tab and click “Popular” for all-time.
+                      Otherwise we’ll grab the recent-{RECENT_POOL} most-viewed.
+                    </div>
+                  )}
+                  {key === 'popular_recent' && active && (
+                    <div style={hintQuiet}>
+                      Ranks the {RECENT_POOL} newest uploads by views (~{estimateRankSecs(RECENT_POOL)}).
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
 
           {/* Count — irrelevant for "all" */}
           <div style={{ ...optRow, opacity: channel.mode === 'all' ? 0.35 : 1 }}>
-            <span style={{ fontSize: 12, color: '#ccc' }}>
-              {channel.mode === 'latest' ? 'How many (newest)' : 'How many (most viewed)'}
-            </span>
+            <span style={{ fontSize: 12, color: '#ccc' }}>How many</span>
             <select
               disabled={channel.mode === 'all'}
               value={channel.count}
@@ -86,14 +105,6 @@ export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, play
               {channel.counts.map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
           </div>
-
-          {channel.mode === 'popular' && channel.videoCount != null && channel.videoCount > POPULAR_WARN_THRESHOLD && (
-            <div style={warnBox}>
-              ⚠ This channel has {channel.videoCount.toLocaleString()} videos. Ranking by views
-              checks every upload, so it may take ~{estimateRankMinutes(channel.videoCount)} before
-              downloads start.
-            </div>
-          )}
 
           <div style={divider} />
         </>
@@ -239,40 +250,50 @@ const headerStyle: React.CSSProperties = {
   marginBottom: 10,
 };
 
-const segGroup: React.CSSProperties = {
+const radioRow: React.CSSProperties = {
   display: 'flex',
-  gap: 4,
-  marginBottom: 10,
-};
-
-const segBtn: React.CSSProperties = {
-  flex: 1,
-  padding: '6px 0',
-  background: '#383838',
-  border: '1px solid #555',
-  borderRadius: 6,
-  color: '#ccc',
-  fontSize: 12,
-  fontWeight: 600,
+  alignItems: 'center',
+  gap: 9,
   cursor: 'pointer',
-  fontFamily: 'inherit',
+  userSelect: 'none',
+  padding: '5px 2px',
 };
 
-const segBtnActive: React.CSSProperties = {
-  background: '#cc0000',
+const radioDot: React.CSSProperties = {
+  width: 13,
+  height: 13,
+  borderRadius: '50%',
+  border: '2px solid #777',
+  flexShrink: 0,
+  boxSizing: 'border-box',
+};
+
+const radioDotOn: React.CSSProperties = {
   borderColor: '#cc0000',
-  color: '#fff',
+  background: 'radial-gradient(circle, #cc0000 0 4px, transparent 5px)',
 };
 
-const warnBox: React.CSSProperties = {
-  background: 'rgba(255,193,7,0.12)',
-  border: '1px solid rgba(255,193,7,0.4)',
-  borderRadius: 6,
-  padding: '7px 9px',
-  marginTop: 8,
+const badgeOk: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 700,
+  color: '#4caf50',
+  background: 'rgba(76,175,80,0.12)',
+  borderRadius: 8,
+  padding: '1px 6px',
+};
+
+const hintSub: React.CSSProperties = {
+  margin: '0 0 4px 22px',
   fontSize: 11,
   lineHeight: 1.4,
   color: '#ffca28',
+};
+
+const hintQuiet: React.CSSProperties = {
+  margin: '0 0 4px 22px',
+  fontSize: 11,
+  lineHeight: 1.4,
+  color: '#888',
 };
 
 const optRow: React.CSSProperties = {

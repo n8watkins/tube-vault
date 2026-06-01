@@ -3,7 +3,7 @@ import { FiDownload } from 'react-icons/fi';
 import { ArchiveMenu } from './ArchiveMenu';
 import {
   MenuState, defaultMenuState, ChannelMode,
-  DEFAULT_CHANNEL_COUNTS, DEFAULT_CHANNEL_COUNT,
+  DEFAULT_CHANNEL_COUNTS, DEFAULT_CHANNEL_COUNT, RECENT_POOL,
 } from '../types';
 
 type BtnState = 'idle' | 'loading' | 'done' | 'error';
@@ -13,6 +13,10 @@ interface ChannelConfig {
   channelVideosUrl: () => string;
   // Read the channel's total upload count from the page (for the disclaimer)
   getVideoCount: () => number | null;
+  // Read (don't drive) the active sort — 'popular' enables all-time mode
+  getSortState: () => 'popular' | 'other' | null;
+  // Top N watch URLs in the order the grid currently shows them
+  readShownUrls: (count: number) => string[];
 }
 
 function formatBytes(b: number | null | undefined): string {
@@ -50,10 +54,12 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
 
   // Channel-only state (mode + count, with editable presets from options)
-  const [chanMode, setChanMode] = useState<ChannelMode>('popular');
+  const [chanMode, setChanMode] = useState<ChannelMode>('popular_recent');
   const [chanCount, setChanCount] = useState<number>(DEFAULT_CHANNEL_COUNT);
   const [chanCounts, setChanCounts] = useState<number[]>(DEFAULT_CHANNEL_COUNTS);
   const [chanVideoCount, setChanVideoCount] = useState<number | null>(null);
+  const [chanSortState, setChanSortState] = useState<'popular' | 'other' | null>(null);
+  const defaultedMode = useRef(false);
 
   useEffect(() => {
     if (!channel) return;
@@ -94,7 +100,20 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
     if (btnState === 'loading') return;
     if (!open && btnRef.current) {
       setAnchorRect(btnRef.current.getBoundingClientRect());
-      if (channel) setChanVideoCount(channel.getVideoCount());
+      if (channel) {
+        setChanVideoCount(channel.getVideoCount());
+        const ss = channel.getSortState();
+        setChanSortState(ss);
+        // First open: default to all-time if YouTube is already sorted by Popular,
+        // else recent. Later opens: keep the user's choice, but drop all-time if
+        // the Popular sort is no longer active.
+        if (!defaultedMode.current) {
+          defaultedMode.current = true;
+          setChanMode(ss === 'popular' ? 'popular_alltime' : 'popular_recent');
+        } else {
+          setChanMode((m) => (m === 'popular_alltime' && ss !== 'popular' ? 'popular_recent' : m));
+        }
+      }
     }
     setOpen(o => !o);
   }
@@ -141,48 +160,67 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
   }
 
   // Channel: ask the helper to plan (rank/list + size estimate), confirm with the
-  // user, then download. Keeps all the heavy lifting in the helper (no scraping).
+  // user, then download. All heavy lifting is in the helper (no scraping) — except
+  // all-time popular, where we read YouTube's own Popular-sorted page order.
   function runChannelFlow(components: Record<string, unknown>) {
     if (!channel) return;
-    showToast(chanMode === 'popular' ? 'Ranking channel by views — this can take a minute…' : 'Checking channel…');
 
-    chrome.runtime.sendMessage(
-      {
-        type: 'TUBE_VAULT_REQUEST',
-        payload: { action: 'channel_plan', urls: [channel.channelVideosUrl()], mode: chanMode, count: chanCount, components },
-      },
-      (resp) => {
-        if (chrome.runtime.lastError || !resp?.ok || !resp.plan) {
-          const err = chrome.runtime.lastError?.message ?? resp?.error ?? 'Unknown error';
-          setBtnState('error');
-          showToast(`Couldn't analyze channel: ${err}`, true);
-          setTimeout(() => setBtnState('idle'), 3000);
-          return;
-        }
+    // All-time needs YouTube's Popular sort active; otherwise fall back to recent.
+    let mode = chanMode;
+    if (mode === 'popular_alltime' && channel.getSortState() !== 'popular') {
+      mode = 'popular_recent';
+      setChanMode('popular_recent');
+      showToast('Not on YouTube’s Popular sort — using recent instead. Open the Videos tab and click “Popular” for all-time.', true);
+    }
 
-        const plan = resp.plan as { totalVideos: number | null; targets: string[]; estBytes: number | null; sampled: boolean };
-        const n = chanMode === 'all' ? (plan.totalVideos ?? '?') : (plan.targets.length || chanCount);
-        const what =
-          chanMode === 'all' ? 'ALL videos' :
-          chanMode === 'latest' ? `the latest ${n}` :
-          `the top ${n} most-viewed`;
-        const sizeNote = plan.estBytes ? `~${formatBytes(plan.estBytes)}${plan.sampled ? ' (estimated from a sample)' : ''}` : 'unknown';
-
-        const proceed = window.confirm(
-          `TubeVault — download ${what} from this channel?\n\n` +
-          `Videos: ${n}\n` +
-          `Projected size: ${sizeNote}`
-        );
-
-        if (!proceed) { setBtnState('idle'); return; }
-
-        if (chanMode === 'all') {
-          sendRequest({ action: 'custom', urls: [channel.channelVideosUrl()], expand: true, components });
-        } else {
-          sendRequest({ action: 'custom', urls: plan.targets, components });
-        }
+    let planPayload: Record<string, unknown>;
+    if (mode === 'popular_alltime') {
+      const urls = channel.readShownUrls(chanCount);
+      if (!urls.length) {
+        setBtnState('error');
+        showToast('Couldn’t read videos from this page', true);
+        setTimeout(() => setBtnState('idle'), 3000);
+        return;
       }
-    );
+      showToast('Reading YouTube’s Popular order…');
+      planPayload = { action: 'channel_plan', mode, count: chanCount, urls, components };
+    } else {
+      showToast(mode === 'popular_recent' ? 'Ranking recent uploads by views…' : 'Checking channel…');
+      planPayload = { action: 'channel_plan', mode, count: chanCount, urls: [channel.channelVideosUrl()], components };
+    }
+
+    chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: planPayload }, (resp) => {
+      if (chrome.runtime.lastError || !resp?.ok || !resp.plan) {
+        const err = chrome.runtime.lastError?.message ?? resp?.error ?? 'Unknown error';
+        setBtnState('error');
+        showToast(`Couldn't analyze channel: ${err}`, true);
+        setTimeout(() => setBtnState('idle'), 3000);
+        return;
+      }
+
+      const plan = resp.plan as { totalVideos: number | null; targets: string[]; estBytes: number | null; sampled: boolean };
+      const n = mode === 'all' ? (plan.totalVideos ?? '?') : (plan.targets.length || chanCount);
+      const what =
+        mode === 'all' ? 'ALL videos' :
+        mode === 'latest' ? `the latest ${n}` :
+        mode === 'popular_alltime' ? `the top ${n} most-viewed (all-time)` :
+        `the top ${n} most-viewed (recent ${RECENT_POOL})`;
+      const sizeNote = plan.estBytes ? `~${formatBytes(plan.estBytes)}${plan.sampled ? ' (estimated from a sample)' : ''}` : 'unknown';
+
+      const proceed = window.confirm(
+        `TubeVault — download ${what} from this channel?\n\n` +
+        `Videos: ${n}\n` +
+        `Projected size: ${sizeNote}`
+      );
+
+      if (!proceed) { setBtnState('idle'); return; }
+
+      if (mode === 'all') {
+        sendRequest({ action: 'custom', urls: [channel.channelVideosUrl()], expand: true, components });
+      } else {
+        sendRequest({ action: 'custom', urls: plan.targets, components });
+      }
+    });
   }
 
   return (
@@ -232,6 +270,7 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
             count: chanCount,
             counts: chanCounts,
             videoCount: chanVideoCount,
+            sortState: chanSortState,
             onMode: setChanMode,
             onCount: setChanCount,
           } : undefined}

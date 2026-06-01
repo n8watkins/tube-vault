@@ -259,6 +259,50 @@ function getChannelVideoCount(): number | null {
   return Math.round(num * mult);
 }
 
+// Read (don't drive) the current sort of the Videos tab. The selected chip /
+// dropdown label reflects the active order. 'popular' enables all-time mode.
+function getSortState(): 'popular' | 'other' | null {
+  for (const c of Array.from(document.querySelectorAll('yt-chip-cloud-chip-renderer'))) {
+    const selected =
+      c.getAttribute('aria-selected') === 'true' ||
+      c.classList.contains('iron-selected') ||
+      !!c.querySelector('[aria-selected="true"], .iron-selected');
+    if (selected) {
+      const t = (c.textContent ?? '').trim().toLowerCase();
+      if (t.includes('popular')) return 'popular';
+      if (t) return 'other';
+    }
+  }
+  // Dropdown layout: the trigger's visible text is the current sort.
+  const trig = document.querySelector('yt-sort-filter-sub-menu-renderer, ytd-channel-sub-menu-renderer');
+  if (trig) {
+    const t = (trig.textContent ?? '').toLowerCase();
+    if (t.includes('popular')) return 'popular';
+    if (t.includes('latest') || t.includes('newest') || t.includes('oldest')) return 'other';
+  }
+  return null;
+}
+
+// Top `count` watch URLs in the order the grid currently shows them.
+function readShownUrls(count: number): string[] {
+  const scope =
+    document.querySelector('ytd-rich-grid-renderer') ??
+    document.querySelector('#contents') ??
+    document.body;
+  const seen = new Set<string>();
+  const urls: string[] = [];
+  for (const a of Array.from(scope.querySelectorAll<HTMLAnchorElement>('a[href*="watch?v="]'))) {
+    let id: string | null = null;
+    try { id = new URL(a.href, location.origin).searchParams.get('v'); } catch { /* skip */ }
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      urls.push(`https://www.youtube.com/watch?v=${id}`);
+      if (urls.length >= count) break;
+    }
+  }
+  return urls;
+}
+
 // ── Channel injection ─────────────────────────────────────────────────────────
 
 function injectChannelButton(): void {
@@ -287,7 +331,11 @@ function injectChannelButton(): void {
 
   channelRoot = createRoot(container);
   channelRoot.render(
-    <ArchiveButton getUrl={() => location.href} playlist={false} channel={{ channelVideosUrl, getVideoCount: getChannelVideoCount }} />
+    <ArchiveButton
+      getUrl={() => location.href}
+      playlist={false}
+      channel={{ channelVideosUrl, getVideoCount: getChannelVideoCount, getSortState, readShownUrls }}
+    />
   );
   channelKey = channelBasePath();
 }

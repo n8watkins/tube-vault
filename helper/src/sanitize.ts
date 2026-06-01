@@ -30,3 +30,10 @@ export function wslToWindowsPath(p: string): string {
   if (!m) return p;
   return `${m[1].toUpperCase()}:${(m[2] ?? '').replace(/\//g, '\\')}`;
 }
+
+// C:\Users\... → /mnt/c/Users/...
+export function windowsToWslPath(p: string): string {
+  const m = p.match(/^([A-Za-z]):[\\\/](.*)/);
+  if (!m) return p;
+  return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}`;
+}

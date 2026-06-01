@@ -41,7 +41,9 @@ cd helper
 npm run build
 ```
 
-The helper runs in WSL — its dist files do not need to be copied to Windows.
+This compiles TypeScript and **syncs dist/*.js to the Windows Projects path**
+(`C:\Users\natha\Projects\Tools\tube-vault\helper\dist\`) where the native
+messaging host bat script loads it from. Always run this after any helper change.
 
 ## Key files
 

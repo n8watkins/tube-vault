@@ -1,6 +1,7 @@
 import { readMessages, writeMessage } from './protocol';
 import { handle, type DownloadRequest, type Action } from './downloader';
 import { isValidYouTubeUrl } from './sanitize';
+import { spawn } from 'child_process';
 
 const ALLOWED_ACTIONS: Action[] = [
   'custom',
@@ -14,6 +15,15 @@ const ALLOWED_ACTIONS: Action[] = [
 
 readMessages(async (raw) => {
   const req = raw as Record<string, unknown>;
+
+  if (req.action === 'open_folder') {
+    const windowsPath = req.windowsPath as string;
+    if (typeof windowsPath === 'string' && windowsPath) {
+      spawn('explorer.exe', [windowsPath], { detached: true, stdio: 'ignore' }).unref();
+    }
+    writeMessage({ ok: true, status: 'ok' });
+    return;
+  }
 
   if (req.action === 'diagnostics') {
     const res = await handle({ action: 'diagnostics', url: '' });

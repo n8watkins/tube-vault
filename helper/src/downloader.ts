@@ -1,9 +1,9 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
-import { wslToWindowsPath } from './sanitize';
+import { wslToWindowsPath, windowsToWslPath } from './sanitize';
 
-const DEFAULT_OUTPUT_ROOT = '/mnt/c/Users/natha/Downloads/YouTube Archive';
+const DEFAULT_OUTPUT_ROOT = '/mnt/c/Users/natha/Videos/Youtube Downloads';
 
 export type VideoQuality = 'best' | '1080' | '720' | '480' | '360';
 export type VideoFormat = 'mp4' | 'webm' | 'mkv';
@@ -82,7 +82,9 @@ function videoFormatFlag(quality: VideoQuality): string {
 }
 
 export async function handle(req: DownloadRequest): Promise<DownloadResult> {
-  const root = req.options?.outputRoot ?? DEFAULT_OUTPUT_ROOT;
+  const rawRoot = req.options?.outputRoot ?? DEFAULT_OUTPUT_ROOT;
+  // Accept Windows paths (C:\...) from extension storage; convert to WSL paths for yt-dlp
+  const root = /^[A-Za-z]:/.test(rawRoot) ? windowsToWslPath(rawRoot) : rawRoot;
   ensureDir(root);
 
   const isPlaylist = !!req.playlist;

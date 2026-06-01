@@ -2,7 +2,7 @@
   "name": "tube-vault-helper",
   "version": "0.1.0",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && cp dist/*.js /mnt/c/Users/natha/Projects/Tools/tube-vault/helper/dist/",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts"
   },

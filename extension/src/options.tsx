@@ -1,30 +1,58 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { DEFAULT_CHANNEL_COUNTS, DEFAULT_CHANNEL_COUNT } from './types';
 
 export const DEFAULT_OUTPUT_ROOT = 'C:\\Users\\natha\\Videos\\Youtube Downloads';
+
+// Parse "1, 5, 10, 30" → [1,5,10,30] (positive ints, deduped, ascending).
+function parseCounts(text: string): number[] {
+  const nums = text
+    .split(',')
+    .map((t) => parseInt(t.trim(), 10))
+    .filter((n) => Number.isFinite(n) && n > 0);
+  return [...new Set(nums)].sort((a, b) => a - b);
+}
 
 function App() {
   const [outputRoot, setOutputRoot] = useState('');
   const [autoOpen, setAutoOpen] = useState(true);
+  const [countsText, setCountsText] = useState(DEFAULT_CHANNEL_COUNTS.join(', '));
+  const [defaultCount, setDefaultCount] = useState(DEFAULT_CHANNEL_COUNT);
   const [status, setStatus] = useState<'idle' | 'saved'>('idle');
 
   useEffect(() => {
     chrome.storage.local.get(
-      { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: true },
+      {
+        outputRoot: DEFAULT_OUTPUT_ROOT,
+        autoOpenFolder: true,
+        channelCounts: DEFAULT_CHANNEL_COUNTS,
+        channelDefaultCount: DEFAULT_CHANNEL_COUNT,
+      },
       (s) => {
         setOutputRoot(s.outputRoot);
         setAutoOpen(s.autoOpenFolder);
+        setCountsText((s.channelCounts as number[]).join(', '));
+        setDefaultCount(s.channelDefaultCount);
       }
     );
   }, []);
 
+  const parsedCounts = parseCounts(countsText);
+
   function save() {
     const root = outputRoot.trim() || DEFAULT_OUTPUT_ROOT;
-    chrome.storage.local.set({ outputRoot: root, autoOpenFolder: autoOpen }, () => {
-      setOutputRoot(root);
-      setStatus('saved');
-      setTimeout(() => setStatus('idle'), 2000);
-    });
+    const counts = parsedCounts.length ? parsedCounts : DEFAULT_CHANNEL_COUNTS;
+    const def = counts.includes(defaultCount) ? defaultCount : counts[counts.length - 1];
+    chrome.storage.local.set(
+      { outputRoot: root, autoOpenFolder: autoOpen, channelCounts: counts, channelDefaultCount: def },
+      () => {
+        setOutputRoot(root);
+        setCountsText(counts.join(', '));
+        setDefaultCount(def);
+        setStatus('saved');
+        setTimeout(() => setStatus('idle'), 2000);
+      }
+    );
   }
 
   return (
@@ -68,6 +96,30 @@ function App() {
             />
             <span style={{ color: '#666' }}>Save receipt to Chrome downloads (always on)</span>
           </label>
+        </Section>
+
+        <div style={divider} />
+
+        <Section label="Channel Download Counts">
+          <p style={hint}>Preset amounts offered when downloading a channel's popular/latest videos.</p>
+          <input
+            style={input}
+            value={countsText}
+            onChange={(e) => setCountsText(e.target.value)}
+            placeholder="1, 5, 10, 30"
+            spellCheck={false}
+          />
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+            <span style={{ fontSize: 13, color: '#aaa' }}>Default:</span>
+            <select
+              value={parsedCounts.includes(defaultCount) ? defaultCount : ''}
+              onChange={(e) => setDefaultCount(Number(e.target.value))}
+              style={{ ...input, width: 'auto', padding: '6px 8px', fontFamily: 'inherit' }}
+            >
+              {parsedCounts.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+          <p style={muted}>Preview: {parsedCounts.length ? parsedCounts.join(' · ') : '(none — will fall back to 1 · 5 · 10 · 30)'}</p>
         </Section>
 
         <div style={divider} />

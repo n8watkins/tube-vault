@@ -1,7 +1,15 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
 import { FiVideo, FiHeadphones, FiFileText, FiImage, FiPackage } from 'react-icons/fi';
-import { MenuState, VideoQuality, VideoFormat, AudioFormat } from '../types';
+import { MenuState, VideoQuality, VideoFormat, AudioFormat, ChannelMode } from '../types';
+
+interface ChannelControls {
+  mode: ChannelMode;
+  count: number;
+  counts: number[];
+  onMode: (m: ChannelMode) => void;
+  onCount: (n: number) => void;
+}
 
 interface Props {
   menuRef: React.RefObject<HTMLDivElement>;
@@ -10,10 +18,11 @@ interface Props {
   state: MenuState;
   onChange: (updates: Partial<MenuState>) => void;
   playlist: boolean;
+  channel?: ChannelControls;
   onArchive: () => void;
 }
 
-export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, playlist, onArchive }: Props) {
+export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, playlist, channel, onArchive }: Props) {
   const noneSelected = !state.video && !state.audio && !state.metadata && !state.thumbnail;
 
   const bundleAll = () =>
@@ -23,13 +32,53 @@ export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, play
     ? { bottom: window.innerHeight - anchorRect.top + 6, left: anchorRect.left }
     : { top: anchorRect.bottom + 6, left: anchorRect.left };
 
+  const headerText = channel ? 'Download Channel' : playlist ? 'Download Playlist' : 'Download Options';
+  const archiveLabel = channel
+    ? (channel.mode === 'all' ? 'Download All' : channel.mode === 'latest' ? `Download Latest ${channel.count}` : `Download Top ${channel.count}`)
+    : playlist ? 'Download Playlist' : 'Download';
+
   const content = (
     <div
       ref={menuRef}
       style={{ ...panel, ...posStyle }}
       onClick={(e) => e.stopPropagation()}
     >
-      <div style={headerStyle}>{playlist ? 'Download Playlist' : 'Download Options'}</div>
+      <div style={headerStyle}>{headerText}</div>
+
+      {channel && (
+        <>
+          {/* Mode: Popular / Latest / All */}
+          <div style={segGroup}>
+            {(['popular', 'latest', 'all'] as ChannelMode[]).map((m) => (
+              <button
+                key={m}
+                onClick={(e) => { e.stopPropagation(); channel.onMode(m); }}
+                style={{ ...segBtn, ...(channel.mode === m ? segBtnActive : {}) }}
+              >
+                {m === 'popular' ? 'Popular' : m === 'latest' ? 'Latest' : 'All'}
+              </button>
+            ))}
+          </div>
+
+          {/* Count — irrelevant for "all" */}
+          <div style={{ ...optRow, opacity: channel.mode === 'all' ? 0.35 : 1 }}>
+            <span style={{ fontSize: 12, color: '#ccc' }}>
+              {channel.mode === 'latest' ? 'How many (newest)' : 'How many (most viewed)'}
+            </span>
+            <select
+              disabled={channel.mode === 'all'}
+              value={channel.count}
+              onChange={(e) => channel.onCount(Number(e.target.value))}
+              style={selStyle(channel.mode !== 'all')}
+              onClick={(e) => e.stopPropagation()}
+            >
+              {channel.counts.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+          </div>
+
+          <div style={divider} />
+        </>
+      )}
 
       {/* Video */}
       <div style={optRow}>
@@ -138,7 +187,7 @@ export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, play
         onClick={(e) => { e.stopPropagation(); if (!noneSelected) onArchive(); }}
         style={{ ...archiveBtnBase, ...(noneSelected ? archiveBtnDisabled : {}) }}
       >
-        {playlist ? 'Download Playlist' : 'Download'}
+        {archiveLabel}
       </button>
     </div>
   );
@@ -169,6 +218,31 @@ const headerStyle: React.CSSProperties = {
   textTransform: 'uppercase',
   letterSpacing: '0.06em',
   marginBottom: 10,
+};
+
+const segGroup: React.CSSProperties = {
+  display: 'flex',
+  gap: 4,
+  marginBottom: 10,
+};
+
+const segBtn: React.CSSProperties = {
+  flex: 1,
+  padding: '6px 0',
+  background: '#383838',
+  border: '1px solid #555',
+  borderRadius: 6,
+  color: '#ccc',
+  fontSize: 12,
+  fontWeight: 600,
+  cursor: 'pointer',
+  fontFamily: 'inherit',
+};
+
+const segBtnActive: React.CSSProperties = {
+  background: '#cc0000',
+  borderColor: '#cc0000',
+  color: '#fff',
 };
 
 const optRow: React.CSSProperties = {

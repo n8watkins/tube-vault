@@ -10,6 +10,7 @@ import { ArchiveButton } from './components/ArchiveButton';
 
 const BUTTON_ID = 'tube-vault-btn';
 const PLAYLIST_BTN_ID = 'tube-vault-playlist-btn';
+const CHANNEL_BTN_ID = 'tube-vault-channel-btn';
 
 let currentUrl = location.href;
 let videoInjected = false;
@@ -17,9 +18,14 @@ let playlistInjected = false;
 
 let videoRoot: Root | null = null;
 let playlistRoot: Root | null = null;
+let channelRoot: Root | null = null;
 
 let videoTimerId: ReturnType<typeof setTimeout> | null = null;
 let playlistTimerId: ReturnType<typeof setTimeout> | null = null;
+
+// Tracks which channel the channel-button belongs to, so same-channel SPA nav
+// (e.g. Home → Videos, including our own Popular-sort click) doesn't tear it down.
+let channelKey: string | null = null;
 
 // Shorts-specific observers — kept alive across scroll navigation
 let shortsIo: IntersectionObserver | null = null;
@@ -58,6 +64,24 @@ function getVideoUrl() {
 function getPlaylistUrl() {
   const listId = new URLSearchParams(location.search).get('list');
   return listId ? `https://www.youtube.com/playlist?list=${listId}` : location.href;
+}
+
+// ── Channel detection ─────────────────────────────────────────────────────────
+
+const CHANNEL_RE = /^\/(@[\w.-]+|channel\/[\w-]+|c\/[\w.-]+|user\/[\w.-]+)(\/.*)?$/;
+
+function isChannelPage() {
+  return CHANNEL_RE.test(location.pathname);
+}
+
+function channelBasePath(): string | null {
+  const m = location.pathname.match(CHANNEL_RE);
+  return m ? `/${m[1]}` : null;
+}
+
+function channelVideosUrl(): string {
+  const base = channelBasePath();
+  return base ? `https://www.youtube.com${base}/videos` : location.href;
 }
 
 // ── Injection helpers ─────────────────────────────────────────────────────────
@@ -219,7 +243,151 @@ function injectPlaylistButton(): void {
   playlistInjected = true;
 }
 
+// ── Channel: Popular scrape orchestration ─────────────────────────────────────
+
+const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+async function waitFor(cond: () => boolean, timeout: number): Promise<boolean> {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    try { if (cond()) return true; } catch { /* keep polling */ }
+    await delay(150);
+  }
+  return false;
+}
+
+async function waitForEl(get: () => Element | null, timeout: number): Promise<Element | null> {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    let el: Element | null = null;
+    try { el = get(); } catch { /* keep polling */ }
+    if (el) return el;
+    await delay(150);
+  }
+  return null;
+}
+
+function findVideosTab(): Element | null {
+  const tabs = document.querySelectorAll(
+    'yt-tab-shape, tp-yt-paper-tab, #tabsContent a, yt-tab-group-shape [role="tab"], ytd-c4-tabbed-header-renderer a'
+  );
+  for (const el of tabs) {
+    if ((el.textContent ?? '').trim().toLowerCase() === 'videos') return el;
+  }
+  return document.querySelector('a[href$="/videos"]');
+}
+
+function findChip(label: string): Element | null {
+  const chips = document.querySelectorAll(
+    'yt-chip-cloud-chip-renderer, #chips yt-chip-cloud-chip-renderer, tp-yt-paper-chip'
+  );
+  for (const c of chips) {
+    if ((c.textContent ?? '').trim().toLowerCase() === label.toLowerCase()) return c;
+  }
+  return null;
+}
+
+function videoAnchors(): NodeListOf<HTMLAnchorElement> {
+  return document.querySelectorAll<HTMLAnchorElement>(
+    'ytd-rich-item-renderer a#video-title-link, ytd-rich-grid-media a#video-title-link, a#video-title-link'
+  );
+}
+
+function idFromAnchor(a: HTMLAnchorElement): string | null {
+  try {
+    const id = new URL(a.href, location.origin).searchParams.get('v');
+    if (id) return id;
+  } catch { /* fall through */ }
+  const m = (a.getAttribute('href') ?? '').match(/[?&]v=([\w-]+)/);
+  return m ? m[1] : null;
+}
+
+function firstVideoId(): string | null {
+  const a = videoAnchors()[0];
+  return a ? idFromAnchor(a) : null;
+}
+
+function scrapeVideoUrls(count: number): string[] {
+  const seen = new Set<string>();
+  const urls: string[] = [];
+  for (const a of videoAnchors()) {
+    const id = idFromAnchor(a);
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      urls.push(`https://www.youtube.com/watch?v=${id}`);
+      if (urls.length >= count) break;
+    }
+  }
+  return urls;
+}
+
+// Drive YouTube's own UI: go to the Videos tab, click the Popular chip, load
+// enough items, then read the top `count` video URLs in that (server-ranked) order.
+async function scrapePopular(count: number): Promise<string[]> {
+  const onVideos = () => /\/videos\/?$/.test(location.pathname);
+
+  if (!onVideos()) {
+    const tab = findVideosTab();
+    if (tab) {
+      (tab as HTMLElement).click();
+      await waitFor(onVideos, 6000);
+    } else {
+      location.href = channelVideosUrl();
+      await waitFor(onVideos, 8000);
+    }
+  }
+  await waitForEl(() => document.querySelector('ytd-rich-grid-renderer'), 6000);
+
+  const chip = await waitForEl(() => findChip('Popular'), 5000);
+  if (chip) {
+    const before = firstVideoId();
+    (chip as HTMLElement).click();
+    await waitFor(() => firstVideoId() !== before, 5000);
+  }
+
+  // Lazy-load until we have enough (≈30 load without scrolling), then restore scroll.
+  const startY = window.scrollY;
+  for (let i = 0; i < 15 && videoAnchors().length < count; i++) {
+    window.scrollTo(0, document.documentElement.scrollHeight);
+    await delay(500);
+  }
+  window.scrollTo(0, startY);
+
+  return scrapeVideoUrls(count);
+}
+
+// ── Channel injection ─────────────────────────────────────────────────────────
+
+function injectChannelButton(): void {
+  if (document.getElementById(CHANNEL_BTN_ID)) return;
+  if (!isChannelPage()) return;
+
+  const subscribe =
+    document.querySelector('#subscribe-button ytd-subscribe-button-renderer') ??
+    document.querySelector('ytd-subscribe-button-renderer') ??
+    document.querySelector('yt-subscribe-button-view-model') ??
+    document.querySelector('#subscribe-button');
+
+  if (!subscribe?.parentElement) return; // caller will retry
+
+  const container = makeContainer(CHANNEL_BTN_ID);
+  container.style.marginLeft = '8px';
+  subscribe.parentElement.insertBefore(container, subscribe.nextSibling);
+
+  channelRoot = createRoot(container);
+  channelRoot.render(
+    <ArchiveButton getUrl={() => location.href} playlist={false} channel={{ channelVideosUrl, scrapePopular }} />
+  );
+  channelKey = channelBasePath();
+}
+
 // ── Cleanup ───────────────────────────────────────────────────────────────────
+
+function removeChannelButton() {
+  channelRoot?.unmount();
+  channelRoot = null;
+  document.getElementById(CHANNEL_BTN_ID)?.remove();
+}
 
 function removeVideoButton() {
   videoRoot?.unmount();
@@ -250,6 +418,14 @@ function onNavigate() {
 
   removeVideoButton();
   removePlaylistButton();
+  // Only drop the channel button when we actually leave the channel — keep it
+  // mounted (and in its loading state) during same-channel nav like our own
+  // Home → Videos → Popular click.
+  const newChannelKey = channelBasePath();
+  if (newChannelKey !== channelKey) {
+    removeChannelButton();
+    channelKey = newChannelKey;
+  }
   if (isWatchPage()) videoTimerId = setTimeout(() => tryInjectVideo(10), 500);
   if (isPlaylistContext()) playlistTimerId = setTimeout(() => tryInjectPlaylist(10), 500);
 }
@@ -276,6 +452,7 @@ function tryInjectPlaylist(attempts: number) {
 function ensureButtons() {
   if (isWatchPage() && !document.getElementById(BUTTON_ID)) injectVideoButton();
   if (isPlaylistContext() && !document.getElementById(PLAYLIST_BTN_ID)) injectPlaylistButton();
+  if (isChannelPage() && !document.getElementById(CHANNEL_BTN_ID)) injectChannelButton();
 }
 
 function syncForCurrentPage() {

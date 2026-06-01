@@ -1,20 +1,32 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { FiDownload } from 'react-icons/fi';
 import { ArchiveMenu } from './ArchiveMenu';
-import { MenuState, defaultMenuState } from '../types';
+import {
+  MenuState, defaultMenuState, ChannelMode,
+  DEFAULT_CHANNEL_COUNTS, DEFAULT_CHANNEL_COUNT,
+} from '../types';
 
 type BtnState = 'idle' | 'loading' | 'done' | 'error';
+
+interface ChannelConfig {
+  // Build the channel's /videos URL (for "latest"/"all" — yt-dlp expands it server-side)
+  channelVideosUrl: () => string;
+  // Drive YouTube's UI to the Popular sort and scrape the top `count` watch URLs
+  scrapePopular: (count: number) => Promise<string[]>;
+}
 
 interface Props {
   getUrl: () => string;
   playlist: boolean;
   compact?: boolean;
   dropUp?: boolean;
+  channel?: ChannelConfig;
 }
 
 const LABEL: Record<string, Record<BtnState, string>> = {
   video: { idle: 'Download', loading: 'Downloading…', done: 'Saved ✓', error: 'Failed ✗' },
   playlist: { idle: 'Download Playlist', loading: 'Downloading…', done: 'Saved ✓', error: 'Failed ✗' },
+  channel: { idle: 'Download Videos', loading: 'Working…', done: 'Saved ✓', error: 'Failed ✗' },
 };
 
 const BTN_COLOR: Record<BtnState, string> = {
@@ -24,11 +36,28 @@ const BTN_COLOR: Record<BtnState, string> = {
   error: '#b71c1c',
 };
 
-export function ArchiveButton({ getUrl, playlist, compact, dropUp }: Props) {
+export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Props) {
   const [open, setOpen] = useState(false);
   const [btnState, setBtnState] = useState<BtnState>('idle');
   const [menuState, setMenuState] = useState<MenuState>(defaultMenuState);
   const [anchorRect, setAnchorRect] = useState<DOMRect | null>(null);
+
+  // Channel-only state (mode + count, with editable presets from options)
+  const [chanMode, setChanMode] = useState<ChannelMode>('popular');
+  const [chanCount, setChanCount] = useState<number>(DEFAULT_CHANNEL_COUNT);
+  const [chanCounts, setChanCounts] = useState<number[]>(DEFAULT_CHANNEL_COUNTS);
+
+  useEffect(() => {
+    if (!channel) return;
+    chrome.storage.local.get(
+      { channelCounts: DEFAULT_CHANNEL_COUNTS, channelDefaultCount: DEFAULT_CHANNEL_COUNT },
+      (s) => {
+        const counts: number[] = Array.isArray(s.channelCounts) && s.channelCounts.length ? s.channelCounts : DEFAULT_CHANNEL_COUNTS;
+        setChanCounts(counts);
+        setChanCount(counts.includes(s.channelDefaultCount) ? s.channelDefaultCount : counts[counts.length - 1]);
+      }
+    );
+  }, [channel]);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -50,7 +79,7 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp }: Props) {
     };
   }, []);
 
-  const labelSet = playlist ? LABEL.playlist : LABEL.video;
+  const labelSet = channel ? LABEL.channel : playlist ? LABEL.playlist : LABEL.video;
 
   function handleToggle(e: React.MouseEvent) {
     e.stopPropagation();
@@ -61,22 +90,9 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp }: Props) {
     setOpen(o => !o);
   }
 
-  function handleArchive() {
-    setOpen(false);
-    setBtnState('loading');
-
-    const components: Record<string, unknown> = {};
-    if (menuState.video)
-      components['video'] = { quality: menuState.videoQuality, format: menuState.videoFormat };
-    if (menuState.audio) components['audio'] = { format: menuState.audioFormat };
-    if (menuState.metadata) components['metadata'] = true;
-    if (menuState.thumbnail) components['thumbnail'] = true;
-
+  function sendRequest(payload: Record<string, unknown>) {
     chrome.runtime.sendMessage(
-      {
-        type: 'TUBE_VAULT_REQUEST',
-        payload: { action: 'custom', url: getUrl(), components, playlist },
-      },
+      { type: 'TUBE_VAULT_REQUEST', payload },
       (response) => {
         if (chrome.runtime.lastError || !response?.ok) {
           const err =
@@ -94,6 +110,43 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp }: Props) {
         setTimeout(() => setBtnState('idle'), 3000);
       }
     );
+  }
+
+  async function handleArchive() {
+    setOpen(false);
+    setBtnState('loading');
+
+    const components: Record<string, unknown> = {};
+    if (menuState.video)
+      components['video'] = { quality: menuState.videoQuality, format: menuState.videoFormat };
+    if (menuState.audio) components['audio'] = { format: menuState.audioFormat };
+    if (menuState.metadata) components['metadata'] = true;
+    if (menuState.thumbnail) components['thumbnail'] = true;
+
+    if (channel) {
+      if (chanMode === 'popular') {
+        showToast(`Finding top ${chanCount} popular videos…`);
+        let urls: string[] = [];
+        try { urls = await channel.scrapePopular(chanCount); } catch { /* handled below */ }
+        if (!urls.length) {
+          setBtnState('error');
+          showToast('Could not read popular videos from this page', true);
+          setTimeout(() => setBtnState('idle'), 3000);
+          return;
+        }
+        showToast(`Downloading ${urls.length} videos…`);
+        sendRequest({ action: 'custom', urls, components });
+      } else if (chanMode === 'latest') {
+        showToast(`Downloading latest ${chanCount} videos…`);
+        sendRequest({ action: 'custom', urls: [channel.channelVideosUrl()], expand: true, playlistEnd: chanCount, components });
+      } else {
+        showToast('Downloading all channel videos…');
+        sendRequest({ action: 'custom', urls: [channel.channelVideosUrl()], expand: true, components });
+      }
+      return;
+    }
+
+    sendRequest({ action: 'custom', url: getUrl(), components, playlist });
   }
 
   return (
@@ -138,6 +191,13 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp }: Props) {
           state={menuState}
           onChange={(updates) => setMenuState((s) => ({ ...s, ...updates }))}
           playlist={playlist}
+          channel={channel ? {
+            mode: chanMode,
+            count: chanCount,
+            counts: chanCounts,
+            onMode: setChanMode,
+            onCount: setChanCount,
+          } : undefined}
           onArchive={handleArchive}
         />
       )}

@@ -21,3 +21,10 @@ export const defaultMenuState: MenuState = {
   metadata: false,
   thumbnail: false,
 };
+
+// ── Channel button ──────────────────────────────────────────────────────────
+export type ChannelMode = 'popular' | 'latest' | 'all';
+
+// Editable in the options page; presets for the channel count selector.
+export const DEFAULT_CHANNEL_COUNTS = [1, 5, 10, 30];
+export const DEFAULT_CHANNEL_COUNT = 30;

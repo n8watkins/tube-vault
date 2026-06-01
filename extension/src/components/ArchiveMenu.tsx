@@ -7,8 +7,19 @@ interface ChannelControls {
   mode: ChannelMode;
   count: number;
   counts: number[];
+  videoCount: number | null;
   onMode: (m: ChannelMode) => void;
   onCount: (n: number) => void;
+}
+
+// Above this many uploads, ranking by views (popular) starts to take a while.
+const POPULAR_WARN_THRESHOLD = 150;
+
+// Rough: ~0.25s per video to fetch view counts (parallelized).
+function estimateRankMinutes(videoCount: number): string {
+  const secs = videoCount * 0.25;
+  if (secs < 90) return `${Math.max(5, Math.round(secs / 5) * 5)}s`;
+  return `${Math.round(secs / 60)} min`;
 }
 
 interface Props {
@@ -75,6 +86,14 @@ export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, play
               {channel.counts.map((n) => <option key={n} value={n}>{n}</option>)}
             </select>
           </div>
+
+          {channel.mode === 'popular' && channel.videoCount != null && channel.videoCount > POPULAR_WARN_THRESHOLD && (
+            <div style={warnBox}>
+              ⚠ This channel has {channel.videoCount.toLocaleString()} videos. Ranking by views
+              checks every upload, so it may take ~{estimateRankMinutes(channel.videoCount)} before
+              downloads start.
+            </div>
+          )}
 
           <div style={divider} />
         </>
@@ -243,6 +262,17 @@ const segBtnActive: React.CSSProperties = {
   background: '#cc0000',
   borderColor: '#cc0000',
   color: '#fff',
+};
+
+const warnBox: React.CSSProperties = {
+  background: 'rgba(255,193,7,0.12)',
+  border: '1px solid rgba(255,193,7,0.4)',
+  borderRadius: 6,
+  padding: '7px 9px',
+  marginTop: 8,
+  fontSize: 11,
+  lineHeight: 1.4,
+  color: '#ffca28',
 };
 
 const optRow: React.CSSProperties = {

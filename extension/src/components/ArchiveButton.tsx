@@ -9,10 +9,17 @@ import {
 type BtnState = 'idle' | 'loading' | 'done' | 'error';
 
 interface ChannelConfig {
-  // Build the channel's /videos URL (for "latest"/"all" — yt-dlp expands it server-side)
+  // Build the channel's /videos URL (handed to the helper for ranking/expansion)
   channelVideosUrl: () => string;
-  // Drive YouTube's UI to the Popular sort and scrape the top `count` watch URLs
-  scrapePopular: (count: number) => Promise<string[]>;
+  // Read the channel's total upload count from the page (for the disclaimer)
+  getVideoCount: () => number | null;
+}
+
+function formatBytes(b: number | null | undefined): string {
+  if (!b || b <= 0) return 'unknown';
+  if (b >= 1e9) return `${(b / 1e9).toFixed(1)} GB`;
+  if (b >= 1e6) return `${Math.round(b / 1e6)} MB`;
+  return `${Math.round(b / 1e3)} KB`;
 }
 
 interface Props {
@@ -46,6 +53,7 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
   const [chanMode, setChanMode] = useState<ChannelMode>('popular');
   const [chanCount, setChanCount] = useState<number>(DEFAULT_CHANNEL_COUNT);
   const [chanCounts, setChanCounts] = useState<number[]>(DEFAULT_CHANNEL_COUNTS);
+  const [chanVideoCount, setChanVideoCount] = useState<number | null>(null);
 
   useEffect(() => {
     if (!channel) return;
@@ -86,6 +94,7 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
     if (btnState === 'loading') return;
     if (!open && btnRef.current) {
       setAnchorRect(btnRef.current.getBoundingClientRect());
+      if (channel) setChanVideoCount(channel.getVideoCount());
     }
     setOpen(o => !o);
   }
@@ -112,7 +121,7 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
     );
   }
 
-  async function handleArchive() {
+  function handleArchive() {
     setOpen(false);
     setBtnState('loading');
 
@@ -124,29 +133,56 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
     if (menuState.thumbnail) components['thumbnail'] = true;
 
     if (channel) {
-      if (chanMode === 'popular') {
-        showToast(`Finding top ${chanCount} popular videos…`);
-        let urls: string[] = [];
-        try { urls = await channel.scrapePopular(chanCount); } catch { /* handled below */ }
-        if (!urls.length) {
-          setBtnState('error');
-          showToast('Could not read popular videos from this page', true);
-          setTimeout(() => setBtnState('idle'), 3000);
-          return;
-        }
-        showToast(`Downloading ${urls.length} videos…`);
-        sendRequest({ action: 'custom', urls, components });
-      } else if (chanMode === 'latest') {
-        showToast(`Downloading latest ${chanCount} videos…`);
-        sendRequest({ action: 'custom', urls: [channel.channelVideosUrl()], expand: true, playlistEnd: chanCount, components });
-      } else {
-        showToast('Downloading all channel videos…');
-        sendRequest({ action: 'custom', urls: [channel.channelVideosUrl()], expand: true, components });
-      }
+      runChannelFlow(components);
       return;
     }
 
     sendRequest({ action: 'custom', url: getUrl(), components, playlist });
+  }
+
+  // Channel: ask the helper to plan (rank/list + size estimate), confirm with the
+  // user, then download. Keeps all the heavy lifting in the helper (no scraping).
+  function runChannelFlow(components: Record<string, unknown>) {
+    if (!channel) return;
+    showToast(chanMode === 'popular' ? 'Ranking channel by views — this can take a minute…' : 'Checking channel…');
+
+    chrome.runtime.sendMessage(
+      {
+        type: 'TUBE_VAULT_REQUEST',
+        payload: { action: 'channel_plan', urls: [channel.channelVideosUrl()], mode: chanMode, count: chanCount, components },
+      },
+      (resp) => {
+        if (chrome.runtime.lastError || !resp?.ok || !resp.plan) {
+          const err = chrome.runtime.lastError?.message ?? resp?.error ?? 'Unknown error';
+          setBtnState('error');
+          showToast(`Couldn't analyze channel: ${err}`, true);
+          setTimeout(() => setBtnState('idle'), 3000);
+          return;
+        }
+
+        const plan = resp.plan as { totalVideos: number | null; targets: string[]; estBytes: number | null; sampled: boolean };
+        const n = chanMode === 'all' ? (plan.totalVideos ?? '?') : (plan.targets.length || chanCount);
+        const what =
+          chanMode === 'all' ? 'ALL videos' :
+          chanMode === 'latest' ? `the latest ${n}` :
+          `the top ${n} most-viewed`;
+        const sizeNote = plan.estBytes ? `~${formatBytes(plan.estBytes)}${plan.sampled ? ' (estimated from a sample)' : ''}` : 'unknown';
+
+        const proceed = window.confirm(
+          `TubeVault — download ${what} from this channel?\n\n` +
+          `Videos: ${n}\n` +
+          `Projected size: ${sizeNote}`
+        );
+
+        if (!proceed) { setBtnState('idle'); return; }
+
+        if (chanMode === 'all') {
+          sendRequest({ action: 'custom', urls: [channel.channelVideosUrl()], expand: true, components });
+        } else {
+          sendRequest({ action: 'custom', urls: plan.targets, components });
+        }
+      }
+    );
   }
 
   return (
@@ -195,6 +231,7 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
             mode: chanMode,
             count: chanCount,
             counts: chanCounts,
+            videoCount: chanVideoCount,
             onMode: setChanMode,
             onCount: setChanCount,
           } : undefined}

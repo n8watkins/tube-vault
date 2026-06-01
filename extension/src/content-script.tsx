@@ -243,167 +243,20 @@ function injectPlaylistButton(): void {
   playlistInjected = true;
 }
 
-// ── Channel: Popular scrape orchestration ─────────────────────────────────────
+// ── Channel: read the upload count for the disclaimer ─────────────────────────
 
-const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-async function waitFor(cond: () => boolean, timeout: number): Promise<boolean> {
-  const start = Date.now();
-  while (Date.now() - start < timeout) {
-    try { if (cond()) return true; } catch { /* keep polling */ }
-    await delay(150);
-  }
-  return false;
-}
-
-async function waitForEl(get: () => Element | null, timeout: number): Promise<Element | null> {
-  const start = Date.now();
-  while (Date.now() - start < timeout) {
-    let el: Element | null = null;
-    try { el = get(); } catch { /* keep polling */ }
-    if (el) return el;
-    await delay(150);
-  }
-  return null;
-}
-
-function findVideosTab(): Element | null {
-  const tabs = document.querySelectorAll(
-    'yt-tab-shape, tp-yt-paper-tab, #tabsContent a, yt-tab-group-shape [role="tab"], ytd-c4-tabbed-header-renderer a'
-  );
-  for (const el of tabs) {
-    if ((el.textContent ?? '').trim().toLowerCase() === 'videos') return el;
-  }
-  return document.querySelector('a[href$="/videos"]');
-}
-
-function findChip(label: string): Element | null {
-  const chips = document.querySelectorAll(
-    'yt-chip-cloud-chip-renderer, #chips yt-chip-cloud-chip-renderer, tp-yt-paper-chip'
-  );
-  for (const c of chips) {
-    if ((c.textContent ?? '').trim().toLowerCase() === label.toLowerCase()) return c;
-  }
-  return null;
-}
-
-// The sort control that shows the current order ("Latest"/"Newest") and opens a menu.
-function findSortTrigger(): Element | null {
-  const cands = document.querySelectorAll(
-    'yt-chip-cloud-chip-renderer, tp-yt-paper-chip, yt-sort-filter-sub-menu-renderer [role="button"], ytd-channel-sub-menu-renderer [role="button"], #chips *'
-  );
-  for (const el of cands) {
-    const t = (el.textContent ?? '').trim().toLowerCase();
-    if (t === 'latest' || t === 'newest' || t === 'sort by') return el;
-  }
-  return null;
-}
-
-// A menu item by label inside an opened sort dropdown.
-function findMenuItem(label: string): Element | null {
-  const items = document.querySelectorAll(
-    'tp-yt-paper-item, ytd-menu-service-item-renderer, [role="menuitem"], yt-formatted-string'
-  );
-  for (const it of items) {
-    if ((it.textContent ?? '').trim().toLowerCase() === label.toLowerCase()) {
-      return it.closest('[role="menuitem"], tp-yt-paper-item, a, button') ?? it;
-    }
-  }
-  return null;
-}
-
-// Switch the grid to "Popular". Handles both the chip layout and the
-// "Latest ⌄" dropdown layout; leaves order untouched if neither is found.
-async function selectPopularSort(): Promise<void> {
-  const before = firstVideoId();
-
-  const chip = findChip('Popular');
-  if (chip) {
-    (chip as HTMLElement).click();
-    await waitFor(() => firstVideoId() !== before, 5000);
-    return;
-  }
-
-  const trigger = findSortTrigger();
-  if (trigger) {
-    (trigger as HTMLElement).click();
-    const opt = await waitForEl(() => findMenuItem('Popular'), 3000);
-    if (opt) {
-      (opt as HTMLElement).click();
-      await waitFor(() => firstVideoId() !== before, 5000);
-      return;
-    }
-    (trigger as HTMLElement).click(); // close the menu we opened
-  }
-}
-
-// Layout-agnostic: any /watch?v= link in the main content, in DOM order.
-function videoAnchors(): HTMLAnchorElement[] {
-  const scope =
-    document.querySelector('ytd-rich-grid-renderer') ??
-    document.querySelector('#contents') ??
-    document.body;
-  return Array.from(scope.querySelectorAll<HTMLAnchorElement>('a[href*="watch?v="]'));
-}
-
-function idFromAnchor(a: HTMLAnchorElement): string | null {
-  try {
-    const id = new URL(a.href, location.origin).searchParams.get('v');
-    if (id) return id;
-  } catch { /* fall through */ }
-  const m = (a.getAttribute('href') ?? '').match(/[?&]v=([\w-]+)/);
-  return m ? m[1] : null;
-}
-
-function firstVideoId(): string | null {
-  const a = videoAnchors()[0];
-  return a ? idFromAnchor(a) : null;
-}
-
-function scrapeVideoUrls(count: number): string[] {
-  const seen = new Set<string>();
-  const urls: string[] = [];
-  for (const a of videoAnchors()) {
-    const id = idFromAnchor(a);
-    if (id && !seen.has(id)) {
-      seen.add(id);
-      urls.push(`https://www.youtube.com/watch?v=${id}`);
-      if (urls.length >= count) break;
-    }
-  }
-  return urls;
-}
-
-// Drive YouTube's own UI: go to the Videos tab, click the Popular chip, load
-// enough items, then read the top `count` video URLs in that (server-ranked) order.
-async function scrapePopular(count: number): Promise<string[]> {
-  const onVideos = () => /\/videos\/?$/.test(location.pathname);
-
-  if (!onVideos()) {
-    const tab = findVideosTab();
-    if (tab) {
-      (tab as HTMLElement).click();
-      await waitFor(onVideos, 6000);
-    } else {
-      location.href = channelVideosUrl();
-      await waitFor(onVideos, 8000);
-    }
-  }
-  await waitForEl(() => document.querySelector('ytd-rich-grid-renderer'), 6000);
-  // Make sure at least one video is present before trying to read/sort.
-  await waitFor(() => videoAnchors().length > 0, 6000);
-
-  await selectPopularSort();
-
-  // Lazy-load until we have enough (≈30 load without scrolling), then restore scroll.
-  const startY = window.scrollY;
-  for (let i = 0; i < 15 && videoAnchors().length < count; i++) {
-    window.scrollTo(0, document.documentElement.scrollHeight);
-    await delay(500);
-  }
-  window.scrollTo(0, startY);
-
-  return scrapeVideoUrls(count);
+// The header metadata shows e.g. "@handle • 1.09K subscribers • 288 videos".
+function getChannelVideoCount(): number | null {
+  const meta =
+    document.querySelector('yt-content-metadata-view-model')?.textContent ??
+    document.querySelector('.page-header-view-model-wiz__page-header-content-metadata')?.textContent ??
+    '';
+  const m = meta.match(/([\d.,]+)\s*([KMB]?)\s*videos/i);
+  if (!m) return null;
+  const num = parseFloat(m[1].replace(/,/g, ''));
+  if (!Number.isFinite(num)) return null;
+  const mult = /k/i.test(m[2]) ? 1e3 : /m/i.test(m[2]) ? 1e6 : /b/i.test(m[2]) ? 1e9 : 1;
+  return Math.round(num * mult);
 }
 
 // ── Channel injection ─────────────────────────────────────────────────────────
@@ -434,7 +287,7 @@ function injectChannelButton(): void {
 
   channelRoot = createRoot(container);
   channelRoot.render(
-    <ArchiveButton getUrl={() => location.href} playlist={false} channel={{ channelVideosUrl, scrapePopular }} />
+    <ArchiveButton getUrl={() => location.href} playlist={false} channel={{ channelVideosUrl, getVideoCount: getChannelVideoCount }} />
   );
   channelKey = channelBasePath();
 }

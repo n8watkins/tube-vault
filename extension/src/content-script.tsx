@@ -287,10 +287,63 @@ function findChip(label: string): Element | null {
   return null;
 }
 
-function videoAnchors(): NodeListOf<HTMLAnchorElement> {
-  return document.querySelectorAll<HTMLAnchorElement>(
-    'ytd-rich-item-renderer a#video-title-link, ytd-rich-grid-media a#video-title-link, a#video-title-link'
+// The sort control that shows the current order ("Latest"/"Newest") and opens a menu.
+function findSortTrigger(): Element | null {
+  const cands = document.querySelectorAll(
+    'yt-chip-cloud-chip-renderer, tp-yt-paper-chip, yt-sort-filter-sub-menu-renderer [role="button"], ytd-channel-sub-menu-renderer [role="button"], #chips *'
   );
+  for (const el of cands) {
+    const t = (el.textContent ?? '').trim().toLowerCase();
+    if (t === 'latest' || t === 'newest' || t === 'sort by') return el;
+  }
+  return null;
+}
+
+// A menu item by label inside an opened sort dropdown.
+function findMenuItem(label: string): Element | null {
+  const items = document.querySelectorAll(
+    'tp-yt-paper-item, ytd-menu-service-item-renderer, [role="menuitem"], yt-formatted-string'
+  );
+  for (const it of items) {
+    if ((it.textContent ?? '').trim().toLowerCase() === label.toLowerCase()) {
+      return it.closest('[role="menuitem"], tp-yt-paper-item, a, button') ?? it;
+    }
+  }
+  return null;
+}
+
+// Switch the grid to "Popular". Handles both the chip layout and the
+// "Latest ⌄" dropdown layout; leaves order untouched if neither is found.
+async function selectPopularSort(): Promise<void> {
+  const before = firstVideoId();
+
+  const chip = findChip('Popular');
+  if (chip) {
+    (chip as HTMLElement).click();
+    await waitFor(() => firstVideoId() !== before, 5000);
+    return;
+  }
+
+  const trigger = findSortTrigger();
+  if (trigger) {
+    (trigger as HTMLElement).click();
+    const opt = await waitForEl(() => findMenuItem('Popular'), 3000);
+    if (opt) {
+      (opt as HTMLElement).click();
+      await waitFor(() => firstVideoId() !== before, 5000);
+      return;
+    }
+    (trigger as HTMLElement).click(); // close the menu we opened
+  }
+}
+
+// Layout-agnostic: any /watch?v= link in the main content, in DOM order.
+function videoAnchors(): HTMLAnchorElement[] {
+  const scope =
+    document.querySelector('ytd-rich-grid-renderer') ??
+    document.querySelector('#contents') ??
+    document.body;
+  return Array.from(scope.querySelectorAll<HTMLAnchorElement>('a[href*="watch?v="]'));
 }
 
 function idFromAnchor(a: HTMLAnchorElement): string | null {
@@ -337,13 +390,10 @@ async function scrapePopular(count: number): Promise<string[]> {
     }
   }
   await waitForEl(() => document.querySelector('ytd-rich-grid-renderer'), 6000);
+  // Make sure at least one video is present before trying to read/sort.
+  await waitFor(() => videoAnchors().length > 0, 6000);
 
-  const chip = await waitForEl(() => findChip('Popular'), 5000);
-  if (chip) {
-    const before = firstVideoId();
-    (chip as HTMLElement).click();
-    await waitFor(() => firstVideoId() !== before, 5000);
-  }
+  await selectPopularSort();
 
   // Lazy-load until we have enough (≈30 load without scrolling), then restore scroll.
   const startY = window.scrollY;

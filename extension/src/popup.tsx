@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 
+const DEFAULT_OUTPUT_ROOT = 'C:\\Users\\natha\\Videos\\Youtube Downloads';
+
 type PageType = 'video' | 'shorts' | 'playlist' | 'youtube' | 'other';
 type HelperStatus = 'checking' | 'ok' | 'error';
 
@@ -37,6 +39,7 @@ function App() {
   const version = chrome.runtime.getManifest().version;
   const [page, setPage] = useState<{ type: PageType; id?: string } | null>(null);
   const [helper, setHelper] = useState<HelperStatus>('checking');
+  const [outputRoot, setOutputRoot] = useState(DEFAULT_OUTPUT_ROOT);
 
   useEffect(() => {
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -45,6 +48,10 @@ function App() {
 
     chrome.runtime.sendMessage({ type: 'TUBE_VAULT_PING' }, (response) => {
       setHelper(chrome.runtime.lastError || !response?.ok ? 'error' : 'ok');
+    });
+
+    chrome.storage.sync.get({ outputRoot: DEFAULT_OUTPUT_ROOT }, (s) => {
+      setOutputRoot(s.outputRoot || DEFAULT_OUTPUT_ROOT);
     });
   }, []);
 
@@ -58,7 +65,7 @@ function App() {
   );
 
   return (
-    <div style={{ width: 230, fontFamily: 'system-ui, -apple-system, sans-serif', fontSize: 13, color: '#eee', background: '#181818', borderRadius: 0 }}>
+    <div style={{ width: 260, fontFamily: 'system-ui, -apple-system, sans-serif', fontSize: 13, color: '#eee', background: '#181818', borderRadius: 0 }}>
       {/* Header */}
       <div style={{ background: '#cc0000', padding: '10px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
         <span style={{ fontWeight: 700, fontSize: 15, letterSpacing: '-0.01em' }}>TubeVault</span>
@@ -89,6 +96,33 @@ function App() {
           ? <span style={{ color: '#4caf50', fontWeight: 600 }}>✓ Connected</span>
           : <span style={{ color: '#ef5350', fontWeight: 600 }}>✗ Not reachable</span>
       )}
+
+      {/* Download folder */}
+      {row('Download Folder',
+        <div style={{ fontSize: 11, color: '#aaa', wordBreak: 'break-all', lineHeight: 1.4 }}>
+          {outputRoot}
+        </div>
+      )}
+
+      {/* Footer */}
+      <div style={{ padding: '8px 14px', display: 'flex', justifyContent: 'flex-end' }}>
+        <button
+          onClick={() => chrome.runtime.openOptionsPage()}
+          style={{
+            background: 'none',
+            border: 'none',
+            color: '#666',
+            fontSize: 11,
+            cursor: 'pointer',
+            padding: 0,
+            fontFamily: 'inherit',
+          }}
+          onMouseEnter={(e) => (e.currentTarget.style.color = '#aaa')}
+          onMouseLeave={(e) => (e.currentTarget.style.color = '#666')}
+        >
+          ⚙ Settings
+        </button>
+      </div>
     </div>
   );
 }

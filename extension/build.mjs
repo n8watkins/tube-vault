@@ -70,12 +70,20 @@ if (watchMode) {
       jsx: 'automatic',
       minify: true,
     }),
+    esbuild.build({
+      ...shared,
+      entryPoints: ['src/options.tsx'],
+      outfile: 'dist/options.js',
+      format: 'iife',
+      jsx: 'automatic',
+      minify: true,
+    }),
   ]);
 
   // Sync built files to Windows (Chrome loads from there)
   execSync(
-    `cp manifest.json popup.html ${WIN_EXT}/ && ` +
-    `cp dist/content-script.js dist/service-worker.js dist/popup.js ${WIN_EXT}/dist/`,
+    `cp manifest.json popup.html options.html ${WIN_EXT}/ && ` +
+    `cp dist/content-script.js dist/service-worker.js dist/popup.js dist/options.js ${WIN_EXT}/dist/`,
     { cwd: __dirname },
   );
   console.log('Synced to Windows.');

@@ -1,0 +1,196 @@
+import React, { useEffect, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+
+export const DEFAULT_OUTPUT_ROOT = 'C:\\Users\\natha\\Videos\\Youtube Downloads';
+
+function App() {
+  const [outputRoot, setOutputRoot] = useState('');
+  const [autoOpen, setAutoOpen] = useState(true);
+  const [status, setStatus] = useState<'idle' | 'saved'>('idle');
+
+  useEffect(() => {
+    chrome.storage.sync.get(
+      { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: true },
+      (s) => {
+        setOutputRoot(s.outputRoot);
+        setAutoOpen(s.autoOpenFolder);
+      }
+    );
+  }, []);
+
+  function save() {
+    const root = outputRoot.trim() || DEFAULT_OUTPUT_ROOT;
+    chrome.storage.sync.set({ outputRoot: root, autoOpenFolder: autoOpen }, () => {
+      setOutputRoot(root);
+      setStatus('saved');
+      setTimeout(() => setStatus('idle'), 2000);
+    });
+  }
+
+  return (
+    <div style={page}>
+      <div style={header}>
+        <span style={logo}>TubeVault</span>
+        <span style={subtitle}>Settings</span>
+      </div>
+
+      <div style={card}>
+        <Section label="Download Folder">
+          <p style={hint}>Windows path where videos will be saved.</p>
+          <input
+            style={input}
+            value={outputRoot}
+            onChange={(e) => setOutputRoot(e.target.value)}
+            placeholder={DEFAULT_OUTPUT_ROOT}
+            spellCheck={false}
+          />
+          <p style={muted}>Default: {DEFAULT_OUTPUT_ROOT}</p>
+        </Section>
+
+        <div style={divider} />
+
+        <Section label="After Download">
+          <label style={checkRow}>
+            <input
+              type="checkbox"
+              checked={autoOpen}
+              onChange={(e) => setAutoOpen(e.target.checked)}
+              style={{ accentColor: '#cc0000', width: 15, height: 15, cursor: 'pointer', flexShrink: 0 }}
+            />
+            <span>Open folder in Windows Explorer after download</span>
+          </label>
+          <label style={checkRow}>
+            <input
+              type="checkbox"
+              checked={true}
+              disabled
+              style={{ width: 15, height: 15, flexShrink: 0 }}
+            />
+            <span style={{ color: '#666' }}>Save receipt to Chrome downloads (always on)</span>
+          </label>
+        </Section>
+
+        <div style={divider} />
+
+        <button onClick={save} style={{ ...btn, ...(status === 'saved' ? btnSaved : {}) }}>
+          {status === 'saved' ? '✓ Saved' : 'Save Settings'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Section({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginBottom: 4 }}>
+      <div style={sectionLabel}>{label}</div>
+      {children}
+    </div>
+  );
+}
+
+createRoot(document.getElementById('root')!).render(<App />);
+
+// ── Styles ────────────────────────────────────────────────────────────────────
+
+const page: React.CSSProperties = {
+  minHeight: '100vh',
+  background: '#111',
+  color: '#eee',
+  fontFamily: 'system-ui, -apple-system, sans-serif',
+  fontSize: 14,
+  padding: '40px 24px',
+  boxSizing: 'border-box',
+};
+
+const header: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'baseline',
+  gap: 10,
+  marginBottom: 28,
+};
+
+const logo: React.CSSProperties = {
+  fontSize: 22,
+  fontWeight: 700,
+  color: '#cc0000',
+};
+
+const subtitle: React.CSSProperties = {
+  fontSize: 16,
+  color: '#888',
+};
+
+const card: React.CSSProperties = {
+  background: '#1e1e1e',
+  borderRadius: 10,
+  padding: '24px',
+  maxWidth: 560,
+  border: '1px solid #2a2a2a',
+};
+
+const sectionLabel: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 700,
+  color: '#888',
+  textTransform: 'uppercase',
+  letterSpacing: '0.07em',
+  marginBottom: 10,
+};
+
+const hint: React.CSSProperties = {
+  margin: '0 0 8px',
+  color: '#aaa',
+  fontSize: 13,
+};
+
+const input: React.CSSProperties = {
+  width: '100%',
+  background: '#2a2a2a',
+  border: '1px solid #444',
+  borderRadius: 6,
+  color: '#eee',
+  fontSize: 13,
+  padding: '8px 10px',
+  boxSizing: 'border-box',
+  outline: 'none',
+  fontFamily: 'monospace',
+};
+
+const muted: React.CSSProperties = {
+  margin: '6px 0 0',
+  fontSize: 11,
+  color: '#555',
+};
+
+const divider: React.CSSProperties = {
+  height: 1,
+  background: '#2a2a2a',
+  margin: '20px 0',
+};
+
+const checkRow: React.CSSProperties = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 9,
+  cursor: 'pointer',
+  marginBottom: 10,
+  userSelect: 'none',
+};
+
+const btn: React.CSSProperties = {
+  background: '#cc0000',
+  border: 'none',
+  borderRadius: 6,
+  color: '#fff',
+  fontSize: 13,
+  fontWeight: 600,
+  padding: '9px 20px',
+  cursor: 'pointer',
+  transition: 'background 0.2s',
+  fontFamily: 'inherit',
+};
+
+const btnSaved: React.CSSProperties = {
+  background: '#2e7d32',
+};

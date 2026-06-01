@@ -183,7 +183,7 @@ function injectVideoButton(): void {
       document.querySelector('ytd-like-button-renderer') ??
       document.querySelector('like-button-view-model');
 
-    if (!likeBtn) return; // caller will retry
+    if (!likeBtn) { console.warn('[TubeVault] watch: like anchor NOT found yet', location.pathname); return; }
 
     const container = makeContainer(BUTTON_ID);
     const downloadBtn = document.querySelector('ytd-download-button-renderer');
@@ -199,6 +199,7 @@ function injectVideoButton(): void {
     videoRoot = createRoot(container);
     videoRoot.render(<ArchiveButton getUrl={getVideoUrl} playlist={false} dropUp />);
     videoInjected = true;
+    console.log('[TubeVault] watch: button injected ✓', location.pathname);
   }
 }
 
@@ -419,9 +420,15 @@ function tryInjectPlaylist(attempts: number) {
 // calls this repeatedly as YouTube builds the new page, so injection lands as
 // soon as the anchor element exists — no fixed retry budget needed.
 function ensureButtons() {
-  if (isWatchPage() && !document.getElementById(BUTTON_ID)) injectVideoButton();
+  if (isWatchPage() && !document.getElementById(BUTTON_ID)) {
+    console.log('[TubeVault] ensure: watch page, button missing → injecting', location.pathname);
+    injectVideoButton();
+  }
   if (isPlaylistContext() && !document.getElementById(PLAYLIST_BTN_ID)) injectPlaylistButton();
-  if (isChannelPage() && !document.getElementById(CHANNEL_BTN_ID)) injectChannelButton();
+  if (isChannelPage() && !document.getElementById(CHANNEL_BTN_ID)) {
+    console.log('[TubeVault] ensure: channel page, button missing → injecting', location.pathname);
+    injectChannelButton();
+  }
 }
 
 function syncForCurrentPage() {
@@ -458,13 +465,18 @@ document.addEventListener('yt-page-data-updated', onYtNav);
 // content-script version is live and that its timer is actually ticking.
 //   document.documentElement.dataset.tvVersion  → loaded version
 //   document.documentElement.dataset.tvBeat      → updates every 1.5s if alive
-try { document.documentElement.dataset.tvVersion = chrome.runtime.getManifest().version; } catch { /* ignore */ }
+let tvVersion = '?';
+try { tvVersion = chrome.runtime.getManifest().version; document.documentElement.dataset.tvVersion = tvVersion; } catch { /* ignore */ }
+console.log(`[TubeVault] content script loaded v${tvVersion} — watching for navigation`);
 
 // Guaranteed safety net: a cheap periodic check re-injects any missing button
 // even if every signal above is somehow missed. When buttons are already present
 // this is just a few getElementById checks.
+let tvBeat = 0;
 setInterval(() => {
-  document.documentElement.dataset.tvBeat = String(Date.now());
+  tvBeat++;
+  document.documentElement.dataset.tvBeat = String(tvBeat);
+  if (tvBeat % 4 === 0) console.log(`[TubeVault] alive (beat ${tvBeat}) — path ${location.pathname}`);
   syncForCurrentPage();
 }, 1500);
 

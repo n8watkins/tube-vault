@@ -175,24 +175,28 @@ function injectVideoButton(): void {
     if (!actionBar) return; // caller will retry
     mountShortsButton(actionBar);
   } else {
-    // Watch / Live: anchor to the like button — always present and in light DOM.
-    // Replace YouTube's download button if it exists, otherwise insert before like.
-    const likeBtn =
-      document.querySelector('#top-level-buttons-computed ytd-like-button-renderer') ??
-      document.querySelector('ytd-watch-metadata ytd-like-button-renderer') ??
-      document.querySelector('ytd-like-button-renderer') ??
-      document.querySelector('like-button-view-model');
+    // Watch / Live: anchor to the actions row itself (#top-level-buttons-computed,
+    // inside ytd-menu-renderer). The like button is now a deeply-nested
+    // segmented-like-dislike-button-view-model, so anchoring to *it* buries our
+    // button inside the like/dislike pill where it's invisible. Insert as a direct
+    // child of the row, right after the like/dislike segment.
+    const actionRow =
+      document.querySelector('ytd-watch-metadata #top-level-buttons-computed') ??
+      document.querySelector('#top-level-buttons-computed');
 
-    if (!likeBtn) { console.warn('[TubeVault] watch: like anchor NOT found yet', location.pathname); return; }
+    if (!actionRow) { console.warn('[TubeVault] watch: action row NOT found yet', location.pathname); return; }
 
     const container = makeContainer(BUTTON_ID);
-    const downloadBtn = document.querySelector('ytd-download-button-renderer');
+    const downloadBtn = actionRow.querySelector('ytd-download-button-renderer');
+    const segmented = actionRow.querySelector('segmented-like-dislike-button-view-model');
 
     if (downloadBtn) {
       downloadBtn.parentElement!.insertBefore(container, downloadBtn);
       downloadBtn.remove();
+    } else if (segmented) {
+      segmented.insertAdjacentElement('afterend', container);
     } else {
-      likeBtn.parentElement!.insertBefore(container, likeBtn);
+      actionRow.appendChild(container);
     }
 
     container.style.marginLeft = '8px';

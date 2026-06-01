@@ -26,6 +26,10 @@ function formatBytes(b: number | null | undefined): string {
   return `${Math.round(b / 1e3)} KB`;
 }
 
+// Only interrupt with a confirmation when a channel download is this big (or its
+// size is unknown). Smaller downloads just start.
+const CONFIRM_OVER_BYTES = 1_000_000_000; // 1 GB
+
 interface Props {
   getUrl: () => string;
   playlist: boolean;
@@ -37,7 +41,7 @@ interface Props {
 const LABEL: Record<string, Record<BtnState, string>> = {
   video: { idle: 'Download', loading: 'Downloading…', done: 'Saved ✓', error: 'Failed ✗' },
   playlist: { idle: 'Download Playlist', loading: 'Downloading…', done: 'Saved ✓', error: 'Failed ✗' },
-  channel: { idle: 'Download Videos', loading: 'Working…', done: 'Saved ✓', error: 'Failed ✗' },
+  channel: { idle: 'Download', loading: 'Working…', done: 'Saved ✓', error: 'Failed ✗' },
 };
 
 const BTN_COLOR: Record<BtnState, string> = {
@@ -208,19 +212,29 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
         `the top ${n} most-viewed (recent ${RECENT_POOL})`;
       const sizeNote = plan.estBytes ? `~${formatBytes(plan.estBytes)}${plan.sampled ? ' (estimated from a sample)' : ''}` : 'unknown';
 
-      const proceed = window.confirm(
-        `TubeVault — download ${what} from this channel?\n\n` +
-        `Videos: ${n}\n` +
-        `Projected size: ${sizeNote}`
-      );
+      const proceedDownload = () => {
+        if (mode === 'all') {
+          sendRequest({ action: 'custom', urls: [channel.channelVideosUrl()], expand: true, components });
+        } else {
+          sendRequest({ action: 'custom', urls: plan.targets, components });
+        }
+      };
 
-      if (!proceed) { setBtnState('idle'); return; }
-
-      if (mode === 'all') {
-        sendRequest({ action: 'custom', urls: [channel.channelVideosUrl()], expand: true, components });
-      } else {
-        sendRequest({ action: 'custom', urls: plan.targets, components });
+      // Only ask for confirmation on sizeable (or unknown-size) downloads.
+      if (plan.estBytes != null && plan.estBytes <= CONFIRM_OVER_BYTES) {
+        proceedDownload();
+        return;
       }
+
+      const cap = what.charAt(0).toUpperCase() + what.slice(1);
+      showConfirm(
+        'Download from this channel?',
+        [cap, `Videos: ${n}  ·  Projected size: ${sizeNote}`],
+        'Download',
+      ).then((ok) => {
+        if (!ok) { setBtnState('idle'); return; }
+        proceedDownload();
+      });
     });
   }
 
@@ -280,6 +294,66 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
       )}
     </div>
   );
+}
+
+// Styled confirm dialog (our own, not window.confirm). Click the backdrop or
+// press Esc to cancel; Enter or the red button to confirm.
+function showConfirm(title: string, lines: string[], confirmLabel: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement('div');
+    Object.assign(backdrop.style, {
+      position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(2px)',
+      zIndex: '2147483647', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontFamily: 'Roboto, system-ui, Arial, sans-serif',
+    });
+
+    const card = document.createElement('div');
+    Object.assign(card.style, {
+      background: '#1c1c1c', border: '1px solid #2e2e2e', borderRadius: '16px',
+      boxShadow: '0 16px 48px rgba(0,0,0,0.7)', padding: '24px', maxWidth: '420px', width: '90%', color: '#fff',
+    });
+    card.onclick = (e) => e.stopPropagation();
+
+    const h = document.createElement('div');
+    h.textContent = title;
+    Object.assign(h.style, { fontSize: '18px', fontWeight: '700', marginBottom: '14px' });
+
+    const body = document.createElement('div');
+    Object.assign(body.style, { fontSize: '15px', lineHeight: '1.6', color: '#ccc', marginBottom: '22px' });
+    lines.forEach((ln) => { const p = document.createElement('div'); p.textContent = ln; body.appendChild(p); });
+
+    const row = document.createElement('div');
+    Object.assign(row.style, { display: 'flex', gap: '10px', justifyContent: 'flex-end' });
+
+    const cancel = document.createElement('button');
+    cancel.textContent = 'Cancel';
+    Object.assign(cancel.style, { padding: '10px 18px', borderRadius: '10px', border: '1px solid #444', background: '#2b2b2b', color: '#fff', fontSize: '14px', fontWeight: '600', cursor: 'pointer', fontFamily: 'inherit' });
+
+    const confirm = document.createElement('button');
+    confirm.textContent = confirmLabel;
+    Object.assign(confirm.style, { padding: '10px 18px', borderRadius: '10px', border: 'none', background: '#cc0000', color: '#fff', fontSize: '14px', fontWeight: '700', cursor: 'pointer', fontFamily: 'inherit' });
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.stopPropagation(); cleanup(false); }
+      else if (e.key === 'Enter') { e.stopPropagation(); cleanup(true); }
+    };
+    const cleanup = (result: boolean) => {
+      document.removeEventListener('keydown', onKey, true);
+      backdrop.remove();
+      resolve(result);
+    };
+
+    backdrop.onclick = () => cleanup(false);
+    cancel.onclick = () => cleanup(false);
+    confirm.onclick = () => cleanup(true);
+    document.addEventListener('keydown', onKey, true);
+
+    row.append(cancel, confirm);
+    card.append(h, body, row);
+    backdrop.appendChild(card);
+    document.body.appendChild(backdrop);
+    confirm.focus();
+  });
 }
 
 function showToast(msg: string, isError = false): void {

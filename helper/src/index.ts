@@ -16,6 +16,11 @@ const ALLOWED_ACTIONS: Action[] = [
 readMessages(async (raw) => {
   const req = raw as Record<string, unknown>;
 
+  if (req.action === 'ping') {
+    writeMessage({ ok: true, status: 'ok', version: '0.1.0' });
+    return;
+  }
+
   if (req.action === 'open_folder') {
     const windowsPath = req.windowsPath as string;
     if (typeof windowsPath === 'string' && windowsPath) {

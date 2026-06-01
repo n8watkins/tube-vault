@@ -104,15 +104,16 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
         setChanVideoCount(channel.getVideoCount());
         const ss = channel.getSortState();
         setChanSortState(ss);
-        // First open: default to all-time if YouTube is already sorted by Popular,
-        // else recent. Later opens: keep the user's choice, but drop all-time if
-        // the Popular sort is no longer active.
-        if (!defaultedMode.current) {
-          defaultedMode.current = true;
-          setChanMode(ss === 'popular' ? 'popular_alltime' : 'popular_recent');
+        if (ss === 'popular') {
+          // They took the effort to sort by Popular — jump straight to all-time.
+          setChanMode('popular_alltime');
+        } else if (!defaultedMode.current) {
+          setChanMode('popular_recent');
         } else {
-          setChanMode((m) => (m === 'popular_alltime' && ss !== 'popular' ? 'popular_recent' : m));
+          // Popular no longer active — drop all-time back to recent, keep other choices.
+          setChanMode((m) => (m === 'popular_alltime' ? 'popular_recent' : m));
         }
+        defaultedMode.current = true;
       }
     }
     setOpen(o => !o);

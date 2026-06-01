@@ -1,6 +1,6 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { FiVideo, FiHeadphones, FiFileText, FiImage, FiPackage } from 'react-icons/fi';
+import { FiVideo, FiHeadphones, FiFileText, FiImage, FiCheckSquare, FiSquare } from 'react-icons/fi';
 import { MenuState, VideoQuality, VideoFormat, AudioFormat, ChannelMode, RECENT_POOL } from '../types';
 
 interface ChannelControls {
@@ -28,8 +28,12 @@ type TopLevel = 'popular' | 'latest' | 'all';
 
 export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, playlist, channel, onArchive }: Props) {
   const noneSelected = !state.video && !state.audio && !state.metadata && !state.thumbnail;
+  const allSelected = state.video && state.audio && state.metadata && state.thumbnail;
 
-  const bundleAll = () => onChange({ video: true, audio: true, metadata: true, thumbnail: true });
+  const toggleAll = () => {
+    const v = !allSelected;
+    onChange({ video: v, audio: v, metadata: v, thumbnail: v });
+  };
 
   const posStyle = dropUp
     ? { bottom: window.innerHeight - anchorRect.top + 8, left: anchorRect.left }
@@ -159,9 +163,10 @@ export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, play
 
       <div style={divider} />
 
-      <button onClick={(e) => { e.stopPropagation(); bundleAll(); }} style={bundleBtn}>
-        <FiPackage size={15} style={{ marginRight: 7 }} />
-        Bundle All
+      <button onClick={(e) => { e.stopPropagation(); toggleAll(); }} style={bundleBtn}>
+        {allSelected
+          ? <><FiSquare size={15} style={{ marginRight: 7 }} />Deselect All</>
+          : <><FiCheckSquare size={15} style={{ marginRight: 7 }} />Select All</>}
       </button>
 
       <button

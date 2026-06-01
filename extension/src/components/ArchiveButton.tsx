@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { FiArchive, FiDownload } from 'react-icons/fi';
+import { FiDownload } from 'react-icons/fi';
 import { ArchiveMenu } from './ArchiveMenu';
 import { MenuState, defaultMenuState } from '../types';
 
@@ -14,7 +14,7 @@ interface Props {
 
 const LABEL: Record<string, Record<BtnState, string>> = {
   video: { idle: 'Download', loading: 'Downloading…', done: 'Saved ✓', error: 'Failed ✗' },
-  playlist: { idle: 'Archive Playlist', loading: 'Archiving…', done: 'Saved ✓', error: 'Failed ✗' },
+  playlist: { idle: 'Download Playlist', loading: 'Downloading…', done: 'Saved ✓', error: 'Failed ✗' },
 };
 
 const BTN_COLOR: Record<BtnState, string> = {
@@ -126,7 +126,7 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp }: Props) {
           whiteSpace: 'nowrap',
         }}
       >
-        {compact || playlist ? <FiArchive size={compact ? 20 : 14} /> : <FiDownload size={14} />}
+        <FiDownload size={compact ? 20 : 14} />
         {!compact && <span>{labelSet[btnState]}</span>}
       </button>
 

@@ -29,7 +29,7 @@ export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, play
       style={{ ...panel, ...posStyle }}
       onClick={(e) => e.stopPropagation()}
     >
-      <div style={headerStyle}>{playlist ? 'Archive Playlist' : 'Archive Options'}</div>
+      <div style={headerStyle}>{playlist ? 'Download Playlist' : 'Download Options'}</div>
 
       {/* Video */}
       <div style={optRow}>
@@ -138,7 +138,7 @@ export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, play
         onClick={(e) => { e.stopPropagation(); if (!noneSelected) onArchive(); }}
         style={{ ...archiveBtnBase, ...(noneSelected ? archiveBtnDisabled : {}) }}
       >
-        {playlist ? 'Archive Playlist' : 'Archive'}
+        {playlist ? 'Download Playlist' : 'Download'}
       </button>
     </div>
   );

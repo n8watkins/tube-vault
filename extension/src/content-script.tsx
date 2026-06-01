@@ -259,21 +259,27 @@ function getChannelVideoCount(): number | null {
   return Math.round(num * mult);
 }
 
-// Read (don't drive) the current sort of the Videos tab. The selected chip /
-// dropdown label reflects the active order. 'popular' enables all-time mode.
+// Read (don't drive) the current sort of the Videos tab. 'popular' enables
+// all-time mode. The sort chips render as role="tab" buttons carrying
+// aria-label (e.g. "Popular") + aria-selected; new layout also marks the active
+// chip's inner div with class ytChipShapeActive.
 function getSortState(): 'popular' | 'other' | null {
-  for (const c of Array.from(document.querySelectorAll('yt-chip-cloud-chip-renderer'))) {
+  const chips = document.querySelectorAll(
+    'chip-bar-view-model button[role="tab"], chip-view-model button[role="tab"], ' +
+    '#chips button[role="tab"], yt-chip-cloud-chip-renderer'
+  );
+  for (const c of Array.from(chips)) {
     const selected =
       c.getAttribute('aria-selected') === 'true' ||
+      !!c.querySelector('.ytChipShapeActive, [aria-selected="true"]') ||
       c.classList.contains('iron-selected') ||
-      !!c.querySelector('[aria-selected="true"], .iron-selected');
-    if (selected) {
-      const t = (c.textContent ?? '').trim().toLowerCase();
-      if (t.includes('popular')) return 'popular';
-      if (t) return 'other';
-    }
+      !!c.querySelector('.iron-selected');
+    if (!selected) continue;
+    const label = (c.getAttribute('aria-label') ?? c.textContent ?? '').trim().toLowerCase();
+    if (label.includes('popular')) return 'popular';
+    if (label) return 'other';
   }
-  // Dropdown layout: the trigger's visible text is the current sort.
+  // Older dropdown layout: the trigger's visible text is the current sort.
   const trig = document.querySelector('yt-sort-filter-sub-menu-renderer, ytd-channel-sub-menu-renderer');
   if (trig) {
     const t = (trig.textContent ?? '').toLowerCase();

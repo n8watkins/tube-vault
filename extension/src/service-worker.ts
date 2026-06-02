@@ -1,3 +1,5 @@
+import { NamingOptions, defaultNaming, NAMING_KEYS } from './types';
+
 const NATIVE_HOST = 'com.tube_vault.helper';
 const DEFAULT_OUTPUT_ROOT = 'C:\\Users\\natha\\Videos\\Youtube Downloads';
 const JOBS_KEY = 'tvJobs';
@@ -13,6 +15,9 @@ interface Job {
   components: Record<string, unknown>;
   status: JobStatus;
   estBytes?: number;       // known size; undefined → probe lazily before download
+  index?: number;          // 1-based rank within the selected batch (for numbering)
+  total?: number;          // size of the selected batch
+  category?: string;       // 'Most Popular' | 'Latest' | 'Playlist' (batches only)
   folder?: string;
   error?: string;
   createdAt: number;
@@ -22,15 +27,25 @@ interface Job {
 const isActive = (j: Job) => j.status === 'queued' || j.status === 'probing' || j.status === 'running';
 
 // ── Settings cache ────────────────────────────────────────────────────────────
-let cachedSettings = { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: true };
+const namingKeyList = Object.keys(NAMING_KEYS) as (keyof NamingOptions)[];
+let cachedSettings = { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: true, naming: { ...defaultNaming } };
+const namingStorageDefaults = Object.fromEntries(namingKeyList.map((k) => [NAMING_KEYS[k], defaultNaming[k]]));
 chrome.storage.local.get(
-  { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: true },
-  (s) => { cachedSettings = { ...cachedSettings, ...(s as typeof cachedSettings) }; }
+  { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: true, ...namingStorageDefaults },
+  (s) => {
+    cachedSettings.outputRoot = s.outputRoot ?? cachedSettings.outputRoot;
+    cachedSettings.autoOpenFolder = s.autoOpenFolder ?? cachedSettings.autoOpenFolder;
+    for (const k of namingKeyList) cachedSettings.naming[k] = !!s[NAMING_KEYS[k]];
+  }
 );
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if (changes.outputRoot) cachedSettings.outputRoot = changes.outputRoot.newValue;
   if (changes.autoOpenFolder) cachedSettings.autoOpenFolder = changes.autoOpenFolder.newValue;
+  for (const k of namingKeyList) {
+    const c = changes[NAMING_KEYS[k]];
+    if (c) cachedSettings.naming[k] = !!c.newValue;
+  }
 });
 
 // ── Native messaging helper (promise) ─────────────────────────────────────────
@@ -101,7 +116,10 @@ async function runJob(job: Job): Promise<void> {
     url: job.videoUrl,
     components: job.components,
     jobId: job.id,
-    options: { outputRoot: cachedSettings.outputRoot || DEFAULT_OUTPUT_ROOT },
+    index: job.index,
+    total: job.total,
+    category: job.category,
+    options: { outputRoot: cachedSettings.outputRoot || DEFAULT_OUTPUT_ROOT, naming: cachedSettings.naming },
   };
   chrome.runtime.sendNativeMessage(NATIVE_HOST, payload, async (response) => {
     if (await isCancelled(job.id)) { pumpQueue(); return; }
@@ -116,7 +134,6 @@ async function runJob(job: Job): Promise<void> {
       if (cachedSettings.autoOpenFolder && folder) {
         chrome.runtime.sendNativeMessage(NATIVE_HOST, { action: 'open_folder', windowsPath: folder }, () => { void chrome.runtime.lastError; });
       }
-      if (folder) createReceipt(folder);
     }
     pumpQueue();
   });
@@ -190,11 +207,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       const items: { url: string; title?: string; bytes?: number | null }[] = msg.items ?? [];
       const components = msg.components ?? {};
       const batchLabel: string | undefined = msg.batchLabel;
+      const category: string | undefined = msg.category;
       const valid = items.filter((it) => it && typeof it.url === 'string');
       if (valid.length === 0) { sendResponse({ ok: false, error: 'No videos to enqueue' }); return; }
-      const batchId = valid.length > 1 || batchLabel ? uid() : undefined;
+      const isBatch = valid.length > 1 || !!batchLabel;
+      const batchId = isBatch ? uid() : undefined;
+      const total = valid.length;
       const jobs = await getJobs();
-      for (const it of valid) {
+      valid.forEach((it, i) => {
         jobs.push({
           id: uid(),
           batchId, batchLabel,
@@ -203,9 +223,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           components,
           status: 'queued',
           estBytes: typeof it.bytes === 'number' && it.bytes > 0 ? it.bytes : undefined,
+          // Numbering is sequential over the selected set (001 = top of the chosen sort).
+          index: isBatch ? i + 1 : undefined,
+          total: isBatch ? total : undefined,
+          category: isBatch ? category : undefined,
           createdAt: Date.now(),
         });
-      }
+      });
       await setJobs(jobs);
       sendResponse({ ok: true, batchId, count: valid.length });
       pumpQueue();
@@ -230,23 +254,5 @@ function notifyDone(label: string, folder: string): void {
     iconUrl: 'icons/icon48.png',
     title: 'TubeVault — download complete',
     message: folder ? `${label}\nSaved to ${folder}` : label,
-  });
-}
-
-function createReceipt(winPath: string): void {
-  const now = new Date();
-  const dateStr = now.toISOString().slice(0, 10);
-  const content = [
-    'TubeVault Download Receipt',
-    `Date: ${dateStr} ${now.toLocaleTimeString()}`,
-    '',
-    'Saved to:',
-    `  ${winPath}`,
-  ].join('\n');
-  chrome.downloads.download({
-    url: `data:text/plain;charset=utf-8,${encodeURIComponent(content)}`,
-    filename: `TubeVault/${dateStr} - receipt.txt`,
-    saveAs: false,
-    conflictAction: 'uniquify',
   });
 }

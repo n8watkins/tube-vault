@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { FiFolder, FiRefreshCw } from 'react-icons/fi';
 import { FaGithub, FaMugHot } from 'react-icons/fa';
-import { DEFAULT_CHANNEL_COUNTS, DEFAULT_CHANNEL_COUNT } from './types';
+import { DEFAULT_CHANNEL_COUNTS, DEFAULT_CHANNEL_COUNT, NamingOptions, defaultNaming, NAMING_KEYS } from './types';
 
 export const DEFAULT_OUTPUT_ROOT = 'C:\\Users\\natha\\Videos\\Youtube Downloads';
 
@@ -159,26 +159,47 @@ function SettingsSection() {
   const [autoOpen, setAutoOpen] = useState(true);
   const [countsText, setCountsText] = useState(DEFAULT_CHANNEL_COUNTS.join(', '));
   const [defaultCount, setDefaultCount] = useState(DEFAULT_CHANNEL_COUNT);
+  const [naming, setNaming] = useState<NamingOptions>(defaultNaming);
   const [status, setStatus] = useState<'idle' | 'saved'>('idle');
 
   useEffect(() => {
+    const namingDefaults = Object.fromEntries(
+      (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [NAMING_KEYS[k], defaultNaming[k]])
+    );
     chrome.storage.local.get(
-      { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: true, channelCounts: DEFAULT_CHANNEL_COUNTS, channelDefaultCount: DEFAULT_CHANNEL_COUNT },
-      (s) => { setOutputRoot(s.outputRoot); setAutoOpen(s.autoOpenFolder); setCountsText((s.channelCounts as number[]).join(', ')); setDefaultCount(s.channelDefaultCount); }
+      { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: true, channelCounts: DEFAULT_CHANNEL_COUNTS, channelDefaultCount: DEFAULT_CHANNEL_COUNT, ...namingDefaults },
+      (s) => {
+        setOutputRoot(s.outputRoot); setAutoOpen(s.autoOpenFolder); setCountsText((s.channelCounts as number[]).join(', ')); setDefaultCount(s.channelDefaultCount);
+        setNaming(Object.fromEntries(
+          (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [k, !!s[NAMING_KEYS[k]]])
+        ) as unknown as NamingOptions);
+      }
     );
   }, []);
 
   const parsedCounts = parseCounts(countsText);
+  const setNameFlag = (k: keyof NamingOptions, v: boolean) => setNaming((n) => ({ ...n, [k]: v }));
 
   function save() {
     const root = outputRoot.trim() || DEFAULT_OUTPUT_ROOT;
     const counts = parsedCounts.length ? parsedCounts : DEFAULT_CHANNEL_COUNTS;
     const def = counts.includes(defaultCount) ? defaultCount : counts[counts.length - 1];
-    chrome.storage.local.set({ outputRoot: root, autoOpenFolder: autoOpen, channelCounts: counts, channelDefaultCount: def }, () => {
+    const namingFlat = Object.fromEntries(
+      (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [NAMING_KEYS[k], naming[k]])
+    );
+    chrome.storage.local.set({ outputRoot: root, autoOpenFolder: autoOpen, channelCounts: counts, channelDefaultCount: def, ...namingFlat }, () => {
       setOutputRoot(root); setCountsText(counts.join(', ')); setDefaultCount(def);
       setStatus('saved'); setTimeout(() => setStatus('idle'), 2000);
     });
   }
+
+  // Live preview of the save path, dropping segments as toggles turn off.
+  const previewPath = [
+    'MrBeast',
+    naming.categoryFolders ? 'Most Popular' : null,
+    `${naming.numbering ? '001 - ' : ''}I Spent 50 Hours${naming.includeId ? ' [abc123]' : ''}`,
+    `${naming.titleFiles ? 'I Spent 50 Hours' : 'video'}.mp4`,
+  ].filter(Boolean).join(' / ');
 
   return (
     <div>
@@ -198,10 +219,24 @@ function SettingsSection() {
               <input type="checkbox" checked={autoOpen} onChange={(e) => setAutoOpen(e.target.checked)} style={{ accentColor: '#cc0000', width: 15, height: 15, cursor: 'pointer', flexShrink: 0 }} />
               <span>Open folder in Windows Explorer after download</span>
             </label>
-            <label style={checkRow}>
-              <input type="checkbox" checked disabled style={{ width: 15, height: 15, flexShrink: 0 }} />
-              <span style={{ color: '#666' }}>Save receipt to Chrome downloads (always on)</span>
-            </label>
+          </Field>
+
+          <div style={divider} />
+
+          <Field label="File naming & folders">
+            {([
+              ['titleFiles', 'Name files by title (else generic video / audio / thumbnail)'],
+              ['summaryTxt', 'Write a .txt summary in each folder'],
+              ['categoryFolders', 'Group batches into Most Popular / Latest / Playlist folders'],
+              ['numbering', 'Number batch folders (001, 002…)'],
+              ['includeId', 'Keep the [videoId] suffix on folder names'],
+            ] as [keyof NamingOptions, string][]).map(([key, label]) => (
+              <label key={key} style={checkRow}>
+                <input type="checkbox" checked={naming[key]} onChange={(e) => setNameFlag(key, e.target.checked)} style={{ accentColor: '#cc0000', width: 15, height: 15, cursor: 'pointer', flexShrink: 0 }} />
+                <span>{label}</span>
+              </label>
+            ))}
+            <p style={muted}>Preview: {previewPath}</p>
           </Field>
 
           <div style={divider} />

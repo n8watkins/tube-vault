@@ -135,9 +135,9 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
   // Non-blocking: hand one or more per-video jobs to the background queue and
   // return to idle. Progress/cancel live in the toolbar popup, so the page button
   // never locks. A batch (>1 item or a batchLabel) is grouped by the worker.
-  function enqueue(items: PlanItem[], components: Record<string, unknown>, batchLabel?: string) {
+  function enqueue(items: PlanItem[], components: Record<string, unknown>, batchLabel?: string, category?: string) {
     chrome.runtime.sendMessage(
-      { type: 'TUBE_VAULT_ENQUEUE', items, components, batchLabel },
+      { type: 'TUBE_VAULT_ENQUEUE', items, components, batchLabel, category },
       (response) => {
         if (chrome.runtime.lastError || !response?.ok) {
           const err = chrome.runtime.lastError?.message ?? response?.error ?? 'Unknown error';
@@ -196,7 +196,7 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
           plan.items,
         ).then((picked) => {
           if (!picked || !picked.length) { setBtnState('idle'); return; }
-          enqueue(picked, components, `Playlist — ${picked.length} video${picked.length === 1 ? '' : 's'}`);
+          enqueue(picked, components, `Playlist — ${picked.length} video${picked.length === 1 ? '' : 's'}`, 'Playlist');
         });
       }
     );
@@ -243,6 +243,8 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
         `the top ${n} most-viewed (recent ${RECENT_POOL})`;
       const sizeNote = plan.estBytes ? `~${formatBytes(plan.estBytes)}${plan.sampled ? ' (estimated)' : ''}` : 'sized as they download';
       const cap = what.charAt(0).toUpperCase() + what.slice(1);
+      // Category folder name derived from the resolved mode.
+      const category = mode === 'popular_alltime' || mode === 'popular_recent' ? 'Most Popular' : 'Latest';
 
       showSelection(
         'Download from this channel?',
@@ -250,7 +252,7 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
         plan.items,
       ).then((picked) => {
         if (!picked || !picked.length) { setBtnState('idle'); return; }
-        enqueue(picked, components, cap);
+        enqueue(picked, components, cap, category);
       });
     });
   }

@@ -22,6 +22,28 @@ export const defaultMenuState: MenuState = {
   thumbnail: false,
 };
 
+// ── File naming & folder layout ───────────────────────────────────────────────
+export interface NamingOptions {
+  titleFiles: boolean;      // <Title>.<ext> vs generic video/audio/thumbnail
+  summaryTxt: boolean;      // write <Title>.txt summary beside the files
+  categoryFolders: boolean; // insert Most Popular / Latest / Playlist level
+  numbering: boolean;       // "001 - " rank prefix on batch folders
+  includeId: boolean;       // keep " [videoId]" suffix on folder name
+}
+
+export const defaultNaming: NamingOptions = {
+  titleFiles: true, summaryTxt: true, categoryFolders: true, numbering: true, includeId: true,
+};
+
+// Flat storage keys — each boolean lives individually in chrome.storage.local.
+export const NAMING_KEYS: Record<keyof NamingOptions, string> = {
+  titleFiles: 'nameTitleFiles',
+  summaryTxt: 'nameSummaryTxt',
+  categoryFolders: 'nameCategoryFolders',
+  numbering: 'nameNumbering',
+  includeId: 'nameIncludeId',
+};
+
 // ── Channel button ──────────────────────────────────────────────────────────
 export type ChannelMode = 'popular_alltime' | 'popular_recent' | 'latest' | 'all';
 

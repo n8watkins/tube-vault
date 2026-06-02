@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
-import { wslToWindowsPath, windowsToWslPath } from './sanitize';
+import { wslToWindowsPath, windowsToWslPath, sanitizeFilename } from './sanitize';
 
 const DEFAULT_OUTPUT_ROOT = '/mnt/c/Users/natha/Videos/Youtube Downloads';
 
@@ -28,6 +28,19 @@ export type Action =
 
 export type ChannelMode = 'popular_alltime' | 'popular_recent' | 'latest' | 'all';
 
+// Curated file-naming / folder-layout toggles (mirrors the extension type).
+export interface NamingOptions {
+  titleFiles: boolean;      // <Title>.<ext> vs generic video/audio/thumbnail
+  summaryTxt: boolean;      // write <Title>.txt summary beside the files
+  categoryFolders: boolean; // insert Most Popular / Latest / Playlist level
+  numbering: boolean;       // "001 - " rank prefix on batch folders
+  includeId: boolean;       // keep " [videoId]" suffix on folder name
+}
+
+const DEFAULT_NAMING: NamingOptions = {
+  titleFiles: true, summaryTxt: true, categoryFolders: true, numbering: true, includeId: true,
+};
+
 export interface DownloadRequest {
   action: Action;
   url: string;
@@ -38,8 +51,12 @@ export interface DownloadRequest {
   playlistEnd?: number;   // cap expansion to the first N entries (e.g. "latest 10")
   mode?: ChannelMode;     // channel_plan: how to choose videos
   count?: number;         // channel_plan: how many videos
+  index?: number;         // 1-based rank within the selected batch (for numbering)
+  total?: number;         // size of the selected batch (numbering pad width)
+  category?: string;      // 'Most Popular' | 'Latest' | 'Playlist' (batches only)
   options?: {
     outputRoot?: string;
+    naming?: NamingOptions;
   };
 }
 
@@ -111,6 +128,25 @@ function folderTemplate(root: string): string {
 
 function playlistTemplate(root: string): string {
   return path.join(root, '%(uploader)s', 'Playlists', '%(playlist_title)s', '%(playlist_index)02d - %(title)s [%(id)s]');
+}
+
+// Folder-per-video directory template for the `custom` (queue) path, composed from
+// the user's naming toggles:
+//   root / %(uploader)s / [<Category>/] / [<NNN> - ]%(title)s[ [%(id)s]]
+// The rank prefix is computed in JS (one URL per call → no %(playlist_index)s).
+function buildBase(root: string, req: DownloadRequest, naming: NamingOptions): string {
+  const parts = [root, '%(uploader)s'];
+  if (naming.categoryFolders && req.category) parts.push(sanitizeFilename(req.category));
+
+  let leaf = '';
+  if (naming.numbering && req.index) {
+    const width = Math.max(3, String(req.total ?? 0).length);
+    leaf += `${String(req.index).padStart(width, '0')} - `;
+  }
+  leaf += '%(title)s';
+  if (naming.includeId) leaf += ' [%(id)s]';
+  parts.push(leaf);
+  return path.join(...parts);
 }
 
 function ensureDir(p: string): void {
@@ -296,6 +332,16 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
         return { ok: false, status: 'failed', error: 'No components selected' };
       }
 
+      const naming = req.options?.naming ?? DEFAULT_NAMING;
+      const customBase = buildBase(root, req, naming);
+      // File basename per component: by title (distinct extensions avoid collisions)
+      // or the legacy generic name.
+      const fileName = (generic: string) => (naming.titleFiles ? '%(title)s' : generic);
+      // One tab-separated capture line per run: filepath first (paths don't contain
+      // tabs), then the metadata we need for the summary. after_move waits until the
+      // file is on disk so filepath is exact; the plain variant covers skip-download.
+      const CAPTURE = '%(filepath)s\t%(title)s\t%(uploader)s\t%(upload_date)s\t%(view_count)s\t%(duration)s\t%(id)s';
+
       const jobs: Promise<{ out: string; err: string; code: number }>[] = [];
 
       // Video download run (also carries thumbnail/metadata flags when applicable)
@@ -305,24 +351,26 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
         if (hasVideo) {
           args.push('-f', videoFormatFlag(comp.video!.quality));
           args.push('--merge-output-format', comp.video!.format);
-          args.push('-o', `${base}/video.%(ext)s`);
+          args.push('-o', `${customBase}/${fileName('video')}.%(ext)s`);
+          args.push('--print', `after_move:${CAPTURE}`);
         } else {
           // metadata or thumbnail only — skip the actual video download
           args.push('--skip-download');
-          args.push('-o', `${base}/%(title)s [%(id)s].%(ext)s`);
+          args.push('-o', `${customBase}/${naming.titleFiles ? '%(title)s' : '%(title)s [%(id)s]'}.%(ext)s`);
+          args.push('--print', CAPTURE);
         }
 
         if (hasThumb) {
           args.push('--write-thumbnail', '--convert-thumbnails', 'jpg');
           // Always add the type-specific override so thumbnail lands at a predictable path
-          args.push('-o', `thumbnail:${base}/thumbnail.%(ext)s`);
+          args.push('-o', `thumbnail:${customBase}/${fileName('thumbnail')}.%(ext)s`);
         }
 
         if (hasMeta) {
           args.push('--write-info-json', '--write-description');
           if (hasVideo) {
-            args.push('-o', `description:${base}/description.%(ext)s`);
-            args.push('-o', `infojson:${base}/metadata.%(ext)s`);
+            args.push('-o', `description:${customBase}/${fileName('description')}.%(ext)s`);
+            args.push('-o', `infojson:${customBase}/${fileName('metadata')}.%(ext)s`);
           }
         }
 
@@ -335,7 +383,8 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
         const args: string[] = [
           '-f', 'ba/b',
           '-x', '--audio-format', comp.audio!.format,
-          '-o', `${base}/audio.%(ext)s`,
+          '-o', `${customBase}/${fileName('audio')}.%(ext)s`,
+          '--print', `after_move:${CAPTURE}`,
           ...limitFlag, ...noPlaylistFlag, ...targets,
         ];
         jobs.push(run('yt-dlp', args));
@@ -349,7 +398,15 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
         return { ok: false, status: 'failed', error: failures[0].err.slice(-800) };
       }
 
-      const folder = resolvedFolder(base);
+      // Recover the REAL per-video folder (+ metadata) from the capture lines. Prefer
+      // a line whose file actually exists on disk (a downloaded media file).
+      const cap = parseCapture(results);
+      const folder = cap.folder || resolvedFolder(customBase);
+
+      if (naming.summaryTxt && cap.mediaPath) {
+        writeSummary(folder, cap.mediaPath, req, cap.meta);
+      }
+
       return {
         ok: true,
         status: 'complete',
@@ -457,6 +514,77 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
     default:
       return { ok: false, status: 'failed', error: 'Unknown action' };
   }
+}
+
+interface CaptureMeta { title: string; uploader: string; uploadDate: string; views: string; duration: string; id: string; }
+
+// Pull the per-video folder + metadata out of the `--print` capture lines emitted by
+// the download runs. A line is `filepath\ttitle\tuploader\tupload_date\tviews\tduration\tid`.
+function parseCapture(results: { out: string }[]): { folder: string; mediaPath: string; meta: CaptureMeta } {
+  let folder = '';
+  let mediaPath = '';
+  let meta: CaptureMeta = { title: '', uploader: '', uploadDate: '', views: '', duration: '', id: '' };
+  for (const r of results) {
+    for (const raw of r.out.split('\n')) {
+      const line = raw.trim();
+      if (!line) continue;
+      const f = line.split('\t');
+      const fp = f[0];
+      if (!fp || !fp.includes('/') || fp === 'NA') continue;
+      if (!folder) folder = path.dirname(fp);
+      if (f.length >= 7 && !meta.id) {
+        meta = { title: f[1], uploader: f[2], uploadDate: f[3], views: f[4], duration: f[5], id: f[6] };
+      }
+      // A file that exists on disk is a real downloaded media file → exact folder + txt source.
+      if (fs.existsSync(fp)) { mediaPath = fp; folder = path.dirname(fp); }
+    }
+  }
+  return { folder, mediaPath, meta };
+}
+
+function fmtDate(d: string): string {
+  return /^\d{8}$/.test(d) ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : (d && d !== 'NA' ? d : '—');
+}
+function fmtViews(v: string): string {
+  const n = parseInt(v, 10);
+  return Number.isFinite(n) ? n.toLocaleString() : '—';
+}
+function fmtDuration(d: string): string {
+  const s = parseInt(d, 10);
+  if (!Number.isFinite(s)) return '—';
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}` : `${m}:${String(sec).padStart(2, '0')}`;
+}
+
+// Write the human-readable <Title>.txt summary beside the saved files. Best-effort.
+function writeSummary(folder: string, mediaPath: string, req: DownloadRequest, meta: CaptureMeta): void {
+  try {
+    const base = path.basename(mediaPath, path.extname(mediaPath));
+    const txtName = `${base}.txt`;
+    let saved: string[] = [];
+    try { saved = fs.readdirSync(folder).filter((f) => f !== txtName); } catch { /* ignore */ }
+    const collection = req.category
+      ? `${req.category}${req.index && req.total ? ` — #${req.index} of ${req.total}` : ''}`
+      : 'Single video';
+    const url = meta.id && meta.id !== 'NA' ? `https://www.youtube.com/watch?v=${meta.id}` : req.url;
+    const lines = [
+      meta.title && meta.title !== 'NA' ? meta.title : base,
+      '─'.repeat(44),
+      `Channel:     ${meta.uploader && meta.uploader !== 'NA' ? meta.uploader : '—'}`,
+      `Published:   ${fmtDate(meta.uploadDate)}`,
+      `Views:       ${fmtViews(meta.views)}`,
+      `Duration:    ${fmtDuration(meta.duration)}`,
+      `URL:         ${url}`,
+      `Collection:  ${collection}`,
+      `Downloaded:  ${new Date().toLocaleString()}`,
+      '',
+      'Files:',
+      ...saved.map((f) => `  • ${f}`),
+      '',
+      `Folder: ${wslToWindowsPath(folder)}`,
+    ];
+    fs.writeFileSync(path.join(folder, txtName), lines.join('\n') + '\n', 'utf8');
+  } catch { /* best-effort — never fail the download over the summary */ }
 }
 
 function result(code: number, templatePath: string, stderr: string): DownloadResult {

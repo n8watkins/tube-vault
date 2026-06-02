@@ -166,6 +166,30 @@ function videoFormatFlag(quality: VideoQuality): string {
   return `bv*[height<=${quality}]+ba/b[height<=${quality}]`;
 }
 
+// ── Component-aware size estimation ───────────────────────────────────────────
+// The download size depends on WHAT you grab. Pick the yt-dlp format selector for
+// the heaviest selected media so filesize_approx reflects reality (audio-only is
+// far smaller than video; thumbnail/metadata-only is negligible).
+function mediaFormatFlag(c?: DownloadComponents): string | null {
+  if (c?.video) return videoFormatFlag(c.video.quality);
+  if (c?.audio) return 'ba/b';
+  return null; // only thumbnail/metadata → no media stream
+}
+// Rough size of the sidecar files (so a thumbnail/metadata-only job isn't "0").
+function sidecarBytes(c?: DownloadComponents): number {
+  let b = 0;
+  if (c?.thumbnail) b += 120_000;  // ~120 KB jpg
+  if (c?.metadata) b += 100_000;   // info.json + description
+  return b;
+}
+// Total approx size for one video given the selected components. `approx` is the
+// filesize_approx yt-dlp reported for the chosen format (0 if none/unknown).
+function sizeForComponents(approx: number, c?: DownloadComponents): number {
+  if (!c) return approx;                    // legacy callers: full approx
+  if (mediaFormatFlag(c)) return approx + sidecarBytes(c);
+  return sidecarBytes(c);                    // thumbnail/metadata only
+}
+
 // ── Channel ranking (for the "popular/latest/all" channel button) ─────────────
 
 // Run `fn` over `items` with at most `limit` in flight (keeps us under YouTube's
@@ -201,19 +225,22 @@ async function flatList(channelUrl: string, limit?: number): Promise<{ id: strin
     .filter((x) => /^[\w-]{8,}$/.test(x.id));
 }
 
-// One extraction per video → view count + approximate size + title (best format).
-async function fetchVideoMeta(id: string): Promise<{ views: number; bytes: number; title: string }> {
-  const { out, code } = await run('yt-dlp', [
-    '--no-warnings', '--skip-download',
-    '--print', '%(view_count)s\t%(filesize_approx)s\t%(title)s',
-    `https://www.youtube.com/watch?v=${id}`,
-  ]);
+// One extraction per video → view count + approximate size + title. The size is
+// computed for the SELECTED components (video format / audio-only / sidecars),
+// not always the full video — so the confirmation estimate matches what you grab.
+async function fetchVideoMeta(id: string, components?: DownloadComponents): Promise<{ views: number; bytes: number; title: string }> {
+  const fmt = components ? mediaFormatFlag(components) : null;
+  const args = ['--no-warnings', '--skip-download'];
+  if (fmt) args.push('-f', fmt);
+  args.push('--print', '%(view_count)s\t%(filesize_approx)s\t%(title)s', `https://www.youtube.com/watch?v=${id}`);
+  const { out, code } = await run('yt-dlp', args);
   if (code !== 0) return { views: -1, bytes: 0, title: '' };
   const parts = out.trim().split('\t');
   const views = parseInt(parts[0], 10);
-  const bytes = parseInt(parts[1], 10);
+  const approx = parseInt(parts[1], 10);
   const title = parts.slice(2).join('\t');
-  return { views: Number.isFinite(views) ? views : -1, bytes: Number.isFinite(bytes) ? bytes : 0, title: title || '' };
+  const bytes = sizeForComponents(Number.isFinite(approx) ? approx : 0, components);
+  return { views: Number.isFinite(views) ? views : -1, bytes, title: title || '' };
 }
 
 const watchUrl = (id: string) => `https://www.youtube.com/watch?v=${id}`;
@@ -231,12 +258,14 @@ async function channelPlan(req: DownloadRequest): Promise<ChannelPlan> {
   const mode: ChannelMode = req.mode ?? 'popular_recent';
   const count = req.count && req.count > 0 ? req.count : 10;
   const channelUrl = (req.urls && req.urls[0]) || req.url;
+  const comp = req.components;  // size estimate respects what the user selected
+  const meta = (id: string) => fetchVideoMeta(id, comp);
 
   // All-time popular: the extension already read the URLs off YouTube's
   // Popular-sorted page (YouTube did the ranking). We only size + title them.
   if (mode === 'popular_alltime') {
     const ids = (req.urls ?? []).map(videoIdOf).filter((x): x is string => !!x).slice(0, count);
-    const metas = await mapLimit(ids, 4, fetchVideoMeta);
+    const metas = await mapLimit(ids, 4, meta);
     const items: PlanItem[] = ids.map((id, i) => ({
       url: watchUrl(id), title: metas[i].title, bytes: metas[i].bytes > 0 ? metas[i].bytes : null,
     }));
@@ -247,7 +276,7 @@ async function channelPlan(req: DownloadRequest): Promise<ChannelPlan> {
     // Flat-list everything (titles free), but size lazily per-video at download
     // time. Show an extrapolated total from a small sample so the modal isn't blank.
     const vids = await flatList(channelUrl);
-    const metas = await mapLimit(vids.slice(0, 8).map((v) => v.id), 4, fetchVideoMeta);
+    const metas = await mapLimit(vids.slice(0, 8).map((v) => v.id), 4, meta);
     const sizes = metas.map((m) => m.bytes).filter((b) => b > 0);
     const avg = sizes.length ? sum(sizes) / sizes.length : 0;
     const items: PlanItem[] = vids.map((v) => ({ url: watchUrl(v.id), title: v.title, bytes: null }));
@@ -256,7 +285,7 @@ async function channelPlan(req: DownloadRequest): Promise<ChannelPlan> {
 
   if (mode === 'latest') {
     const vids = (await flatList(channelUrl, count)).slice(0, count);
-    const metas = await mapLimit(vids.map((v) => v.id), 4, fetchVideoMeta);
+    const metas = await mapLimit(vids.map((v) => v.id), 4, meta);
     const items: PlanItem[] = vids.map((v, i) => ({
       url: watchUrl(v.id), title: v.title || metas[i].title, bytes: metas[i].bytes > 0 ? metas[i].bytes : null,
     }));
@@ -265,7 +294,7 @@ async function channelPlan(req: DownloadRequest): Promise<ChannelPlan> {
 
   // popular_recent: rank only the newest RECENT_POOL uploads by view count.
   const vids = await flatList(channelUrl, RECENT_POOL);
-  const metas = await mapLimit(vids.map((v) => v.id), 4, fetchVideoMeta);
+  const metas = await mapLimit(vids.map((v) => v.id), 4, meta);
   const ranked = vids
     .map((v, i) => ({ ...v, ...metas[i] }))
     .filter((x) => x.views >= 0)
@@ -280,20 +309,22 @@ async function channelPlan(req: DownloadRequest): Promise<ChannelPlan> {
 const sumBytes = (items: PlanItem[]) => sum(items.map((i) => i.bytes ?? 0));
 
 // Single-video probe: title + approx size + duration, for lazy sizing in the queue.
-export async function probeVideo(url: string): Promise<{ title: string; bytes: number | null; duration: number | null }> {
-  const { out, code } = await run('yt-dlp', [
-    '--no-warnings', '--skip-download',
-    '--print', '%(title)s\t%(filesize_approx)s\t%(duration)s',
-    url,
-  ]);
+// Size respects the selected components (matches the confirmation estimate).
+export async function probeVideo(url: string, components?: DownloadComponents): Promise<{ title: string; bytes: number | null; duration: number | null }> {
+  const fmt = components ? mediaFormatFlag(components) : null;
+  const args = ['--no-warnings', '--skip-download'];
+  if (fmt) args.push('-f', fmt);
+  args.push('--print', '%(title)s\t%(filesize_approx)s\t%(duration)s', url);
+  const { out, code } = await run('yt-dlp', args);
   if (code !== 0) return { title: '', bytes: null, duration: null };
   const parts = out.trim().split('\t');
   const title = parts[0] || '';
-  const bytes = parseInt(parts[1], 10);
+  const approx = parseInt(parts[1], 10);
   const duration = parseInt(parts[2], 10);
+  const bytes = sizeForComponents(Number.isFinite(approx) ? approx : 0, components);
   return {
     title,
-    bytes: Number.isFinite(bytes) && bytes > 0 ? bytes : null,
+    bytes: bytes > 0 ? bytes : null,
     duration: Number.isFinite(duration) ? duration : null,
   };
 }
@@ -585,6 +616,46 @@ function writeSummary(folder: string, mediaPath: string, req: DownloadRequest, m
     ];
     fs.writeFileSync(path.join(folder, txtName), lines.join('\n') + '\n', 'utf8');
   } catch { /* best-effort — never fail the download over the summary */ }
+}
+
+export interface BatchSummaryItem { title: string; folder?: string; status: string; }
+
+// One overview .txt per playlist/channel download, listing every video + where it
+// landed. Written under <root>/TubeVault Summaries/. Returns the Windows path.
+export function writeBatchSummary(
+  root: string,
+  batchLabel: string,
+  category: string | undefined,
+  items: BatchSummaryItem[],
+): string {
+  const dir = path.join(root, 'TubeVault Summaries');
+  ensureDir(dir);
+  const stamp = new Date();
+  const dateSlug = `${stamp.getFullYear()}-${String(stamp.getMonth() + 1).padStart(2, '0')}-${String(stamp.getDate()).padStart(2, '0')} ${String(stamp.getHours()).padStart(2, '0')}${String(stamp.getMinutes()).padStart(2, '0')}`;
+  const fileBase = sanitizeFilename(batchLabel || 'Download') || 'Download';
+  const file = path.join(dir, `${fileBase} - ${dateSlug}.txt`);
+
+  const done = items.filter((i) => i.status === 'done').length;
+  const lines = [
+    batchLabel || 'TubeVault download',
+    '═'.repeat(48),
+    `Type:        ${category || 'Batch'}`,
+    `Downloaded:  ${stamp.toLocaleString()}`,
+    `Videos:      ${done} of ${items.length} completed`,
+    '',
+    'Items:',
+  ];
+  items.forEach((it, i) => {
+    const n = String(i + 1).padStart(Math.max(3, String(items.length).length), '0');
+    const mark = it.status === 'done' ? '✓' : it.status === 'failed' ? '✗' : it.status === 'cancelled' ? '⊘' : '·';
+    lines.push(`  ${n} ${mark} ${it.title}`);
+    if (it.folder) lines.push(`        → ${it.folder}`);
+  });
+  lines.push('');
+  try {
+    fs.writeFileSync(file, lines.join('\n') + '\n', 'utf8');
+  } catch { /* best-effort */ }
+  return wslToWindowsPath(file);
 }
 
 function result(code: number, templatePath: string, stderr: string): DownloadResult {

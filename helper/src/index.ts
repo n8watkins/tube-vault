@@ -1,6 +1,6 @@
 import { readMessages, writeMessage } from './protocol';
-import { handle, killActive, probeVideo, listVideos, type DownloadRequest, type Action } from './downloader';
-import { isValidYouTubeUrl } from './sanitize';
+import { handle, killActive, probeVideo, listVideos, writeBatchSummary, type DownloadRequest, type Action, type DownloadComponents, type BatchSummaryItem } from './downloader';
+import { isValidYouTubeUrl, windowsToWslPath } from './sanitize';
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -69,12 +69,22 @@ readMessages(async (raw) => {
     return;
   }
 
-  // Lazy per-video sizing/titling for the serial queue.
+  // Lazy per-video sizing/titling for the serial queue (size respects components).
   if (req.action === 'probe') {
     const url = req.url as string;
     if (!isValidYouTubeUrl(url)) { writeMessage({ ok: false, status: 'failed', error: 'Invalid URL' }); return; }
-    const p = await probeVideo(url);
+    const p = await probeVideo(url, req.components as DownloadComponents | undefined);
     writeMessage({ ok: true, status: 'ok', title: p.title, bytes: p.bytes, duration: p.duration });
+    return;
+  }
+
+  // Write the per-batch overview .txt once a playlist/channel batch finishes.
+  if (req.action === 'batch_summary') {
+    const rawRoot = (req.options as { outputRoot?: string } | undefined)?.outputRoot ?? '';
+    const root = /^[A-Za-z]:/.test(rawRoot) ? windowsToWslPath(rawRoot) : rawRoot;
+    const items = (req.items as BatchSummaryItem[]) ?? [];
+    const winPath = root ? writeBatchSummary(root, req.batchLabel as string, req.category as string | undefined, items) : '';
+    writeMessage({ ok: true, status: 'ok', summaryPath: winPath });
     return;
   }
 

@@ -1,10 +1,14 @@
 import { readMessages, writeMessage } from './protocol';
-import { handle, type DownloadRequest, type Action } from './downloader';
+import { handle, killActive, probeVideo, listVideos, type DownloadRequest, type Action } from './downloader';
 import { isValidYouTubeUrl } from './sanitize';
 import { spawn } from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 
 const ALLOWED_ACTIONS: Action[] = [
   'custom',
+  'channel_plan',
   'download_best',
   'download_audio',
   'download_thumbnail',
@@ -13,11 +17,40 @@ const ALLOWED_ACTIONS: Action[] = [
   'diagnostics',
 ];
 
+// A running download writes its node pid here keyed by jobId, so a separate
+// `cancel` invocation can signal it. Lives in the shared WSL tmp dir.
+const JOBS_DIR = path.join(os.tmpdir(), 'tube-vault-jobs');
+const pidFile = (jobId: string) => path.join(JOBS_DIR, `${jobId}.pid`);
+
+function writePid(jobId: string): void {
+  try { fs.mkdirSync(JOBS_DIR, { recursive: true }); fs.writeFileSync(pidFile(jobId), String(process.pid)); } catch { /* ignore */ }
+}
+function clearPid(jobId: string): void {
+  try { fs.unlinkSync(pidFile(jobId)); } catch { /* ignore */ }
+}
+
+// When cancelled, kill our yt-dlp children and exit. The pending sendNativeMessage
+// in the service worker then resolves with a closed port → treated as cancelled.
+process.on('SIGTERM', () => { killActive(); process.exit(0); });
+
 readMessages(async (raw) => {
   const req = raw as Record<string, unknown>;
 
   if (req.action === 'ping') {
     writeMessage({ ok: true, status: 'ok', version: '0.1.0' });
+    return;
+  }
+
+  if (req.action === 'cancel') {
+    const jobId = req.jobId as string;
+    try {
+      const pid = parseInt(fs.readFileSync(pidFile(jobId), 'utf8'), 10);
+      if (Number.isFinite(pid)) process.kill(pid, 'SIGTERM');
+      clearPid(jobId);
+      writeMessage({ ok: true, status: 'cancelled' });
+    } catch {
+      writeMessage({ ok: false, status: 'failed', error: 'Job not found or already finished' });
+    }
     return;
   }
 
@@ -36,19 +69,47 @@ readMessages(async (raw) => {
     return;
   }
 
+  // Lazy per-video sizing/titling for the serial queue.
+  if (req.action === 'probe') {
+    const url = req.url as string;
+    if (!isValidYouTubeUrl(url)) { writeMessage({ ok: false, status: 'failed', error: 'Invalid URL' }); return; }
+    const p = await probeVideo(url);
+    writeMessage({ ok: true, status: 'ok', title: p.title, bytes: p.bytes, duration: p.duration });
+    return;
+  }
+
+  // Flat-list a playlist/channel URL into per-video items (for batch expansion).
+  if (req.action === 'list_videos') {
+    const url = req.url as string;
+    if (!isValidYouTubeUrl(url)) { writeMessage({ ok: false, status: 'failed', error: 'Invalid URL' }); return; }
+    const videos = await listVideos(url);
+    writeMessage({ ok: true, status: 'ok', videos });
+    return;
+  }
+
   const action = req.action as Action;
-  const url = req.url as string;
 
   if (!ALLOWED_ACTIONS.includes(action)) {
     writeMessage({ ok: false, status: 'failed', error: `Unknown action: ${action}` });
     return;
   }
 
-  if (!isValidYouTubeUrl(url)) {
+  // Validate every target (single url, or a list of scraped/channel urls)
+  const targets = Array.isArray(req.urls) && req.urls.length
+    ? (req.urls as string[])
+    : [req.url as string];
+
+  if (targets.length === 0 || !targets.every(isValidYouTubeUrl)) {
     writeMessage({ ok: false, status: 'failed', error: 'Invalid or unsupported YouTube URL' });
     return;
   }
 
-  const res = await handle(req as unknown as DownloadRequest);
-  writeMessage(res);
+  const jobId = typeof req.jobId === 'string' ? req.jobId : undefined;
+  if (jobId) writePid(jobId);
+  try {
+    const res = await handle(req as unknown as DownloadRequest);
+    writeMessage(res);
+  } finally {
+    if (jobId) clearPid(jobId);
+  }
 });

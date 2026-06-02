@@ -9,7 +9,9 @@ export function isValidYouTubeUrl(url: string): boolean {
     const isShorts   = /^\/shorts\/[A-Za-z0-9_-]+$/.test(parsed.pathname);
     const isLive     = /^\/live\/[A-Za-z0-9_-]+$/.test(parsed.pathname);
     const isPlaylist = parsed.pathname === '/playlist' && parsed.searchParams.has('list');
-    return isWatch || isShorts || isLive || isPlaylist;
+    // Channel URLs (and their /videos|/streams|/shorts tabs) — used for "latest/all" downloads
+    const isChannel  = /^\/(@[\w.-]+|channel\/[\w-]+|c\/[\w.-]+|user\/[\w.-]+)(\/(videos|streams|shorts|featured))?\/?$/.test(parsed.pathname);
+    return isWatch || isShorts || isLive || isPlaylist || isChannel;
   } catch {
     return false;
   }

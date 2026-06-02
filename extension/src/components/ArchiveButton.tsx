@@ -123,24 +123,21 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
     setOpen(o => !o);
   }
 
-  function sendRequest(payload: Record<string, unknown>) {
+  // Non-blocking: hand the download to the background queue and return to idle.
+  // Progress/cancel live in the toolbar popup, so the page button never locks.
+  function sendRequest(payload: Record<string, unknown>, label: string) {
     chrome.runtime.sendMessage(
-      { type: 'TUBE_VAULT_REQUEST', payload },
+      { type: 'TUBE_VAULT_REQUEST', payload, label },
       (response) => {
         if (chrome.runtime.lastError || !response?.ok) {
-          const err =
-            chrome.runtime.lastError?.message ?? response?.error ?? 'Unknown error';
+          const err = chrome.runtime.lastError?.message ?? response?.error ?? 'Unknown error';
           setBtnState('error');
-          showToast(`Archive failed: ${err}`, true);
+          showToast(`Couldn't start: ${err}`, true);
         } else {
           setBtnState('done');
-          const folder = response.windowsFolderPath ?? response.folderPath ?? '';
-          showToast(folder ? `Saved to ${folder}` : 'Archived successfully');
-          if (response.warnings?.length) {
-            showToast(`Partial failure: ${response.warnings[0]}`, true);
-          }
+          showToast('Added to downloads — manage it from the TubeVault toolbar icon');
         }
-        setTimeout(() => setBtnState('idle'), 3000);
+        setTimeout(() => setBtnState('idle'), 2500);
       }
     );
   }
@@ -161,7 +158,8 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
       return;
     }
 
-    sendRequest({ action: 'custom', url: getUrl(), components, playlist });
+    const label = playlist ? 'Playlist' : (document.title.replace(/\s*-\s*YouTube.*$/, '').trim() || 'Video');
+    sendRequest({ action: 'custom', url: getUrl(), components, playlist }, label);
   }
 
   // Channel: ask the helper to plan (rank/list + size estimate), confirm with the
@@ -211,12 +209,13 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
         mode === 'popular_alltime' ? `the top ${n} most-viewed (all-time)` :
         `the top ${n} most-viewed (recent ${RECENT_POOL})`;
       const sizeNote = plan.estBytes ? `~${formatBytes(plan.estBytes)}${plan.sampled ? ' (estimated from a sample)' : ''}` : 'unknown';
+      const cap = what.charAt(0).toUpperCase() + what.slice(1);
 
       const proceedDownload = () => {
         if (mode === 'all') {
-          sendRequest({ action: 'custom', urls: [channel.channelVideosUrl()], expand: true, components });
+          sendRequest({ action: 'custom', urls: [channel.channelVideosUrl()], expand: true, components }, cap);
         } else {
-          sendRequest({ action: 'custom', urls: plan.targets, components });
+          sendRequest({ action: 'custom', urls: plan.targets, components }, cap);
         }
       };
 
@@ -226,7 +225,6 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
         return;
       }
 
-      const cap = what.charAt(0).toUpperCase() + what.slice(1);
       showConfirm(
         'Download from this channel?',
         [cap, `Videos: ${n}  ·  Projected size: ${sizeNote}`],

@@ -10,7 +10,7 @@ Chrome extension + WSL native helper for archiving YouTube videos locally via yt
 Chrome loads the extension from the **Windows** path:
 `C:\Users\natha\Projects\Tools\tube-vault\extension\`
 
-Development happens in WSL (`/home/natkins/personal/tools/tube-vault/`).
+Development happens in WSL (`/home/natkins/personal/tools/extensions/tube-vault/`).
 
 ## Build workflow
 
@@ -25,7 +25,7 @@ This single command:
 1. Bumps the patch version in `package.json` and `manifest.json`
 2. Bundles with esbuild (React, minified)
 3. Copies `manifest.json` + `dist/*.js` to the Windows path
-4. Commits everything in `tube-vault/extension/` with message `build(tube-vault): vX.Y.Z`
+4. Commits everything in `extensions/tube-vault/extension/` with message `build(tube-vault): vX.Y.Z`
 
 After building, **reload the extension in Chrome** (chrome://extensions → reload button).
 

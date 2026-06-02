@@ -184,7 +184,7 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
     const playlistUrl = getUrl();
     showToast('Reading playlist…');
     chrome.runtime.sendMessage(
-      { type: 'TUBE_VAULT_REQUEST', payload: { action: 'channel_plan', mode: 'all', count: 0, urls: [playlistUrl] } },
+      { type: 'TUBE_VAULT_REQUEST', payload: { action: 'channel_plan', mode: 'all', count: 0, urls: [playlistUrl], components } },
       (resp) => {
         const plan = readPlan(resp, 'Couldn’t read playlist');
         if (!plan) return;
@@ -225,10 +225,10 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
         return;
       }
       showToast('Reading YouTube’s Popular order…');
-      planPayload = { action: 'channel_plan', mode, count: chanCount, urls };
+      planPayload = { action: 'channel_plan', mode, count: chanCount, urls, components };
     } else {
       showToast(mode === 'popular_recent' ? 'Ranking recent uploads by views…' : 'Listing channel…');
-      planPayload = { action: 'channel_plan', mode, count: chanCount, urls: [channel.channelVideosUrl()] };
+      planPayload = { action: 'channel_plan', mode, count: chanCount, urls: [channel.channelVideosUrl()], components };
     }
 
     chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: planPayload }, (resp) => {

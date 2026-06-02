@@ -101,7 +101,7 @@ async function runJob(job: Job): Promise<void> {
   // Lazily fetch size + title just before downloading (serial = no rate-limit burst).
   if (job.estBytes === undefined) {
     await updateJob(job.id, { status: 'probing' });
-    const probe = await sendNative({ action: 'probe', url: job.videoUrl });
+    const probe = await sendNative({ action: 'probe', url: job.videoUrl, components: job.components });
     if (await isCancelled(job.id)) { pumpQueue(); return; }
     const patch: Partial<Job> = { status: 'running', estBytes: probe?.ok && typeof probe.bytes === 'number' ? probe.bytes : 0 };
     if (probe?.ok && probe.title) patch.label = probe.title;
@@ -122,7 +122,7 @@ async function runJob(job: Job): Promise<void> {
     options: { outputRoot: cachedSettings.outputRoot || DEFAULT_OUTPUT_ROOT, naming: cachedSettings.naming },
   };
   chrome.runtime.sendNativeMessage(NATIVE_HOST, payload, async (response) => {
-    if (await isCancelled(job.id)) { pumpQueue(); return; }
+    if (await isCancelled(job.id)) { await maybeWriteBatchSummary(job.batchId); pumpQueue(); return; }
 
     if (chrome.runtime.lastError || !response?.ok) {
       const err = chrome.runtime.lastError?.message ?? response?.error ?? 'Download failed';
@@ -135,8 +135,31 @@ async function runJob(job: Job): Promise<void> {
         chrome.runtime.sendNativeMessage(NATIVE_HOST, { action: 'open_folder', windowsPath: folder }, () => { void chrome.runtime.lastError; });
       }
     }
+    await maybeWriteBatchSummary(job.batchId);
     pumpQueue();
   });
+}
+
+// When the last job of a batch finishes, write the overview .txt for the whole
+// playlist/channel download (title, type, every video + where it landed).
+async function maybeWriteBatchSummary(batchId?: string): Promise<void> {
+  if (!batchId) return;
+  const jobs = await getJobs();
+  const members = jobs.filter((j) => j.batchId === batchId);
+  if (members.length === 0 || members.some(isActive)) return;  // still in progress
+  const first = members[0];
+  const items = members.map((j) => ({ title: j.label, folder: j.folder, status: j.status }));
+  chrome.runtime.sendNativeMessage(
+    NATIVE_HOST,
+    {
+      action: 'batch_summary',
+      batchLabel: first.batchLabel,
+      category: first.category,
+      items,
+      options: { outputRoot: cachedSettings.outputRoot || DEFAULT_OUTPUT_ROOT },
+    },
+    () => { void chrome.runtime.lastError; },
+  );
 }
 
 async function cancelJob(id: string): Promise<void> {

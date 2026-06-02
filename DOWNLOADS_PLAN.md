@@ -83,6 +83,25 @@ Per-video download itself = existing `custom` with a single `url` + `jobId`
 
 ---
 
+## 3b. Confirmation flow (download + cancel)
+
+**Download confirm = a selection list for batches.** Single videos download in
+one click (no modal). Channel/playlist (any batch) ALWAYS opens the styled
+modal — which is now a **video selection list**:
+- one row per video: checkbox (all checked by default), title, size.
+- uncheck the ones you don't want → only checked videos get enqueued.
+- footer shows running total (count + est size); **Download N videos** / cancel
+  (backdrop click / Esc).
+- This REPLACES the old >1 GB size threshold — batches always confirm via this
+  list, regardless of size.
+- Rows populate from `channel_plan` (popular/latest already have titles+sizes)
+  or `list_videos` (playlist/all — titles up front, size lazy or "—").
+
+**Cancel confirm** stays the 2-step inline confirm in the popup (✕ → Stop / No),
+per item; batches get a **Cancel batch** with the same 2-step confirm.
+
+---
+
 ## 4. Popup (now-focused) — popup.tsx
 
 - **Downloading**: current job — video title, size, Cancel (✕→Stop confirm).
@@ -108,8 +127,10 @@ Sections (left-nav tabs or stacked):
    - Install guide: what you need (WSL, yt-dlp, ffmpeg, the native-messaging
      host registration, the helper build). Step list + copyable commands.
    - Troubleshooting notes (helper offline, etc.).
-4. **Support** (new): "Support me" links (placeholders to fill: GitHub sponsor /
-   Buy me a coffee / etc.).
+4. **Support** (new): "Support me" with two icon buttons —
+   **GitHub Sponsors** (FaGithub / FaHeart) and **Buy Me a Coffee**
+   (FaMugHot/SiBuymeacoffee). Links TBD (user provides later); use placeholder
+   `#` hrefs until then. On-brand styling, icons required.
 5. (Optional later) **About**: version, links, changelog.
 
 ---
@@ -117,17 +138,23 @@ Sections (left-nav tabs or stacked):
 ## 6. Build order (phased, low-risk first)
 
 - **P1 — per-video jobs**: helper `probe` + `list_videos`; SW expansion + lazy
-  sizing; popup shows per-item + batch grouping. (Biggest piece.)
+  sizing; **batch selection modal** (checkbox list, deselect to skip); popup
+  shows per-item + batch grouping. (Biggest piece.)
 - **P2 — options History**: move history to options; popup links out.
 - **P3 — options Setup & Status** (reuse `diagnostics`).
-- **P4 — options Support** + polish (batch cancel, actual sizes, reorder).
+- **P4 — options Support** (GitHub Sponsors + Buy Me a Coffee, icons) + polish
+  (batch cancel, actual sizes, reorder).
+
+## Decisions (locked this round)
+- **Per-video over playlist single-process** — accepted the efficiency cost
+  (N yt-dlp procs vs 1) to get per-item visibility, cancel, AND deselection.
+- **Download confirm = selection list for batches; single video = no modal.**
+  Replaces the old >1 GB threshold.
+- **Support:** GitHub Sponsors + Buy Me a Coffee, both with icons; links later.
 
 ## Open questions to confirm later
 - Actual (vs estimated) size for finished jobs — capture from yt-dlp output or
   stat the folder? (phase 4)
-- Batch download still 1 yt-dlp per video (loses playlist single-process
-  efficiency) — accepted for per-item visibility/cancel.
-- Support links — which platforms?
 
 ## Current code references
 - `extension/src/service-worker.ts` — queue/jobs (batch-as-one today)

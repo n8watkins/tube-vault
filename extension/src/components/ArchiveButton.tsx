@@ -8,6 +8,19 @@ import {
 
 type BtnState = 'idle' | 'loading' | 'done' | 'error';
 
+interface PlanItem {
+  url: string;
+  title: string;
+  bytes: number | null;
+}
+interface ChannelPlan {
+  totalVideos: number | null;
+  items: PlanItem[];
+  estBytes: number | null;
+  sampled: boolean;
+  mode: ChannelMode;
+}
+
 interface ChannelConfig {
   // Build the channel's /videos URL (handed to the helper for ranking/expansion)
   channelVideosUrl: () => string;
@@ -25,10 +38,6 @@ function formatBytes(b: number | null | undefined): string {
   if (b >= 1e6) return `${Math.round(b / 1e6)} MB`;
   return `${Math.round(b / 1e3)} KB`;
 }
-
-// Only interrupt with a confirmation when a channel download is this big (or its
-// size is unknown). Smaller downloads just start.
-const CONFIRM_OVER_BYTES = 1_000_000_000; // 1 GB
 
 interface Props {
   getUrl: () => string;
@@ -123,11 +132,12 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
     setOpen(o => !o);
   }
 
-  // Non-blocking: hand the download to the background queue and return to idle.
-  // Progress/cancel live in the toolbar popup, so the page button never locks.
-  function sendRequest(payload: Record<string, unknown>, label: string) {
+  // Non-blocking: hand one or more per-video jobs to the background queue and
+  // return to idle. Progress/cancel live in the toolbar popup, so the page button
+  // never locks. A batch (>1 item or a batchLabel) is grouped by the worker.
+  function enqueue(items: PlanItem[], components: Record<string, unknown>, batchLabel?: string) {
     chrome.runtime.sendMessage(
-      { type: 'TUBE_VAULT_REQUEST', payload, label },
+      { type: 'TUBE_VAULT_ENQUEUE', items, components, batchLabel },
       (response) => {
         if (chrome.runtime.lastError || !response?.ok) {
           const err = chrome.runtime.lastError?.message ?? response?.error ?? 'Unknown error';
@@ -135,7 +145,8 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
           showToast(`Couldn't start: ${err}`, true);
         } else {
           setBtnState('done');
-          showToast('Added to downloads — manage it from the TubeVault toolbar icon');
+          const n = response.count ?? items.length;
+          showToast(`Added ${n} ${n === 1 ? 'video' : 'videos'} to downloads — manage from the TubeVault toolbar icon`);
         }
         setTimeout(() => setBtnState('idle'), 2500);
       }
@@ -162,48 +173,37 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
       return;
     }
 
-    const label = document.title.replace(/\s*-\s*YouTube.*$/, '').trim() || 'Video';
-    sendRequest({ action: 'custom', url: getUrl(), components, playlist: false }, label);
+    // Single video: no selection modal — straight into the queue (size is fetched
+    // lazily just before it downloads).
+    const title = document.title.replace(/\s*-\s*YouTube.*$/, '').trim() || 'Video';
+    enqueue([{ url: getUrl(), title, bytes: null }], components);
   }
 
-  // Playlists can be huge — estimate size first and confirm before downloading.
+  // Playlist: flat-list it, then let the user pick which videos to keep.
   function runPlaylistFlow(components: Record<string, unknown>) {
     const playlistUrl = getUrl();
-    showToast('Checking playlist size…');
+    showToast('Reading playlist…');
     chrome.runtime.sendMessage(
-      { type: 'TUBE_VAULT_REQUEST', payload: { action: 'channel_plan', mode: 'all', count: 0, urls: [playlistUrl], components } },
+      { type: 'TUBE_VAULT_REQUEST', payload: { action: 'channel_plan', mode: 'all', count: 0, urls: [playlistUrl] } },
       (resp) => {
-        if (chrome.runtime.lastError || !resp?.ok || !resp.plan) {
-          const err = chrome.runtime.lastError?.message ?? resp?.error ?? 'Unknown error';
-          setBtnState('error');
-          showToast(`Couldn't read playlist: ${err}`, true);
-          setTimeout(() => setBtnState('idle'), 3000);
-          return;
-        }
-        const plan = resp.plan as { totalVideos: number | null; estBytes: number | null; sampled: boolean };
-        const n = plan.totalVideos ?? '?';
-        const label = `Playlist — ${n} video${n === 1 ? '' : 's'}`;
-        const sizeNote = plan.estBytes ? `~${formatBytes(plan.estBytes)}${plan.sampled ? ' (estimated from a sample)' : ''}` : 'unknown';
-
-        const proceed = () => sendRequest({ action: 'custom', url: playlistUrl, components, playlist: true }, label);
-
-        if (plan.estBytes != null && plan.estBytes <= CONFIRM_OVER_BYTES) { proceed(); return; }
-
-        showConfirm(
+        const plan = readPlan(resp, 'Couldn’t read playlist');
+        if (!plan) return;
+        const n = plan.totalVideos ?? plan.items.length;
+        const sizeNote = plan.estBytes ? `~${formatBytes(plan.estBytes)}${plan.sampled ? ' (estimated)' : ''}` : 'sized as they download';
+        showSelection(
           'Download this playlist?',
-          [`${n} video${n === 1 ? '' : 's'}`, `Projected size: ${sizeNote}`],
-          'Download',
-        ).then((ok) => {
-          if (!ok) { setBtnState('idle'); return; }
-          proceed();
+          `${n} video${n === 1 ? '' : 's'} · Projected size: ${sizeNote}`,
+          plan.items,
+        ).then((picked) => {
+          if (!picked || !picked.length) { setBtnState('idle'); return; }
+          enqueue(picked, components, `Playlist — ${picked.length} video${picked.length === 1 ? '' : 's'}`);
         });
       }
     );
   }
 
-  // Channel: ask the helper to plan (rank/list + size estimate), confirm with the
-  // user, then download. All heavy lifting is in the helper (no scraping) — except
-  // all-time popular, where we read YouTube's own Popular-sorted page order.
+  // Channel: ask the helper to plan (rank/list), then let the user pick which
+  // videos to download. All-time popular reads YouTube's own Popular-sorted order.
   function runChannelFlow(components: Record<string, unknown>) {
     if (!channel) return;
 
@@ -225,54 +225,46 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
         return;
       }
       showToast('Reading YouTube’s Popular order…');
-      planPayload = { action: 'channel_plan', mode, count: chanCount, urls, components };
+      planPayload = { action: 'channel_plan', mode, count: chanCount, urls };
     } else {
-      showToast(mode === 'popular_recent' ? 'Ranking recent uploads by views…' : 'Checking channel…');
-      planPayload = { action: 'channel_plan', mode, count: chanCount, urls: [channel.channelVideosUrl()], components };
+      showToast(mode === 'popular_recent' ? 'Ranking recent uploads by views…' : 'Listing channel…');
+      planPayload = { action: 'channel_plan', mode, count: chanCount, urls: [channel.channelVideosUrl()] };
     }
 
     chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: planPayload }, (resp) => {
-      if (chrome.runtime.lastError || !resp?.ok || !resp.plan) {
-        const err = chrome.runtime.lastError?.message ?? resp?.error ?? 'Unknown error';
-        setBtnState('error');
-        showToast(`Couldn't analyze channel: ${err}`, true);
-        setTimeout(() => setBtnState('idle'), 3000);
-        return;
-      }
+      const plan = readPlan(resp, 'Couldn’t analyze channel');
+      if (!plan) return;
 
-      const plan = resp.plan as { totalVideos: number | null; targets: string[]; estBytes: number | null; sampled: boolean };
-      const n = mode === 'all' ? (plan.totalVideos ?? '?') : (plan.targets.length || chanCount);
+      const n = plan.items.length;
       const what =
-        mode === 'all' ? 'ALL videos' :
+        mode === 'all' ? 'all videos' :
         mode === 'latest' ? `the latest ${n}` :
         mode === 'popular_alltime' ? `the top ${n} most-viewed (all-time)` :
         `the top ${n} most-viewed (recent ${RECENT_POOL})`;
-      const sizeNote = plan.estBytes ? `~${formatBytes(plan.estBytes)}${plan.sampled ? ' (estimated from a sample)' : ''}` : 'unknown';
+      const sizeNote = plan.estBytes ? `~${formatBytes(plan.estBytes)}${plan.sampled ? ' (estimated)' : ''}` : 'sized as they download';
       const cap = what.charAt(0).toUpperCase() + what.slice(1);
 
-      const proceedDownload = () => {
-        if (mode === 'all') {
-          sendRequest({ action: 'custom', urls: [channel.channelVideosUrl()], expand: true, components }, cap);
-        } else {
-          sendRequest({ action: 'custom', urls: plan.targets, components }, cap);
-        }
-      };
-
-      // Only ask for confirmation on sizeable (or unknown-size) downloads.
-      if (plan.estBytes != null && plan.estBytes <= CONFIRM_OVER_BYTES) {
-        proceedDownload();
-        return;
-      }
-
-      showConfirm(
+      showSelection(
         'Download from this channel?',
-        [cap, `Videos: ${n}  ·  Projected size: ${sizeNote}`],
-        'Download',
-      ).then((ok) => {
-        if (!ok) { setBtnState('idle'); return; }
-        proceedDownload();
+        `${cap} · Projected size: ${sizeNote}`,
+        plan.items,
+      ).then((picked) => {
+        if (!picked || !picked.length) { setBtnState('idle'); return; }
+        enqueue(picked, components, cap);
       });
     });
+  }
+
+  // Validate a channel_plan response; on failure show the error + reset, return null.
+  function readPlan(resp: any, errPrefix: string): ChannelPlan | null {
+    if (chrome.runtime.lastError || !resp?.ok || !resp.plan || !resp.plan.items?.length) {
+      const err = chrome.runtime.lastError?.message ?? resp?.error ?? 'no videos found';
+      setBtnState('error');
+      showToast(`${errPrefix}: ${err}`, true);
+      setTimeout(() => setBtnState('idle'), 3000);
+      return null;
+    }
+    return resp.plan as ChannelPlan;
   }
 
   return (
@@ -333,10 +325,13 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
   );
 }
 
-// Styled confirm dialog (our own, not window.confirm). Click the backdrop or
-// press Esc to cancel; Enter or the red button to confirm.
-function showConfirm(title: string, lines: string[], confirmLabel: string): Promise<boolean> {
+// Batch selection dialog (our own, not window.confirm): a checkbox list of every
+// video in the playlist/channel, all checked by default. Uncheck the ones to skip.
+// Resolves the picked items, or null on cancel (backdrop click / Esc).
+function showSelection(title: string, subtitle: string, items: PlanItem[]): Promise<PlanItem[] | null> {
   return new Promise((resolve) => {
+    const checked = items.map(() => true);
+
     const backdrop = document.createElement('div');
     Object.assign(backdrop.style, {
       position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(2px)',
@@ -347,49 +342,107 @@ function showConfirm(title: string, lines: string[], confirmLabel: string): Prom
     const card = document.createElement('div');
     Object.assign(card.style, {
       background: '#1c1c1c', border: '1px solid #2e2e2e', borderRadius: '16px',
-      boxShadow: '0 16px 48px rgba(0,0,0,0.7)', padding: '24px', maxWidth: '420px', width: '90%', color: '#fff',
+      boxShadow: '0 16px 48px rgba(0,0,0,0.7)', maxWidth: '520px', width: '92%',
+      maxHeight: '80vh', display: 'flex', flexDirection: 'column', color: '#fff', overflow: 'hidden',
     });
     card.onclick = (e) => e.stopPropagation();
 
+    // Header
+    const head = document.createElement('div');
+    Object.assign(head.style, { padding: '22px 24px 12px' });
     const h = document.createElement('div');
     h.textContent = title;
-    Object.assign(h.style, { fontSize: '18px', fontWeight: '700', marginBottom: '14px' });
+    Object.assign(h.style, { fontSize: '18px', fontWeight: '700', marginBottom: '6px' });
+    const sub = document.createElement('div');
+    sub.textContent = subtitle;
+    Object.assign(sub.style, { fontSize: '13px', color: '#aaa', lineHeight: '1.5' });
+    head.append(h, sub);
 
-    const body = document.createElement('div');
-    Object.assign(body.style, { fontSize: '15px', lineHeight: '1.6', color: '#ccc', marginBottom: '22px' });
-    lines.forEach((ln) => { const p = document.createElement('div'); p.textContent = ln; body.appendChild(p); });
+    // Select-all / deselect-all toggle row
+    const toolRow = document.createElement('div');
+    Object.assign(toolRow.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 24px', borderBottom: '1px solid #2a2a2a' });
+    const toggleAll = document.createElement('button');
+    Object.assign(toggleAll.style, { background: 'none', border: 'none', color: '#ff5252', fontSize: '13px', fontWeight: '600', cursor: 'pointer', fontFamily: 'inherit', padding: '0' });
+    const countLbl = document.createElement('div');
+    Object.assign(countLbl.style, { fontSize: '13px', color: '#bbb', fontWeight: '600' });
+    toolRow.append(toggleAll, countLbl);
 
-    const row = document.createElement('div');
-    Object.assign(row.style, { display: 'flex', gap: '10px', justifyContent: 'flex-end' });
+    // Scrollable video list
+    const list = document.createElement('div');
+    Object.assign(list.style, { overflowY: 'auto', flex: '1', padding: '4px 0' });
 
+    const rowEls: HTMLDivElement[] = [];
+    const sumSelected = () => items.reduce((a, it, i) => a + (checked[i] && it.bytes ? it.bytes : 0), 0);
+    const anyUnknownSelected = () => items.some((it, i) => checked[i] && !it.bytes);
+    const numSelected = () => checked.filter(Boolean).length;
+
+    const refresh = () => {
+      const n = numSelected();
+      const total = sumSelected();
+      const sizeStr = total ? `${formatBytes(total)}${anyUnknownSelected() ? '+' : ''}` : (anyUnknownSelected() ? 'sized at download' : '0');
+      countLbl.textContent = `${n} of ${items.length} · ${sizeStr}`;
+      toggleAll.textContent = n === items.length ? 'Deselect all' : 'Select all';
+      go.textContent = n ? `Download ${n}` : 'Download';
+      go.style.opacity = n ? '1' : '0.5';
+      go.style.cursor = n ? 'pointer' : 'default';
+      rowEls.forEach((el, i) => { el.style.opacity = checked[i] ? '1' : '0.45'; });
+    };
+
+    items.forEach((it, i) => {
+      const r = document.createElement('div');
+      Object.assign(r.style, { display: 'flex', alignItems: 'center', gap: '12px', padding: '9px 24px', cursor: 'pointer' });
+      const box = document.createElement('div');
+      Object.assign(box.style, { width: '18px', height: '18px', borderRadius: '5px', flexShrink: '0', border: '2px solid #cc0000', background: '#cc0000', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', color: '#fff', fontWeight: '700' });
+      const tick = () => { box.textContent = checked[i] ? '✓' : ''; box.style.background = checked[i] ? '#cc0000' : 'transparent'; };
+      const tWrap = document.createElement('div');
+      Object.assign(tWrap.style, { flex: '1', minWidth: '0' });
+      const t = document.createElement('div');
+      t.textContent = it.title || it.url;
+      Object.assign(t.style, { fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
+      tWrap.append(t);
+      const sz = document.createElement('div');
+      sz.textContent = it.bytes ? formatBytes(it.bytes) : '—';
+      Object.assign(sz.style, { fontSize: '12px', color: '#888', flexShrink: '0', minWidth: '54px', textAlign: 'right' });
+      r.append(box, tWrap, sz);
+      r.onclick = () => { checked[i] = !checked[i]; tick(); refresh(); };
+      tick();
+      rowEls.push(r);
+      list.append(r);
+    });
+
+    toggleAll.onclick = () => {
+      const all = numSelected() === items.length;
+      checked.fill(!all);
+      rowEls.forEach((el) => { const box = el.firstChild as HTMLElement; box.textContent = !all ? '✓' : ''; box.style.background = !all ? '#cc0000' : 'transparent'; });
+      refresh();
+    };
+
+    // Footer actions
+    const foot = document.createElement('div');
+    Object.assign(foot.style, { display: 'flex', gap: '10px', justifyContent: 'flex-end', padding: '14px 24px', borderTop: '1px solid #2a2a2a' });
     const cancel = document.createElement('button');
     cancel.textContent = 'Cancel';
     Object.assign(cancel.style, { padding: '10px 18px', borderRadius: '10px', border: '1px solid #444', background: '#2b2b2b', color: '#fff', fontSize: '14px', fontWeight: '600', cursor: 'pointer', fontFamily: 'inherit' });
+    const go = document.createElement('button');
+    Object.assign(go.style, { padding: '10px 18px', borderRadius: '10px', border: 'none', background: '#cc0000', color: '#fff', fontSize: '14px', fontWeight: '700', cursor: 'pointer', fontFamily: 'inherit' });
+    foot.append(cancel, go);
 
-    const confirm = document.createElement('button');
-    confirm.textContent = confirmLabel;
-    Object.assign(confirm.style, { padding: '10px 18px', borderRadius: '10px', border: 'none', background: '#cc0000', color: '#fff', fontSize: '14px', fontWeight: '700', cursor: 'pointer', fontFamily: 'inherit' });
-
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') { e.stopPropagation(); cleanup(false); }
-      else if (e.key === 'Enter') { e.stopPropagation(); cleanup(true); }
-    };
-    const cleanup = (result: boolean) => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(null); } };
+    const cleanup = (result: PlanItem[] | null) => {
       document.removeEventListener('keydown', onKey, true);
       backdrop.remove();
       resolve(result);
     };
 
-    backdrop.onclick = () => cleanup(false);
-    cancel.onclick = () => cleanup(false);
-    confirm.onclick = () => cleanup(true);
+    backdrop.onclick = () => cleanup(null);
+    cancel.onclick = () => cleanup(null);
+    go.onclick = () => { if (numSelected()) cleanup(items.filter((_, i) => checked[i])); };
     document.addEventListener('keydown', onKey, true);
 
-    row.append(cancel, confirm);
-    card.append(h, body, row);
+    card.append(head, toolRow, list, foot);
     backdrop.appendChild(card);
     document.body.appendChild(backdrop);
-    confirm.focus();
+    refresh();
   });
 }
 

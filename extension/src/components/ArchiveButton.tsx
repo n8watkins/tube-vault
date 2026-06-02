@@ -157,9 +157,48 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
       runChannelFlow(components);
       return;
     }
+    if (playlist) {
+      runPlaylistFlow(components);
+      return;
+    }
 
-    const label = playlist ? 'Playlist' : (document.title.replace(/\s*-\s*YouTube.*$/, '').trim() || 'Video');
-    sendRequest({ action: 'custom', url: getUrl(), components, playlist }, label);
+    const label = document.title.replace(/\s*-\s*YouTube.*$/, '').trim() || 'Video';
+    sendRequest({ action: 'custom', url: getUrl(), components, playlist: false }, label);
+  }
+
+  // Playlists can be huge — estimate size first and confirm before downloading.
+  function runPlaylistFlow(components: Record<string, unknown>) {
+    const playlistUrl = getUrl();
+    showToast('Checking playlist size…');
+    chrome.runtime.sendMessage(
+      { type: 'TUBE_VAULT_REQUEST', payload: { action: 'channel_plan', mode: 'all', count: 0, urls: [playlistUrl], components } },
+      (resp) => {
+        if (chrome.runtime.lastError || !resp?.ok || !resp.plan) {
+          const err = chrome.runtime.lastError?.message ?? resp?.error ?? 'Unknown error';
+          setBtnState('error');
+          showToast(`Couldn't read playlist: ${err}`, true);
+          setTimeout(() => setBtnState('idle'), 3000);
+          return;
+        }
+        const plan = resp.plan as { totalVideos: number | null; estBytes: number | null; sampled: boolean };
+        const n = plan.totalVideos ?? '?';
+        const label = `Playlist — ${n} video${n === 1 ? '' : 's'}`;
+        const sizeNote = plan.estBytes ? `~${formatBytes(plan.estBytes)}${plan.sampled ? ' (estimated from a sample)' : ''}` : 'unknown';
+
+        const proceed = () => sendRequest({ action: 'custom', url: playlistUrl, components, playlist: true }, label);
+
+        if (plan.estBytes != null && plan.estBytes <= CONFIRM_OVER_BYTES) { proceed(); return; }
+
+        showConfirm(
+          'Download this playlist?',
+          [`${n} video${n === 1 ? '' : 's'}`, `Projected size: ${sizeNote}`],
+          'Download',
+        ).then((ok) => {
+          if (!ok) { setBtnState('idle'); return; }
+          proceed();
+        });
+      }
+    );
   }
 
   // Channel: ask the helper to plan (rank/list + size estimate), confirm with the

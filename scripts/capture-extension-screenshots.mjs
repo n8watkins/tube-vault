@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, chmodSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, copyFileSync, chmodSync, unlinkSync } from 'fs';
 import http from 'http';
 import { dirname, join, normalize, resolve } from 'path';
 import { fileURLToPath } from 'url';
@@ -23,6 +23,14 @@ const chromeProfile = `${windowsTemp}/tubevault-screenshot-chrome-${process.pid}
 const chromeDebugPort = Number(process.env.TUBEVAULT_CHROME_DEBUG_PORT || (9300 + (process.pid % 500)));
 const screenshotServerPort = Number(process.env.TUBEVAULT_SCREENSHOT_SERVER_PORT || 9477);
 const chromePath = process.env.TUBEVAULT_CHROME_PATH || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+
+const cropFilters = {
+  'tubevault-options-downloads.png': 'crop=880:365:150:20',
+  'tubevault-options-settings.png': 'crop=880:1205:150:20',
+  'tubevault-options-status.png': 'crop=880:400:150:20',
+  'tubevault-options-setup.png': 'crop=880:510:150:20',
+  'tubevault-options-support.png': 'crop=880:420:150:20',
+};
 
 const sampleJobs = [
   {
@@ -356,6 +364,22 @@ function copyScreenshots() {
   }
 }
 
+function cropScreenshots() {
+  for (const [name, crop] of Object.entries(cropFilters)) {
+    const filePath = join(screenshotDir, name);
+    const croppedPath = join(screenshotDir, name.replace(/\.png$/, '.cropped.png'));
+
+    execFileSync(
+      'ffmpeg',
+      ['-y', '-i', filePath, '-vf', crop, croppedPath],
+      { stdio: 'ignore' },
+    );
+    copyFileSync(croppedPath, filePath);
+    unlinkSync(croppedPath);
+    chmodSync(filePath, 0o644);
+  }
+}
+
 async function main() {
   ensureDirs();
   ensureWindowsPuppeteer();
@@ -373,6 +397,7 @@ async function main() {
     writeWindowsController(baseUrl);
     await runWindowsController();
     copyScreenshots();
+    cropScreenshots();
     console.log('Screenshots written to docs/screenshots');
   } finally {
     server.close();

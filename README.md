@@ -82,37 +82,37 @@ TubeVault's Chrome options page includes:
 
 ### Popup
 
-The popup is the "what is happening now" surface: active downloads, queued batches, helper connection state, output path, and the shortcut into history/settings.
+The popup is the "what is happening now" surface. It is intentionally compact: it shows the native-helper connection state, the current extension version, active downloads, queued batch groups, the configured local output folder, and the shortcut into history/settings. The popup is for monitoring and quick cancellation; completed work moves to the options-page history view.
 
 ![TubeVault popup](docs/screenshots/tubevault-popup.png)
 
 ### Downloads
 
-The Downloads tab is the finished-history view. It shows completed, failed, and cancelled jobs; grouped batch rows; status filters; open-folder actions; and history clearing.
+The Downloads tab is the finished-history view. It separates history from the popup so the popup can stay focused on current work. Finished videos show status, file size, finish time, folder actions, and batch grouping. The filter chips make it easy to isolate done, failed, or cancelled work, and the clear-history action is kept here instead of in the popup.
 
 ![TubeVault downloads options tab](docs/screenshots/tubevault-options-downloads.png)
 
 ### Settings
 
-The Settings tab controls the local save folder, naming layout, channel download count presets, default menu selections, and history/privacy retention.
+The Settings tab controls the defaults that shape every download. The output folder is a Windows path because Chrome and the native helper write to the Windows-visible filesystem. Naming controls decide whether downloads are grouped by category, numbered, given title-based file names, and paired with local summary files. Channel presets define the counts offered for popular/latest channel downloads. Default download preferences preselect video/audio/thumbnail/metadata options in the YouTube menu, and the history controls decide whether TubeVault keeps local history and how long it should be retained.
 
 ![TubeVault settings options tab](docs/screenshots/tubevault-options-settings.png)
 
 ### Status
 
-The Status tab checks whether Chrome can reach the native helper and whether the local helper sees `yt-dlp`, `ffmpeg`, and the configured output folder.
+The Status tab is the local diagnostics surface. It checks whether Chrome can reach the native messaging helper, whether the helper can see `yt-dlp`, whether `ffmpeg` is available for media conversion, and which output folder the helper is using. This is the first place to look when downloads fail immediately or Chrome reports that the helper is not reachable.
 
 ![TubeVault status options tab](docs/screenshots/tubevault-options-status.png)
 
 ### Setup
 
-The Setup tab keeps the one-time install checklist inside the extension, so local helper setup is visible without returning to GitHub.
+The Setup tab keeps the one-time install checklist inside the extension, so local helper setup is visible without returning to GitHub. It summarizes the WSL dependency install, native messaging registration, helper build, extension reload, and final Status-tab verification. The full version of this flow lives in [SETUP.md](SETUP.md).
 
 ![TubeVault setup options tab](docs/screenshots/tubevault-options-setup.png)
 
 ### Support
 
-The Support tab explains the local-first privacy model and exposes project support links.
+The Support tab explains the local-first privacy model and exposes project support links. The About block states the important boundary: TubeVault has no server, Chrome talks to a native helper on this machine, and that helper runs local `yt-dlp` commands that write files to the configured output folder.
 
 ![TubeVault support options tab](docs/screenshots/tubevault-options-support.png)
 

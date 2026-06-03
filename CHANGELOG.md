@@ -6,6 +6,7 @@
 - Captures popup plus every Chrome options tab for README documentation.
 - Adds the extension screenshot command to `extension/package.json`.
 - Wraps the Setup tab install command so it screenshots cleanly.
+- Crops options screenshots with FFmpeg and expands README feature explanations.
 
 ## v0.3.50
 

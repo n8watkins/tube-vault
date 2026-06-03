@@ -179,7 +179,7 @@ function HistorySection() {
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={histTitle}>{first.batchLabel || first.category || 'Batch'}</div>
                     <div style={histMeta}>
-                      {first.category ? `${first.category} · ` : ''}{m.length} videos · {doneN} done{failN ? ` · ${failN} failed` : ''}{total ? ` · ${formatBytes(total)}` : ''} · {when}
+                      {first.category && first.category !== first.batchLabel ? `${first.category} · ` : ''}{m.length} videos · {doneN} done{failN ? ` · ${failN} failed` : ''}{total ? ` · ${formatBytes(total)}` : ''} · {when}
                     </div>
                   </div>
                   {parent && (

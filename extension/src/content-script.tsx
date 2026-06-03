@@ -62,8 +62,16 @@ function getVideoUrl() {
 }
 
 function getPlaylistUrl() {
-  const listId = new URLSearchParams(location.search).get('list');
-  return listId ? `https://www.youtube.com/playlist?list=${listId}` : location.href;
+  const params = new URLSearchParams(location.search);
+  const listId = params.get('list');
+  if (!listId) return location.href;
+  // Mixes / radios (list=RD…) are "unviewable" as a standalone /playlist page —
+  // yt-dlp can only expand them through the watch?v=…&list=… form.
+  if (/^RD/.test(listId)) {
+    const v = params.get('v');
+    return v ? `https://www.youtube.com/watch?v=${v}&list=${listId}` : location.href;
+  }
+  return `https://www.youtube.com/playlist?list=${listId}`;
 }
 
 // ── Channel detection ─────────────────────────────────────────────────────────

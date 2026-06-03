@@ -19,6 +19,7 @@ interface ChannelPlan {
   estBytes: number | null;
   sampled: boolean;
   mode: ChannelMode;
+  playlistTitle?: string;
 }
 
 interface ChannelConfig {
@@ -190,13 +191,16 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
         if (!plan) return;
         const n = plan.totalVideos ?? plan.items.length;
         const sizeNote = plan.estBytes ? `~${formatBytes(plan.estBytes)}${plan.sampled ? ' (estimated)' : ''}` : 'sized as they download';
+        // Use the real playlist/mix name (e.g. "Radical Optimism Tour Setlist",
+        // "Mix - Dua Lipa") for the title, the batch label, and the folder.
+        const name = (plan.playlistTitle || '').trim();
         showSelection(
-          'Download this playlist?',
-          `${n} video${n === 1 ? '' : 's'} · Projected size: ${sizeNote}`,
+          name ? `Download “${name}”?` : 'Download this playlist?',
+          `${name ? name + ' · ' : ''}${n} video${n === 1 ? '' : 's'} · Projected size: ${sizeNote}`,
           plan.items,
         ).then((picked) => {
           if (!picked || !picked.length) { setBtnState('idle'); return; }
-          enqueue(picked, components, `Playlist — ${picked.length} video${picked.length === 1 ? '' : 's'}`, 'Playlist');
+          enqueue(picked, components, name || `Playlist — ${picked.length} video${picked.length === 1 ? '' : 's'}`, name || 'Playlist');
         });
       }
     );

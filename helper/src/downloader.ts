@@ -385,8 +385,10 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
           args.push('-o', `${customBase}/${fileName('video')}.%(ext)s`);
           args.push('--print', `after_move:${CAPTURE}`);
         } else {
-          // metadata or thumbnail only — skip the actual video download
-          args.push('--skip-download');
+          // metadata or thumbnail only — skip the media but still write the sidecars.
+          // CRITICAL: a plain --print implies --simulate (writes nothing) AND --quiet
+          // (hides the "Writing … to:" paths we use to find the folder). Force both off.
+          args.push('--skip-download', '--no-simulate', '--no-quiet');
           args.push('-o', `${customBase}/${naming.titleFiles ? '%(title)s' : '%(title)s [%(id)s]'}.%(ext)s`);
           args.push('--print', CAPTURE);
         }
@@ -434,8 +436,10 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
       const cap = parseCapture(results);
       const folder = cap.folder || resolvedFolder(customBase);
 
-      if (naming.summaryTxt && cap.mediaPath) {
-        writeSummary(folder, cap.mediaPath, req, cap.meta);
+      // Write the per-video summary whenever we recovered the real folder (works for
+      // thumbnail/metadata-only, where no media file survives to name it after).
+      if (naming.summaryTxt && cap.folder) {
+        writeSummary(cap.folder, cap.mediaPath, req, cap.meta);
       }
 
       return {
@@ -577,17 +581,20 @@ function parseCapture(results: { out: string; err: string }[]): { folder: string
     }
   }
 
-  // 2) Fallback (skip-download): recover the folder from any written sidecar path.
+  // 2) Fallback (skip-download): recover the folder from yt-dlp's "Writing … to:" /
+  //    "Destination:" lines. Use the DIRECTORY (exists even when the thumbnail's
+  //    original .webp was converted to .jpg and deleted); only set mediaPath when
+  //    the named file itself survives (for the per-video summary's name).
   if (!folder || !mediaPath) {
     for (const r of results) {
       for (const raw of (r.out + '\n' + r.err).split('\n')) {
         const m = raw.match(/(?:Destination:|\bto:)\s+(.+?)\s*$/);
         if (!m) continue;
         const p = m[1].trim();
-        if (p.includes('/') && fs.existsSync(p)) {
-          if (!folder) folder = path.dirname(p);
-          if (!mediaPath) mediaPath = p;
-        }
+        if (!p.includes('/')) continue;
+        const dir = path.dirname(p);
+        if (!folder && fs.existsSync(dir)) folder = dir;
+        if (!mediaPath && fs.existsSync(p)) mediaPath = p;
       }
     }
   }
@@ -620,10 +627,16 @@ function fmtDuration(d: string): string {
 // Write the human-readable <Title>.txt summary beside the saved files. Best-effort.
 function writeSummary(folder: string, mediaPath: string, req: DownloadRequest, meta: CaptureMeta): void {
   try {
-    const base = path.basename(mediaPath, path.extname(mediaPath));
-    const txtName = `${base}.txt`;
     let saved: string[] = [];
-    try { saved = fs.readdirSync(folder).filter((f) => f !== txtName); } catch { /* ignore */ }
+    try { saved = fs.readdirSync(folder); } catch { /* ignore */ }
+    // Name the .txt after the media file if one survived; otherwise after any saved
+    // file (e.g. the thumbnail .jpg), then the title, then a generic fallback.
+    const firstFile = saved.find((f) => !f.endsWith('.txt'));
+    const base = mediaPath
+      ? path.basename(mediaPath, path.extname(mediaPath))
+      : (firstFile ? path.basename(firstFile, path.extname(firstFile)) : (sanitizeFilename(meta.title) || 'download'));
+    const txtName = `${base}.txt`;
+    saved = saved.filter((f) => f !== txtName);
     const collection = req.category
       ? `${req.category}${req.index && req.total ? ` — #${req.index} of ${req.total}` : ''}`
       : 'Single video';

@@ -458,6 +458,18 @@ function SupportSection() {
   return (
     <div>
       <SectionHeader title="Support" subtitle="TubeVault is free & open. If it saved you time, consider chipping in." />
+      <div style={aboutBox}>
+        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>About TubeVault</div>
+        <p style={aboutText}>
+          TubeVault is a local-first YouTube archive tool. The extension does not send videos to a TubeVault server because there is no TubeVault server.
+        </p>
+        <p style={aboutText}>
+          Chrome talks to a native helper on this machine, and the helper runs local <code style={inlineCode}>yt-dlp</code> commands that write files to your configured output folder.
+        </p>
+        <p style={{ ...aboutText, marginBottom: 0 }}>
+          YouTube and <code style={inlineCode}>yt-dlp</code> still operate under their own network behavior and terms.
+        </p>
+      </div>
       <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
         <a href={SUPPORT_LINKS.githubSponsors} target="_blank" rel="noreferrer" style={{ ...supportBtn, background: '#24292e' }}>
           <FaGithub size={22} /> <span>GitHub Sponsors</span>
@@ -521,3 +533,5 @@ const guideList: React.CSSProperties = { margin: '10px 0 0', paddingLeft: 20, fo
 const code: React.CSSProperties = { background: '#0d0d0d', border: '1px solid #262626', borderRadius: 6, padding: '10px 12px', fontSize: 12, color: '#ddd', overflowX: 'auto', margin: '8px 0', whiteSpace: 'pre' };
 const inlineCode: React.CSSProperties = { background: '#0d0d0d', border: '1px solid #262626', borderRadius: 4, padding: '1px 5px', fontSize: 12 };
 const supportBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 10, padding: '14px 22px', borderRadius: 10, color: '#fff', textDecoration: 'none', fontSize: 15, fontWeight: 600 };
+const aboutBox: React.CSSProperties = { background: '#1a1a1a', border: '1px solid #262626', borderRadius: 10, padding: '18px 20px', marginBottom: 18 };
+const aboutText: React.CSSProperties = { margin: '0 0 10px', color: '#cfcfcf', fontSize: 14, lineHeight: 1.55 };

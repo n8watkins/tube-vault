@@ -429,7 +429,7 @@ function SetupSection() {
           <ol style={guideList}>
             <li><b>Install WSL</b> (Ubuntu) from the Microsoft Store, then open it once to finish setup.</li>
             <li><b>Install yt-dlp &amp; ffmpeg</b> inside WSL:
-              <pre style={code}>sudo apt update &amp;&amp; sudo apt install -y ffmpeg{'\n'}sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp{'\n'}sudo chmod a+rx /usr/local/bin/yt-dlp</pre>
+              <pre style={code}>sudo apt update &amp;&amp; sudo apt install -y ffmpeg{'\n'}sudo curl -L \{'\n'}  https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp \{'\n'}  -o /usr/local/bin/yt-dlp{'\n'}sudo chmod a+rx /usr/local/bin/yt-dlp</pre>
             </li>
             <li><b>Register the native messaging host</b> so Chrome can talk to the helper (run the project's install script once).</li>
             <li><b>Build the helper</b> (<code style={inlineCode}>cd helper &amp;&amp; npm install &amp;&amp; npm run build</code>).</li>

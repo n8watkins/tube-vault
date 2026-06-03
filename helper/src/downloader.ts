@@ -443,6 +443,7 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
         status: 'complete',
         folderPath: folder,
         windowsFolderPath: wslToWindowsPath(folder),
+        bytes: folderSize(folder) || null,  // real on-disk size for History
         ...(failures.length > 0 && {
           warnings: failures.map(r => r.err.slice(-200)),
         }),
@@ -549,28 +550,57 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
 
 interface CaptureMeta { title: string; uploader: string; uploadDate: string; views: string; duration: string; id: string; }
 
-// Pull the per-video folder + metadata out of the `--print` capture lines emitted by
-// the download runs. A line is `filepath\ttitle\tuploader\tupload_date\tviews\tduration\tid`.
-function parseCapture(results: { out: string }[]): { folder: string; mediaPath: string; meta: CaptureMeta } {
+// Pull the per-video folder + metadata out of the download runs' output.
+// Capture line (`--print`): `filepath\ttitle\tuploader\tupload_date\tviews\tduration\tid`.
+// On a media download `filepath` is real; on thumbnail/metadata-only (--skip-download)
+// it's `NA`, so we still take the metadata from that line and recover the folder from
+// yt-dlp's own "Writing … to:" / "Destination:" lines (which name the sidecar files).
+function parseCapture(results: { out: string; err: string }[]): { folder: string; mediaPath: string; meta: CaptureMeta } {
   let folder = '';
   let mediaPath = '';
   let meta: CaptureMeta = { title: '', uploader: '', uploadDate: '', views: '', duration: '', id: '' };
+
+  // 1) Tab-separated --print lines: always carry metadata; filepath only when media ran.
   for (const r of results) {
     for (const raw of r.out.split('\n')) {
       const line = raw.trim();
-      if (!line) continue;
+      if (!line || !line.includes('\t')) continue;
       const f = line.split('\t');
-      const fp = f[0];
-      if (!fp || !fp.includes('/') || fp === 'NA') continue;
-      if (!folder) folder = path.dirname(fp);
       if (f.length >= 7 && !meta.id) {
         meta = { title: f[1], uploader: f[2], uploadDate: f[3], views: f[4], duration: f[5], id: f[6] };
       }
-      // A file that exists on disk is a real downloaded media file → exact folder + txt source.
-      if (fs.existsSync(fp)) { mediaPath = fp; folder = path.dirname(fp); }
+      const fp = f[0];
+      if (fp && fp.includes('/') && fp !== 'NA') {
+        if (!folder) folder = path.dirname(fp);
+        if (fs.existsSync(fp)) { mediaPath = fp; folder = path.dirname(fp); }
+      }
+    }
+  }
+
+  // 2) Fallback (skip-download): recover the folder from any written sidecar path.
+  if (!folder || !mediaPath) {
+    for (const r of results) {
+      for (const raw of (r.out + '\n' + r.err).split('\n')) {
+        const m = raw.match(/(?:Destination:|\bto:)\s+(.+?)\s*$/);
+        if (!m) continue;
+        const p = m[1].trim();
+        if (p.includes('/') && fs.existsSync(p)) {
+          if (!folder) folder = path.dirname(p);
+          if (!mediaPath) mediaPath = p;
+        }
+      }
     }
   }
   return { folder, mediaPath, meta };
+}
+
+// Sum of file sizes directly in a folder — the real on-disk size of one download.
+function folderSize(dir: string): number {
+  try {
+    return fs.readdirSync(dir).reduce((s, f) => {
+      try { const st = fs.statSync(path.join(dir, f)); return s + (st.isFile() ? st.size : 0); } catch { return s; }
+    }, 0);
+  } catch { return 0; }
 }
 
 function fmtDate(d: string): string {

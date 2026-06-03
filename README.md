@@ -2,7 +2,7 @@
 
 TubeVault is a local-first Chrome extension for archiving YouTube videos, playlists, channels, thumbnails, and metadata to your own machine. The browser extension provides the YouTube UI, download queue, options page, history, setup/status panels, and support links. A WSL native messaging helper runs the actual local download work through `yt-dlp`.
 
-Current Chrome extension version: **v0.3.50**
+Current Chrome extension version: **v0.3.51**
 
 ## What It Does
 
@@ -55,7 +55,7 @@ C:\Users\natha\Videos\Youtube Downloads
 
 ## Setup
 
-See [SETUP.md](SETUP.md) for the full local install flow.
+TubeVault is a Chrome extension plus a local WSL helper. The extension UI includes a **Setup** tab with the same core checklist, and [SETUP.md](SETUP.md) has the full local install and troubleshooting flow.
 
 Short version:
 
@@ -80,13 +80,41 @@ TubeVault's Chrome options page includes:
 
 ## Screenshots
 
-Options support tab:
+### Popup
 
-![TubeVault options support tab](docs/screenshots/tubevault-options-support.png)
-
-Popup:
+The popup is the "what is happening now" surface: active downloads, queued batches, helper connection state, output path, and the shortcut into history/settings.
 
 ![TubeVault popup](docs/screenshots/tubevault-popup.png)
+
+### Downloads
+
+The Downloads tab is the finished-history view. It shows completed, failed, and cancelled jobs; grouped batch rows; status filters; open-folder actions; and history clearing.
+
+![TubeVault downloads options tab](docs/screenshots/tubevault-options-downloads.png)
+
+### Settings
+
+The Settings tab controls the local save folder, naming layout, channel download count presets, default menu selections, and history/privacy retention.
+
+![TubeVault settings options tab](docs/screenshots/tubevault-options-settings.png)
+
+### Status
+
+The Status tab checks whether Chrome can reach the native helper and whether the local helper sees `yt-dlp`, `ffmpeg`, and the configured output folder.
+
+![TubeVault status options tab](docs/screenshots/tubevault-options-status.png)
+
+### Setup
+
+The Setup tab keeps the one-time install checklist inside the extension, so local helper setup is visible without returning to GitHub.
+
+![TubeVault setup options tab](docs/screenshots/tubevault-options-setup.png)
+
+### Support
+
+The Support tab explains the local-first privacy model and exposes project support links.
+
+![TubeVault support options tab](docs/screenshots/tubevault-options-support.png)
 
 ## Build Workflow
 
@@ -105,6 +133,14 @@ npm run build --prefix helper
 ```
 
 This compiles helper TypeScript and copies `dist/*.js` to the Windows helper path used by the native messaging launcher.
+
+Screenshot capture:
+
+```bash
+npm run screenshots --prefix extension
+```
+
+This runs [scripts/capture-extension-screenshots.mjs](scripts/capture-extension-screenshots.mjs), which serves the built extension UI with a Chrome API shim and captures the popup plus every options tab through Puppeteer. See [docs/PUPPETEER_SCREENSHOTS.md](docs/PUPPETEER_SCREENSHOTS.md) for the workflow details.
 
 ## Support
 

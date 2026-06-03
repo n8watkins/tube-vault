@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.3.51
+
+- Adds a repeatable Puppeteer screenshot capture script.
+- Captures popup plus every Chrome options tab for README documentation.
+- Adds the extension screenshot command to `extension/package.json`.
+- Wraps the Setup tab install command so it screenshots cleanly.
+
 ## v0.3.50
 
 - Adds an About TubeVault block to the options Support tab.

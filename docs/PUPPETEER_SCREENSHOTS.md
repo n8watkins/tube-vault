@@ -1,61 +1,83 @@
 # Puppeteer Screenshots
 
-This is the repeatable workflow used to capture TubeVault options and popup screenshots from WSL.
-
-## Why The Script Uses A Shim
-
-Chrome extension pages expect the `chrome.*` extension APIs. For screenshots, the most reliable WSL flow is to serve the built extension HTML through a tiny local HTTP server and inject a `window.chrome` shim before the bundled script loads.
-
-That lets Puppeteer render the real built `dist/options.js` and `dist/popup.js` without needing Chrome to load the unpacked extension cleanly across the WSL/Windows boundary.
-
-## Workflow
-
-1. Build the extension:
+TubeVault has a reusable screenshot script for the popup and every Chrome options tab.
 
 ```bash
-npm run build --prefix extension
+npm run screenshots --prefix extension
 ```
 
-2. Start Chrome from Windows with remote debugging:
-
-```powershell
-$chrome = "C:\Program Files\Google\Chrome\Application\chrome.exe"
-$profile = "C:\Users\natha\AppData\Local\Temp\tubevault-puppeteer-profile"
-Start-Process -FilePath $chrome -ArgumentList @(
-  "--remote-debugging-port=9225",
-  "--user-data-dir=$profile",
-  "--no-first-run",
-  "--no-default-browser-check",
-  "--window-size=1200,900"
-)
-```
-
-3. Install `puppeteer-core` outside the repo:
-
-```powershell
-npm install --prefix C:\Users\natha\AppData\Local\Temp\tubevault-puppeteer-core puppeteer-core
-```
-
-4. Run a Node script that:
-
-- Serves `extension/options.html`, `extension/popup.html`, and `extension/dist/*.js`.
-- Injects a `window.chrome` shim into each HTML page.
-- Connects to Chrome with `puppeteer.connect({ browserURL: "http://127.0.0.1:9225" })`.
-- Opens `http://127.0.0.1:<port>/options.html`, clicks the Support tab, and screenshots it.
-- Opens `http://127.0.0.1:<port>/popup.html` and screenshots it.
-
-Use `waitUntil: "domcontentloaded"` plus explicit text waits. Avoid `networkidle0` for extension UI screenshots because mocked extension messaging and browser internals can keep the page busy longer than expected.
-
-Current output files:
+The command writes:
 
 ```text
-docs/screenshots/tubevault-options-support.png
 docs/screenshots/tubevault-popup.png
+docs/screenshots/tubevault-options-downloads.png
+docs/screenshots/tubevault-options-settings.png
+docs/screenshots/tubevault-options-status.png
+docs/screenshots/tubevault-options-setup.png
+docs/screenshots/tubevault-options-support.png
 ```
 
-For popup captures, crop the screenshot to the popup panel if Puppeteer captures extra viewport padding:
+## Script
 
-```bash
-ffmpeg -y -i docs/screenshots/tubevault-popup.png -vf crop=380:287:0:0 docs/screenshots/tubevault-popup-cropped.png
-mv docs/screenshots/tubevault-popup-cropped.png docs/screenshots/tubevault-popup.png
+The script lives at:
+
+```text
+scripts/capture-extension-screenshots.mjs
 ```
+
+It is intentionally a project script instead of a one-off command. It can be rerun whenever the extension UI changes and the README screenshots need to be refreshed.
+
+## How It Works
+
+Chrome extension pages expect the `chrome.*` extension APIs. For screenshots, the most reliable WSL flow is to render the built extension HTML through a small local HTTP server and inject a `window.chrome` shim before the bundled script loads.
+
+That means the screenshots use the real built files:
+
+```text
+extension/options.html
+extension/popup.html
+extension/dist/options.js
+extension/dist/popup.js
+```
+
+The shim provides deterministic sample data for:
+
+- Download history.
+- Active and queued popup jobs.
+- Settings defaults.
+- Native helper diagnostics.
+- Extension manifest version.
+
+## WSL And Windows Chrome
+
+The script runs from WSL, but uses Windows Chrome for Puppeteer screenshots:
+
+1. Starts a temporary WSL HTTP server on `127.0.0.1:9477`.
+2. Starts Windows Chrome with a temporary profile and remote debugging port.
+3. Ensures `puppeteer-core` exists in:
+
+```text
+C:\Users\natha\AppData\Local\Temp\tubevault-puppeteer-core
+```
+
+4. Writes a temporary Windows Node controller script in:
+
+```text
+C:\Users\natha\AppData\Local\Temp\tubevault-capture-extension-screenshots.cjs
+```
+
+5. The Windows controller connects to Chrome with Puppeteer, opens the local render server, clicks each options tab, and saves screenshots into a Windows temp output folder.
+6. The WSL script copies those PNG files back into `docs/screenshots`.
+7. The temporary Chrome profile is closed.
+
+## Why It Does Not Load The Extension Directly
+
+Loading unpacked Chrome extensions across the WSL/Windows boundary can be unreliable for automation because extension IDs, service worker targets, and `chrome-extension://...` page availability can drift between temp profiles. The shimmed render keeps the screenshots stable while still exercising the built React bundles.
+
+## Notes
+
+- Run `npm run build --prefix extension` first when source files changed, so screenshots use the newest bundle.
+- Use `waitUntil: "domcontentloaded"` plus explicit UI text waits. Avoid `networkidle0` for extension UI screenshots.
+- Override the Windows username with `TUBEVAULT_WINDOWS_USER` if needed.
+- Override the render server port with `TUBEVAULT_SCREENSHOT_SERVER_PORT` if `9477` is busy.
+- Override Chrome with `TUBEVAULT_CHROME_PATH` if Chrome is installed somewhere else.

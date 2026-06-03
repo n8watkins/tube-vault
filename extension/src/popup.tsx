@@ -120,10 +120,11 @@ function App() {
   return (
     <div style={panel}>
       <div style={header}>
-        <span style={{ fontWeight: 700, fontSize: 15 }}>TubeVault</span>
+        <span style={{ fontWeight: 700, fontSize: 17 }}>TubeVault</span>
         <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ fontSize: 11, color: helper === 'ok' ? '#4caf50' : helper === 'error' ? '#ef5350' : '#888' }}>
-            {helper === 'ok' ? '● helper' : helper === 'error' ? '● offline' : '…'}
+          <span style={statusPill}>
+            <span style={{ width: 8, height: 8, borderRadius: '50%', background: helper === 'ok' ? '#5dde6e' : helper === 'error' ? '#ff6b6b' : '#ccc' }} />
+            {helper === 'ok' ? 'Connected' : helper === 'error' ? 'Disconnected' : 'Checking…'}
           </span>
           <span style={versionPill}>v{version}</span>
         </span>
@@ -156,19 +157,20 @@ function App() {
 createRoot(document.getElementById('root')!).render(<App />);
 
 // ── Styles ────────────────────────────────────────────────────────────────────
-const panel: React.CSSProperties = { width: 320, background: '#181818', color: '#eee', fontFamily: 'Roboto, system-ui, sans-serif' };
-const header: React.CSSProperties = { background: '#cc0000', padding: '11px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
+const panel: React.CSSProperties = { width: 380, background: '#181818', color: '#eee', fontFamily: 'Roboto, system-ui, sans-serif' };
+const header: React.CSSProperties = { background: '#cc0000', padding: '13px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
+const statusPill: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, background: 'rgba(0,0,0,0.32)', borderRadius: 12, padding: '4px 10px' };
 const versionPill: React.CSSProperties = { fontSize: 11, background: 'rgba(0,0,0,0.3)', borderRadius: 10, padding: '2px 8px' };
-const body: React.CSSProperties = { maxHeight: 380, overflowY: 'auto', padding: '6px 0' };
-const empty: React.CSSProperties = { padding: '28px 14px', textAlign: 'center', color: '#666', fontSize: 13, lineHeight: 1.6 };
-const sectionLabel: React.CSSProperties = { fontSize: 10, fontWeight: 700, color: '#777', textTransform: 'uppercase', letterSpacing: '0.07em', padding: '10px 14px 4px' };
-const jobRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, padding: '8px 14px' };
-const dot: React.CSSProperties = { width: 9, height: 9, borderRadius: '50%', flexShrink: 0 };
-const chevron: React.CSSProperties = { background: 'none', border: 'none', color: '#999', fontSize: 12, cursor: 'pointer', padding: 0, width: 9, flexShrink: 0, fontFamily: 'inherit' };
-const jobLabel: React.CSSProperties = { fontSize: 13, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
-const jobStatus: React.CSSProperties = { fontSize: 11, marginTop: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
-const cancelX: React.CSSProperties = { background: 'none', border: 'none', color: '#888', fontSize: 14, cursor: 'pointer', padding: '2px 6px', borderRadius: 6, fontFamily: 'inherit' };
-const miniBtn: React.CSSProperties = { background: '#2b2b2b', border: '1px solid #444', color: '#fff', fontSize: 11, fontWeight: 600, cursor: 'pointer', padding: '3px 8px', borderRadius: 6, fontFamily: 'inherit' };
+const body: React.CSSProperties = { maxHeight: 440, overflowY: 'auto', padding: '8px 0' };
+const empty: React.CSSProperties = { padding: '36px 18px', textAlign: 'center', color: '#888', fontSize: 14, lineHeight: 1.7 };
+const sectionLabel: React.CSSProperties = { fontSize: 11, fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: '0.07em', padding: '12px 16px 6px' };
+const jobRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 11, padding: '11px 16px' };
+const dot: React.CSSProperties = { width: 10, height: 10, borderRadius: '50%', flexShrink: 0 };
+const chevron: React.CSSProperties = { background: 'none', border: 'none', color: '#aaa', fontSize: 13, cursor: 'pointer', padding: 0, width: 11, flexShrink: 0, fontFamily: 'inherit' };
+const jobLabel: React.CSSProperties = { fontSize: 14, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
+const jobStatus: React.CSSProperties = { fontSize: 12, marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
+const cancelX: React.CSSProperties = { background: 'none', border: 'none', color: '#999', fontSize: 15, cursor: 'pointer', padding: '2px 7px', borderRadius: 6, fontFamily: 'inherit' };
+const miniBtn: React.CSSProperties = { background: '#2b2b2b', border: '1px solid #444', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: '4px 10px', borderRadius: 6, fontFamily: 'inherit' };
 const miniBtnRed: React.CSSProperties = { ...miniBtn, background: '#cc0000', borderColor: '#cc0000' };
-const footer: React.CSSProperties = { borderTop: '1px solid #2a2a2a', padding: '8px 14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 };
-const settingsBtn: React.CSSProperties = { background: 'none', border: 'none', color: '#888', fontSize: 11, cursor: 'pointer', padding: 0, fontFamily: 'inherit', whiteSpace: 'nowrap' };
+const footer: React.CSSProperties = { borderTop: '1px solid #2a2a2a', padding: '10px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 };
+const settingsBtn: React.CSSProperties = { background: 'none', border: 'none', color: '#aaa', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: 0, fontFamily: 'inherit', whiteSpace: 'nowrap' };

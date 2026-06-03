@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { FiFolder, FiRefreshCw } from 'react-icons/fi';
 import { FaGithub, FaMugHot } from 'react-icons/fa';
-import { DEFAULT_CHANNEL_COUNTS, DEFAULT_CHANNEL_COUNT, NamingOptions, defaultNaming, NAMING_KEYS } from './types';
+import { DEFAULT_CHANNEL_COUNTS, DEFAULT_CHANNEL_COUNT, NamingOptions, defaultNaming, NAMING_KEYS, MenuState, defaultMenuState, VideoQuality, VideoFormat, AudioFormat } from './types';
 
 export const DEFAULT_OUTPUT_ROOT = 'C:\\Users\\natha\\Videos\\Youtube Downloads';
 
@@ -12,7 +12,7 @@ const SUPPORT_LINKS = {
   buyMeACoffee: '#',       // e.g. https://buymeacoffee.com/<you>
 };
 
-type Tab = 'downloads' | 'settings' | 'setup' | 'support';
+type Tab = 'downloads' | 'settings' | 'status' | 'setup' | 'support';
 
 type JobStatus = 'queued' | 'probing' | 'running' | 'done' | 'failed' | 'cancelled';
 interface Job {
@@ -50,7 +50,8 @@ function App() {
   const tabs: { id: Tab; label: string }[] = [
     { id: 'downloads', label: 'Downloads' },
     { id: 'settings', label: 'Settings' },
-    { id: 'setup', label: 'Setup & Status' },
+    { id: 'status', label: 'Status' },
+    { id: 'setup', label: 'Setup' },
     { id: 'support', label: 'Support' },
   ];
 
@@ -77,6 +78,7 @@ function App() {
         <div style={content}>
           {tab === 'downloads' && <HistorySection />}
           {tab === 'settings' && <SettingsSection />}
+          {tab === 'status' && <StatusSection />}
           {tab === 'setup' && <SetupSection />}
           {tab === 'support' && <SupportSection />}
         </div>
@@ -207,6 +209,9 @@ function SettingsSection() {
   const [countsText, setCountsText] = useState(DEFAULT_CHANNEL_COUNTS.join(', '));
   const [defaultCount, setDefaultCount] = useState(DEFAULT_CHANNEL_COUNT);
   const [naming, setNaming] = useState<NamingOptions>(defaultNaming);
+  const [prefs, setPrefs] = useState<MenuState>(defaultMenuState);
+  const [collectHistory, setCollectHistory] = useState(true);
+  const [retention, setRetention] = useState(0);
   const [status, setStatus] = useState<'idle' | 'saved'>('idle');
 
   useEffect(() => {
@@ -214,9 +219,12 @@ function SettingsSection() {
       (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [NAMING_KEYS[k], defaultNaming[k]])
     );
     chrome.storage.local.get(
-      { outputRoot: DEFAULT_OUTPUT_ROOT, channelCounts: DEFAULT_CHANNEL_COUNTS, channelDefaultCount: DEFAULT_CHANNEL_COUNT, ...namingDefaults },
+      { outputRoot: DEFAULT_OUTPUT_ROOT, channelCounts: DEFAULT_CHANNEL_COUNTS, channelDefaultCount: DEFAULT_CHANNEL_COUNT, menuDefaults: defaultMenuState, collectHistory: true, historyRetentionDays: 0, ...namingDefaults },
       (s) => {
         setOutputRoot(s.outputRoot); setCountsText((s.channelCounts as number[]).join(', ')); setDefaultCount(s.channelDefaultCount);
+        setPrefs({ ...defaultMenuState, ...(s.menuDefaults || {}) });
+        setCollectHistory(s.collectHistory !== false);
+        setRetention(Number(s.historyRetentionDays) || 0);
         setNaming(Object.fromEntries(
           (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [k, !!s[NAMING_KEYS[k]]])
         ) as unknown as NamingOptions);
@@ -226,6 +234,7 @@ function SettingsSection() {
 
   const parsedCounts = parseCounts(countsText);
   const setNameFlag = (k: keyof NamingOptions, v: boolean) => setNaming((n) => ({ ...n, [k]: v }));
+  const setPref = (patch: Partial<MenuState>) => setPrefs((p) => ({ ...p, ...patch }));
 
   function save() {
     const root = outputRoot.trim() || DEFAULT_OUTPUT_ROOT;
@@ -234,9 +243,19 @@ function SettingsSection() {
     const namingFlat = Object.fromEntries(
       (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [NAMING_KEYS[k], naming[k]])
     );
-    chrome.storage.local.set({ outputRoot: root, channelCounts: counts, channelDefaultCount: def, ...namingFlat }, () => {
+    chrome.storage.local.set({ outputRoot: root, channelCounts: counts, channelDefaultCount: def, menuDefaults: prefs, collectHistory, historyRetentionDays: retention, ...namingFlat }, () => {
       setOutputRoot(root); setCountsText(counts.join(', ')); setDefaultCount(def);
       setStatus('saved'); setTimeout(() => setStatus('idle'), 2000);
+    });
+  }
+
+  function exportHistory() {
+    chrome.storage.local.get({ tvJobs: [] }, (s) => {
+      const blob = new Blob([JSON.stringify(s.tvJobs, null, 2)], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `tubevault-history-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click(); URL.revokeObjectURL(url);
     });
   }
 
@@ -293,6 +312,66 @@ function SettingsSection() {
 
           <div style={divider} />
 
+          <Field label="Default download preferences">
+            <p style={hint}>What the download menu is pre-set to each time you open it.</p>
+            <label style={checkRow}>
+              <input type="checkbox" checked={prefs.video} onChange={(e) => setPref({ video: e.target.checked })} style={cbx} />
+              <span>Video</span>
+            </label>
+            {prefs.video && (
+              <div style={{ display: 'flex', gap: 8, margin: '0 0 10px 24px' }}>
+                <select value={prefs.videoQuality} onChange={(e) => setPref({ videoQuality: e.target.value as VideoQuality })} style={{ ...input, width: 'auto', padding: '6px 8px', fontFamily: 'inherit' }}>
+                  {(['best', '1080', '720', '480', '360'] as VideoQuality[]).map((q) => <option key={q} value={q}>{q === 'best' ? 'Best' : q + 'p'}</option>)}
+                </select>
+                <select value={prefs.videoFormat} onChange={(e) => setPref({ videoFormat: e.target.value as VideoFormat })} style={{ ...input, width: 'auto', padding: '6px 8px', fontFamily: 'inherit' }}>
+                  {(['mp4', 'webm', 'mkv'] as VideoFormat[]).map((f) => <option key={f} value={f}>{f}</option>)}
+                </select>
+              </div>
+            )}
+            <label style={checkRow}>
+              <input type="checkbox" checked={prefs.audio} onChange={(e) => setPref({ audio: e.target.checked })} style={cbx} />
+              <span>Audio</span>
+            </label>
+            {prefs.audio && (
+              <div style={{ margin: '0 0 10px 24px' }}>
+                <select value={prefs.audioFormat} onChange={(e) => setPref({ audioFormat: e.target.value as AudioFormat })} style={{ ...input, width: 'auto', padding: '6px 8px', fontFamily: 'inherit' }}>
+                  {(['m4a', 'mp3', 'wav', 'opus'] as AudioFormat[]).map((f) => <option key={f} value={f}>{f}</option>)}
+                </select>
+              </div>
+            )}
+            <label style={checkRow}>
+              <input type="checkbox" checked={prefs.thumbnail} onChange={(e) => setPref({ thumbnail: e.target.checked })} style={cbx} />
+              <span>Thumbnail</span>
+            </label>
+            <label style={checkRow}>
+              <input type="checkbox" checked={prefs.metadata} onChange={(e) => setPref({ metadata: e.target.checked })} style={cbx} />
+              <span>Metadata</span>
+            </label>
+          </Field>
+
+          <div style={divider} />
+
+          <Field label="History & privacy">
+            <label style={checkRow}>
+              <input type="checkbox" checked={collectHistory} onChange={(e) => setCollectHistory(e.target.checked)} style={cbx} />
+              <span>Keep download history</span>
+            </label>
+            <p style={muted}>When off, nothing is recorded — duplicate protection won’t work.</p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '12px 0 0' }}>
+              <span style={{ fontSize: 13, color: '#aaa' }}>Auto-delete history older than:</span>
+              <select value={retention} onChange={(e) => setRetention(Number(e.target.value))} disabled={!collectHistory} style={{ ...input, width: 'auto', padding: '6px 8px', fontFamily: 'inherit', opacity: collectHistory ? 1 : 0.5 }}>
+                <option value={0}>Never</option>
+                <option value={7}>7 days</option>
+                <option value={30}>30 days</option>
+                <option value={90}>90 days</option>
+                <option value={365}>1 year</option>
+              </select>
+            </div>
+            <button onClick={exportHistory} style={{ ...miniBtn, marginTop: 14 }}>Export history (JSON)</button>
+          </Field>
+
+          <div style={divider} />
+
           <button onClick={save} style={{ ...btn, ...(status === 'saved' ? btnSaved : {}) }}>
             {status === 'saved' ? '✓ Saved' : 'Save Settings'}
           </button>
@@ -303,7 +382,7 @@ function SettingsSection() {
 }
 
 // ── Setup & Status ────────────────────────────────────────────────────────────
-function SetupSection() {
+function StatusSection() {
   const [diag, setDiag] = useState<{ ytdlp: string | null; ffmpeg: string | null; outputRoot: string | null } | null>(null);
   const [helper, setHelper] = useState<'idle' | 'checking' | 'ok' | 'error'>('idle');
 
@@ -317,24 +396,33 @@ function SetupSection() {
   };
   useEffect(check, []);
 
+  const connected = helper === 'ok' && !!diag?.ytdlp && !!diag?.ffmpeg;
   return (
     <div>
-      <SectionHeader title="Setup & Status" />
-
-      <div style={card}>
+      <SectionHeader title="Status" subtitle={helper === 'checking' ? 'Checking…' : connected ? 'Everything’s working.' : helper === 'ok' ? 'Helper connected, but a tool is missing.' : 'Helper not reachable — see Setup.'} />
+      <div style={{ ...bigStatus, background: connected ? 'rgba(76,175,80,0.12)' : helper === 'checking' ? '#1a1a1a' : 'rgba(239,83,80,0.1)', borderColor: connected ? 'rgba(76,175,80,0.4)' : helper === 'error' ? 'rgba(239,83,80,0.4)' : '#2a2a2a' }}>
+        <span style={{ width: 12, height: 12, borderRadius: '50%', background: connected ? '#4caf50' : helper === 'checking' ? '#888' : '#ef5350' }} />
+        <span style={{ fontSize: 17, fontWeight: 700 }}>{helper === 'checking' ? 'Checking…' : connected ? 'Connected' : 'Not connected'}</span>
+        <button onClick={check} style={{ ...textBtn, marginLeft: 'auto' }}><FiRefreshCw size={13} style={{ verticalAlign: -2, marginRight: 5 }} />Re-check</button>
+      </div>
+      <div style={{ ...card, marginTop: 16 }}>
         <div style={{ padding: 20 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-            <div style={sectionLabel}>Status</div>
-            <button onClick={check} style={textBtn}><FiRefreshCw size={12} style={{ verticalAlign: -1, marginRight: 5 }} />Re-check</button>
-          </div>
+          <div style={sectionLabel}>Details</div>
           <StatusLine label="Native helper" value={helper === 'checking' ? 'Checking…' : helper === 'ok' ? 'Connected' : helper === 'error' ? 'Not reachable' : '—'} ok={helper === 'ok'} bad={helper === 'error'} />
           <StatusLine label="yt-dlp" value={diag?.ytdlp ?? '—'} ok={!!diag?.ytdlp} bad={helper === 'ok' && !diag?.ytdlp} />
           <StatusLine label="ffmpeg" value={diag?.ffmpeg ?? '—'} ok={!!diag?.ffmpeg} bad={helper === 'ok' && !diag?.ffmpeg} />
           <StatusLine label="Output folder" value={diag?.outputRoot ?? '—'} />
         </div>
       </div>
+    </div>
+  );
+}
 
-      <div style={{ ...card, marginTop: 18 }}>
+function SetupSection() {
+  return (
+    <div>
+      <SectionHeader title="Setup" subtitle="One-time installation for the local download helper." />
+      <div style={card}>
         <div style={{ padding: 20 }}>
           <div style={sectionLabel}>Installation guide</div>
           <p style={hint}>TubeVault runs downloads through a small helper in WSL. One-time setup:</p>
@@ -345,7 +433,7 @@ function SetupSection() {
             </li>
             <li><b>Register the native messaging host</b> so Chrome can talk to the helper (run the project's install script once).</li>
             <li><b>Build the helper</b> (<code style={inlineCode}>cd helper &amp;&amp; npm install &amp;&amp; npm run build</code>).</li>
-            <li>Reload this extension, then hit <b>Re-check</b> above — all three should read green.</li>
+            <li>Reload this extension, then check the <b>Status</b> tab — it should read Connected.</li>
           </ol>
           <p style={muted}>If the helper shows “Not reachable”, the native-messaging host registration or the helper build is the usual culprit.</p>
         </div>
@@ -414,6 +502,9 @@ const input: React.CSSProperties = { width: '100%', background: '#2a2a2a', borde
 const muted: React.CSSProperties = { margin: '6px 0 0', fontSize: 11, color: '#555' };
 const divider: React.CSSProperties = { height: 1, background: '#262626', margin: '20px 0' };
 const checkRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 9, cursor: 'pointer', marginBottom: 10, userSelect: 'none' };
+const cbx: React.CSSProperties = { accentColor: '#cc0000', width: 15, height: 15, cursor: 'pointer', flexShrink: 0 };
+const miniBtn: React.CSSProperties = { background: '#2a2a2a', border: '1px solid #3a3a3a', color: '#ddd', borderRadius: 7, fontSize: 13, fontWeight: 600, padding: '8px 14px', cursor: 'pointer', fontFamily: 'inherit' };
+const bigStatus: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 12, padding: '16px 20px', borderRadius: 10, border: '1px solid #2a2a2a' };
 const btn: React.CSSProperties = { background: '#cc0000', border: 'none', borderRadius: 6, color: '#fff', fontSize: 13, fontWeight: 600, padding: '9px 20px', cursor: 'pointer', transition: 'background 0.2s', fontFamily: 'inherit' };
 const btnSaved: React.CSSProperties = { background: '#2e7d32' };
 const emptyBox: React.CSSProperties = { padding: '40px', textAlign: 'center', color: '#666', fontSize: 14, background: '#1a1a1a', borderRadius: 10, border: '1px solid #262626' };

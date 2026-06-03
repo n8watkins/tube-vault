@@ -28,13 +28,15 @@ const isActive = (j: Job) => j.status === 'queued' || j.status === 'probing' || 
 
 // ── Settings cache ────────────────────────────────────────────────────────────
 const namingKeyList = Object.keys(NAMING_KEYS) as (keyof NamingOptions)[];
-let cachedSettings = { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: true, naming: { ...defaultNaming } };
+let cachedSettings = { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: true, naming: { ...defaultNaming }, collectHistory: true, historyRetentionDays: 0 };
 const namingStorageDefaults = Object.fromEntries(namingKeyList.map((k) => [NAMING_KEYS[k], defaultNaming[k]]));
 chrome.storage.local.get(
-  { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: true, ...namingStorageDefaults },
+  { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: true, collectHistory: true, historyRetentionDays: 0, ...namingStorageDefaults },
   (s) => {
     cachedSettings.outputRoot = s.outputRoot ?? cachedSettings.outputRoot;
     cachedSettings.autoOpenFolder = s.autoOpenFolder ?? cachedSettings.autoOpenFolder;
+    cachedSettings.collectHistory = s.collectHistory !== false;
+    cachedSettings.historyRetentionDays = Number(s.historyRetentionDays) || 0;
     for (const k of namingKeyList) cachedSettings.naming[k] = !!s[NAMING_KEYS[k]];
   }
 );
@@ -42,6 +44,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if (changes.outputRoot) cachedSettings.outputRoot = changes.outputRoot.newValue;
   if (changes.autoOpenFolder) cachedSettings.autoOpenFolder = changes.autoOpenFolder.newValue;
+  if (changes.collectHistory) cachedSettings.collectHistory = changes.collectHistory.newValue !== false;
+  if (changes.historyRetentionDays) cachedSettings.historyRetentionDays = Number(changes.historyRetentionDays.newValue) || 0;
   for (const k of namingKeyList) {
     const c = changes[NAMING_KEYS[k]];
     if (c) cachedSettings.naming[k] = !!c.newValue;
@@ -59,13 +63,22 @@ function sendNative(payload: Record<string, unknown>): Promise<any> {
 function getJobs(): Promise<Job[]> {
   return new Promise((res) => chrome.storage.local.get({ [JOBS_KEY]: [] }, (s) => res(s[JOBS_KEY] as Job[])));
 }
-// Keep every active job; cap finished history at MAX_HISTORY (drop oldest finished).
+// Keep every active job. Finished jobs are subject to the privacy/retention
+// settings: dropped entirely when history collection is off, aged out past the
+// retention window, then capped at MAX_HISTORY (oldest finished dropped first).
 function trim(jobs: Job[]): Job[] {
-  const finishedIdx = jobs.map((j, i) => ({ j, i })).filter((x) => !isActive(x.j));
+  let result = jobs;
+  if (!cachedSettings.collectHistory) {
+    result = result.filter(isActive);
+  } else if (cachedSettings.historyRetentionDays > 0) {
+    const cutoff = Date.now() - cachedSettings.historyRetentionDays * 86_400_000;
+    result = result.filter((j) => isActive(j) || (j.finishedAt ?? 0) >= cutoff);
+  }
+  const finishedIdx = result.map((j, i) => ({ j, i })).filter((x) => !isActive(x.j));
   const drop = Math.max(0, finishedIdx.length - MAX_HISTORY);
-  if (drop === 0) return jobs;
+  if (drop === 0) return result;
   const dropSet = new Set(finishedIdx.slice(0, drop).map((x) => x.i));
-  return jobs.filter((_, i) => !dropSet.has(i));
+  return result.filter((_, i) => !dropSet.has(i));
 }
 function setJobs(jobs: Job[]): Promise<void> {
   return new Promise((res) => chrome.storage.local.set({ [JOBS_KEY]: trim(jobs) }, () => res()));

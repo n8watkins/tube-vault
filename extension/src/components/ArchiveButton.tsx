@@ -61,6 +61,23 @@ function getDownloadedMap(): Promise<Map<string, number>> {
   });
 }
 
+// Probe one video (title + component-aware size) via the background worker.
+function probeVideo(url: string, components: Record<string, unknown>): Promise<{ title?: string; bytes?: number } | null> {
+  return new Promise((res) =>
+    chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: { action: 'probe', url, components } },
+      (r) => res(chrome.runtime.lastError || !r?.ok ? null : r)));
+}
+
+// Human summary of the selected components (for the single-video confirm).
+function componentSummary(m: MenuState): string {
+  const parts: string[] = [];
+  if (m.video) parts.push(`Video ${m.videoQuality === 'best' ? 'best' : m.videoQuality + 'p'} ${m.videoFormat}`);
+  if (m.audio) parts.push(`Audio ${m.audioFormat}`);
+  if (m.thumbnail) parts.push('Thumbnail');
+  if (m.metadata) parts.push('Metadata');
+  return parts.join('  ·  ') || 'Nothing selected';
+}
+
 interface Props {
   getUrl: () => string;
   playlist: boolean;
@@ -107,6 +124,13 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
       }
     );
   }, [channel]);
+
+  // Apply the user's saved default download preferences to the menu.
+  useEffect(() => {
+    chrome.storage.local.get({ menuDefaults: null }, (s) => {
+      if (s.menuDefaults && typeof s.menuDefaults === 'object') setMenuState((m) => ({ ...m, ...s.menuDefaults }));
+    });
+  }, []);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -195,10 +219,21 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
       return;
     }
 
-    // Single video: no selection modal — straight into the queue (size is fetched
-    // lazily just before it downloads).
-    const title = document.title.replace(/\s*-\s*YouTube.*$/, '').trim() || 'Video';
-    enqueue([{ url: getUrl(), title, bytes: null }], components);
+    // Single video: probe for title/size, then show a confirmation (with a
+    // duplicate warning if we've grabbed it before) before queueing.
+    const url = getUrl();
+    const pageTitle = document.title.replace(/\s*-\s*YouTube.*$/, '').trim() || 'Video';
+    showToast('Checking video…');
+    Promise.all([getDownloadedMap(), probeVideo(url, components)]).then(([dl, p]) => {
+      const id = idOf(url);
+      const dupWhen = (id && dl.get(id)) || 0;
+      const title = p?.title || pageTitle;
+      const sizeText = p?.bytes ? formatBytes(p.bytes) : 'sized at download';
+      showVideoConfirm(title, componentSummary(menuState), sizeText, dupWhen).then((ok) => {
+        if (!ok) { setBtnState('idle'); return; }
+        enqueue([{ url, title, bytes: p?.bytes ?? null }], components);
+      });
+    });
   }
 
   // Playlist: flat-list it, then let the user pick which videos to keep.
@@ -364,6 +399,71 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
 // Batch selection dialog (our own, not window.confirm): a checkbox list of every
 // video in the playlist/channel, all checked by default. Uncheck the ones to skip.
 // Resolves the picked items, or null on cancel (backdrop click / Esc).
+// Single-video confirmation: title, what you're grabbing, size, and a duplicate
+// warning if applicable. Backdrop/Esc = cancel, Enter/Download = confirm.
+function showVideoConfirm(title: string, components: string, sizeText: string, dupWhen: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const backdrop = document.createElement('div');
+    Object.assign(backdrop.style, {
+      position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(2px)',
+      zIndex: '2147483647', display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontFamily: 'Roboto, system-ui, Arial, sans-serif',
+    });
+    const card = document.createElement('div');
+    Object.assign(card.style, {
+      background: '#1c1c1c', border: '1px solid #2e2e2e', borderRadius: '16px',
+      boxShadow: '0 16px 48px rgba(0,0,0,0.7)', maxWidth: '440px', width: '90%', color: '#fff', padding: '24px',
+    });
+    card.onclick = (e) => e.stopPropagation();
+
+    const heading = document.createElement('div');
+    heading.textContent = 'Download this video?';
+    Object.assign(heading.style, { fontSize: '15px', color: '#aaa', fontWeight: '600', marginBottom: '10px' });
+
+    const t = document.createElement('div');
+    t.textContent = title;
+    Object.assign(t.style, { fontSize: '18px', fontWeight: '700', marginBottom: '16px', lineHeight: '1.35' });
+
+    const meta = document.createElement('div');
+    Object.assign(meta.style, { fontSize: '14px', color: '#ccc', lineHeight: '1.7', marginBottom: '18px' });
+    meta.innerHTML = '';
+    const cRow = document.createElement('div'); cRow.textContent = components; meta.append(cRow);
+    const sRow = document.createElement('div'); sRow.textContent = `Size: ${sizeText}`; sRow.style.color = '#999'; meta.append(sRow);
+
+    if (dupWhen) {
+      const warn = document.createElement('div');
+      warn.textContent = `⚠ Already downloaded ${new Date(dupWhen).toLocaleDateString()} — this will download it again.`;
+      Object.assign(warn.style, { fontSize: '13px', color: '#ffb74d', background: 'rgba(255,167,38,0.1)', border: '1px solid rgba(255,167,38,0.3)', borderRadius: '8px', padding: '8px 12px', marginBottom: '18px', lineHeight: '1.4' });
+      meta.after(warn);
+    }
+
+    const row = document.createElement('div');
+    Object.assign(row.style, { display: 'flex', gap: '10px', justifyContent: 'flex-end' });
+    const cancel = document.createElement('button');
+    cancel.textContent = 'Cancel';
+    Object.assign(cancel.style, { padding: '10px 18px', borderRadius: '10px', border: '1px solid #444', background: '#2b2b2b', color: '#fff', fontSize: '14px', fontWeight: '600', cursor: 'pointer', fontFamily: 'inherit' });
+    const go = document.createElement('button');
+    go.textContent = 'Download';
+    Object.assign(go.style, { padding: '10px 18px', borderRadius: '10px', border: 'none', background: '#cc0000', color: '#fff', fontSize: '14px', fontWeight: '700', cursor: 'pointer', fontFamily: 'inherit' });
+    row.append(cancel, go);
+
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.stopPropagation(); cleanup(false); }
+      else if (e.key === 'Enter') { e.stopPropagation(); cleanup(true); }
+    };
+    const cleanup = (result: boolean) => { document.removeEventListener('keydown', onKey, true); backdrop.remove(); resolve(result); };
+    backdrop.onclick = () => cleanup(false);
+    cancel.onclick = () => cleanup(false);
+    go.onclick = () => cleanup(true);
+    document.addEventListener('keydown', onKey, true);
+
+    card.append(heading, t, meta, row);
+    backdrop.appendChild(card);
+    document.body.appendChild(backdrop);
+    go.focus();
+  });
+}
+
 function showSelection(title: string, subtitle: string, items: PlanItem[], downloaded?: Map<string, number>): Promise<PlanItem[] | null> {
   return new Promise((resolve) => {
     // Duplicate protection: videos already in download history are pre-unchecked

@@ -83,7 +83,8 @@ if (watchMode) {
   // Sync built files to Windows (Chrome loads from there)
   execSync(
     `cp manifest.json popup.html options.html ${WIN_EXT}/ && ` +
-    `cp dist/content-script.js dist/service-worker.js dist/popup.js dist/options.js ${WIN_EXT}/dist/`,
+    `cp dist/content-script.js dist/service-worker.js dist/popup.js dist/options.js ${WIN_EXT}/dist/ && ` +
+    `mkdir -p ${WIN_EXT}/icons && cp icons/icon16.png icons/icon32.png icons/icon48.png icons/icon128.png ${WIN_EXT}/icons/`,
     { cwd: __dirname },
   );
   console.log('Synced to Windows.');

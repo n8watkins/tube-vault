@@ -43,16 +43,20 @@ function formatBytes(b: number | null | undefined): string {
 // Video id from a watch URL (for duplicate detection).
 const idOf = (u: string): string | null => { try { return new URL(u).searchParams.get('v'); } catch { return null; } };
 
-// Ids of videos we've already finished downloading (from the job history), so the
-// selection modal can flag + pre-uncheck duplicates.
-function getDownloadedIds(): Promise<Set<string>> {
+// Map of already-downloaded video id → when (newest finishedAt), read from the job
+// history in storage, so the selection modal can flag + pre-uncheck duplicates and
+// show when each was last grabbed.
+function getDownloadedMap(): Promise<Map<string, number>> {
   return new Promise((res) => {
     chrome.storage.local.get({ tvJobs: [] }, (s) => {
-      const ids = new Set<string>();
-      for (const j of (s.tvJobs as { status: string; videoUrl?: string }[])) {
-        if (j.status === 'done' && j.videoUrl) { const id = idOf(j.videoUrl); if (id) ids.add(id); }
+      const m = new Map<string, number>();
+      for (const j of (s.tvJobs as { status: string; videoUrl?: string; finishedAt?: number }[])) {
+        if (j.status === 'done' && j.videoUrl) {
+          const id = idOf(j.videoUrl);
+          if (id) m.set(id, Math.max(m.get(id) ?? 0, j.finishedAt ?? 0));
+        }
       }
-      res(ids);
+      res(m);
     });
   });
 }
@@ -202,7 +206,7 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
     const playlistUrl = getUrl();
     showToast('Reading playlist…');
     Promise.all([
-      getDownloadedIds(),
+      getDownloadedMap(),
       new Promise<any>((res) => chrome.runtime.sendMessage(
         { type: 'TUBE_VAULT_REQUEST', payload: { action: 'channel_plan', mode: 'all', count: 0, urls: [playlistUrl], components } },
         (resp) => res(resp),
@@ -258,7 +262,7 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
     }
 
     Promise.all([
-      getDownloadedIds(),
+      getDownloadedMap(),
       new Promise<any>((res) => chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: planPayload }, (resp) => res(resp))),
     ]).then(([dlIds, resp]) => {
       const plan = readPlan(resp, 'Couldn’t analyze channel');
@@ -360,10 +364,12 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
 // Batch selection dialog (our own, not window.confirm): a checkbox list of every
 // video in the playlist/channel, all checked by default. Uncheck the ones to skip.
 // Resolves the picked items, or null on cancel (backdrop click / Esc).
-function showSelection(title: string, subtitle: string, items: PlanItem[], downloadedIds?: Set<string>): Promise<PlanItem[] | null> {
+function showSelection(title: string, subtitle: string, items: PlanItem[], downloaded?: Map<string, number>): Promise<PlanItem[] | null> {
   return new Promise((resolve) => {
-    // Duplicate protection: videos already downloaded are pre-unchecked (overridable).
-    const dup = items.map((it) => { const id = idOf(it.url); return !!(id && downloadedIds?.has(id)); });
+    // Duplicate protection: videos already in download history are pre-unchecked
+    // (overridable). `when` is the date we last downloaded each (0 = unknown date).
+    const dup = items.map((it) => { const id = idOf(it.url); return !!(id && downloaded?.has(id)); });
+    const when = items.map((it) => { const id = idOf(it.url); return (id && downloaded?.get(id)) || 0; });
     const dupCount = dup.filter(Boolean).length;
     const checked = items.map((_, i) => !dup[i]);
 
@@ -437,7 +443,7 @@ function showSelection(title: string, subtitle: string, items: PlanItem[], downl
       tWrap.append(t);
       if (dup[i]) {
         const tag = document.createElement('div');
-        tag.textContent = '✓ already downloaded';
+        tag.textContent = when[i] ? `✓ downloaded ${new Date(when[i]).toLocaleDateString()}` : '✓ already downloaded';
         Object.assign(tag.style, { fontSize: '11px', color: '#81c784', marginTop: '2px' });
         tWrap.append(tag);
       }

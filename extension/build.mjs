@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 import { dirname, resolve, join } from 'path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(__dirname, '../../..');
+const repoRoot = resolve(__dirname, '..');
 const WIN_EXT = '/mnt/c/Users/natha/Projects/Tools/tube-vault/extension';
 
 const watchMode = process.argv.includes('--watch');
@@ -89,9 +89,9 @@ if (watchMode) {
   );
   console.log('Synced to Windows.');
 
-  // Commit everything in extensions/tube-vault/extension/
+  // Commit extension build outputs from the TubeVault repo root.
   try {
-    execSync('git add extensions/tube-vault/extension/', { cwd: repoRoot });
+    execSync('git add extension/', { cwd: repoRoot });
     execSync(`git commit -m "build(tube-vault): v${version}"`, { cwd: repoRoot });
     console.log(`Committed v${version}.`);
   } catch (err) {

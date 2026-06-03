@@ -204,7 +204,6 @@ function parseCounts(text: string): number[] {
 
 function SettingsSection() {
   const [outputRoot, setOutputRoot] = useState('');
-  const [autoOpen, setAutoOpen] = useState(true);
   const [countsText, setCountsText] = useState(DEFAULT_CHANNEL_COUNTS.join(', '));
   const [defaultCount, setDefaultCount] = useState(DEFAULT_CHANNEL_COUNT);
   const [naming, setNaming] = useState<NamingOptions>(defaultNaming);
@@ -215,9 +214,9 @@ function SettingsSection() {
       (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [NAMING_KEYS[k], defaultNaming[k]])
     );
     chrome.storage.local.get(
-      { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: true, channelCounts: DEFAULT_CHANNEL_COUNTS, channelDefaultCount: DEFAULT_CHANNEL_COUNT, ...namingDefaults },
+      { outputRoot: DEFAULT_OUTPUT_ROOT, channelCounts: DEFAULT_CHANNEL_COUNTS, channelDefaultCount: DEFAULT_CHANNEL_COUNT, ...namingDefaults },
       (s) => {
-        setOutputRoot(s.outputRoot); setAutoOpen(s.autoOpenFolder); setCountsText((s.channelCounts as number[]).join(', ')); setDefaultCount(s.channelDefaultCount);
+        setOutputRoot(s.outputRoot); setCountsText((s.channelCounts as number[]).join(', ')); setDefaultCount(s.channelDefaultCount);
         setNaming(Object.fromEntries(
           (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [k, !!s[NAMING_KEYS[k]]])
         ) as unknown as NamingOptions);
@@ -235,7 +234,7 @@ function SettingsSection() {
     const namingFlat = Object.fromEntries(
       (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [NAMING_KEYS[k], naming[k]])
     );
-    chrome.storage.local.set({ outputRoot: root, autoOpenFolder: autoOpen, channelCounts: counts, channelDefaultCount: def, ...namingFlat }, () => {
+    chrome.storage.local.set({ outputRoot: root, channelCounts: counts, channelDefaultCount: def, ...namingFlat }, () => {
       setOutputRoot(root); setCountsText(counts.join(', ')); setDefaultCount(def);
       setStatus('saved'); setTimeout(() => setStatus('idle'), 2000);
     });
@@ -258,15 +257,6 @@ function SettingsSection() {
             <p style={hint}>Windows path where videos will be saved.</p>
             <input style={input} value={outputRoot} onChange={(e) => setOutputRoot(e.target.value)} placeholder={DEFAULT_OUTPUT_ROOT} spellCheck={false} />
             <p style={muted}>Default: {DEFAULT_OUTPUT_ROOT}</p>
-          </Field>
-
-          <div style={divider} />
-
-          <Field label="After Download">
-            <label style={checkRow}>
-              <input type="checkbox" checked={autoOpen} onChange={(e) => setAutoOpen(e.target.checked)} style={{ accentColor: '#cc0000', width: 15, height: 15, cursor: 'pointer', flexShrink: 0 }} />
-              <span>Open folder in Windows Explorer after download</span>
-            </label>
           </Field>
 
           <div style={divider} />

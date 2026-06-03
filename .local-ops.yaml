@@ -1,0 +1,64 @@
+local_ops_id: locops_tube_vault_2026_06
+name: Tube Vault
+slug: tube-vault
+type: chrome-extension
+status: active
+priority: high
+project_kind: single
+
+local:
+  path: /home/natkins/personal/tools/extensions/tube-vault
+  dev_command:
+  build_command: npm run build --prefix extension && npm run build --prefix helper
+  test_command:
+  package_manager: npm
+
+links:
+  - label: Local Folder
+    type: local
+    url: /home/natkins/personal/tools/extensions/tube-vault
+
+parts:
+  - name: Extension
+    path: extension
+    kind: chrome-extension
+    role: Browser UI, popup, content scripts, and service worker.
+    primary: true
+    icon: extension/icons/icon128.png
+    build_command: npm run build --prefix extension
+  - name: Helper
+    path: helper
+    kind: native-helper
+    role: Local YouTube archive/download helper.
+    build_command: npm run build --prefix helper
+  - name: Native Messaging
+    path: native-messaging
+    kind: connector
+    role: Chrome native messaging manifest and host registration.
+  - name: Scripts
+    path: scripts
+    kind: scripts
+    role: Install, maintenance, and local helper scripts.
+
+deployments:
+  - provider: manual
+    production_url:
+
+docs:
+  readme: README.md
+  status: docs/status.md
+  roadmap: DOWNLOADS_PLAN.md
+  decisions: docs/decisions.md
+  links: docs/links.md
+  onboarding: docs/onboarding.md
+
+agent:
+  agents_md: AGENTS.md
+  claude_md: CLAUDE.md
+  update_protocol: false
+
+tags:
+  - chrome-extension
+  - youtube
+  - native-helper
+  - local-first

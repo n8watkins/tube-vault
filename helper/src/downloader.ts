@@ -74,6 +74,7 @@ export interface ChannelPlan {
   estBytes: number | null;    // projected total download size, or null if unknown
   sampled: boolean;           // true when estBytes was extrapolated from a sample (mode "all")
   mode: ChannelMode;
+  playlistTitle?: string;     // playlist/mix name (mode "all"), for label + folder
 }
 
 export interface DownloadResult {
@@ -254,6 +255,15 @@ function videoIdOf(u: string): string | null {
   try { return new URL(u).searchParams.get('v'); } catch { return null; }
 }
 
+// The playlist/mix name (e.g. "Radical Optimism Tour Setlist", "Mix - Dua Lipa").
+// One fast call (first entry only). Empty string if not a named playlist.
+async function fetchPlaylistTitle(url: string): Promise<string> {
+  const { out, code } = await run('yt-dlp', ['--no-warnings', '--flat-playlist', '--playlist-end', '1', '--print', '%(playlist_title)s', url]);
+  if (code !== 0) return '';
+  const t = out.split('\n').map((s) => s.trim()).find((s) => s && s !== 'NA');
+  return t ?? '';
+}
+
 async function channelPlan(req: DownloadRequest): Promise<ChannelPlan> {
   const mode: ChannelMode = req.mode ?? 'popular_recent';
   const count = req.count && req.count > 0 ? req.count : 10;
@@ -275,12 +285,12 @@ async function channelPlan(req: DownloadRequest): Promise<ChannelPlan> {
   if (mode === 'all') {
     // Flat-list everything (titles free), but size lazily per-video at download
     // time. Show an extrapolated total from a small sample so the modal isn't blank.
-    const vids = await flatList(channelUrl);
+    const [vids, playlistTitle] = await Promise.all([flatList(channelUrl), fetchPlaylistTitle(channelUrl)]);
     const metas = await mapLimit(vids.slice(0, 8).map((v) => v.id), 4, meta);
     const sizes = metas.map((m) => m.bytes).filter((b) => b > 0);
     const avg = sizes.length ? sum(sizes) / sizes.length : 0;
     const items: PlanItem[] = vids.map((v) => ({ url: watchUrl(v.id), title: v.title, bytes: null }));
-    return { totalVideos: vids.length, items, estBytes: avg ? Math.round(avg * vids.length) : null, sampled: true, mode };
+    return { totalVideos: vids.length, items, estBytes: avg ? Math.round(avg * vids.length) : null, sampled: true, mode, playlistTitle };
   }
 
   if (mode === 'latest') {

@@ -12,6 +12,9 @@ Chrome loads the extension from the **Windows** path:
 
 Development happens in WSL (`/home/natkins/personal/tools/extensions/tube-vault/`).
 
+This folder is its own git repository. Do not use or recreate a parent
+`/home/natkins/personal/tools/.git` repository.
+
 ## Build workflow
 
 **Always build from `extension/`:**
@@ -25,7 +28,7 @@ This single command:
 1. Bumps the patch version in `package.json` and `manifest.json`
 2. Bundles with esbuild (React, minified)
 3. Copies `manifest.json` + `dist/*.js` to the Windows path
-4. Commits everything in `extensions/tube-vault/extension/` with message `build(tube-vault): vX.Y.Z`
+4. Commits everything in `extension/` with message `build(tube-vault): vX.Y.Z`
 
 After building, **reload the extension in Chrome** (chrome://extensions → reload button).
 

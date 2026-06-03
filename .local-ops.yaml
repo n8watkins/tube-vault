@@ -14,6 +14,9 @@ local:
   package_manager: npm
 
 links:
+  - label: GitHub
+    type: repo
+    url: https://github.com/n8watkins/tube-vault
   - label: Local Folder
     type: local
     url: /home/natkins/personal/tools/extensions/tube-vault

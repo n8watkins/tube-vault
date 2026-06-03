@@ -1,6 +1,6 @@
 # TubeVault — Downloads Manager v2 Plan
 
-Status: **planned** (current shipped code is v0.3.38 = batch-as-one-job).
+Status: **mostly shipped** (current Chrome extension version is v0.3.49).
 Goal: per-video job queue, info split between popup (now) and options (history +
 setup + support).
 

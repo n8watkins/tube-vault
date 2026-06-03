@@ -2,7 +2,7 @@
 
 TubeVault is a local-first Chrome extension for archiving YouTube videos, playlists, channels, thumbnails, and metadata to your own machine. The browser extension provides the YouTube UI, download queue, options page, history, setup/status panels, and support links. A WSL native messaging helper runs the actual local download work through `yt-dlp`.
 
-Current Chrome extension version: **v0.3.49**
+Current Chrome extension version: **v0.3.50**
 
 ## What It Does
 
@@ -77,6 +77,16 @@ TubeVault's Chrome options page includes:
 - **Status**: helper diagnostics, `yt-dlp`, `ffmpeg`, and output path checks.
 - **Setup**: install checklist and local environment guidance.
 - **Support**: support links and project links.
+
+## Screenshots
+
+Options support tab:
+
+![TubeVault options support tab](docs/screenshots/tubevault-options-support.png)
+
+Popup:
+
+![TubeVault popup](docs/screenshots/tubevault-popup.png)
 
 ## Build Workflow
 

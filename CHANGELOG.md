@@ -1,5 +1,11 @@
 # Changelog
 
+## v0.3.50
+
+- Adds an About TubeVault block to the options Support tab.
+- Documents the local-first privacy model in the extension UI.
+- Adds Puppeteer-captured options and popup screenshots.
+
 ## v0.3.49
 
 - Fixes the extension build workflow for the standalone TubeVault repository.

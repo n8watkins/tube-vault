@@ -17,7 +17,9 @@ type Tab = 'downloads' | 'settings' | 'setup' | 'support';
 type JobStatus = 'queued' | 'probing' | 'running' | 'done' | 'failed' | 'cancelled';
 interface Job {
   id: string;
+  batchId?: string;
   batchLabel?: string;
+  category?: string;
   label: string;
   status: JobStatus;
   estBytes?: number;
@@ -84,9 +86,13 @@ function App() {
 }
 
 // ── Downloads / History ───────────────────────────────────────────────────────
+// Parent of a Windows path: C:\a\b\c → C:\a\b
+const winDirname = (p: string) => p.slice(0, p.replace(/[\\/]+$/, '').lastIndexOf('\\'));
+
 function HistorySection() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [filter, setFilter] = useState<'all' | 'done' | 'failed' | 'cancelled'>('all');
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     const load = () => chrome.storage.local.get({ tvJobs: [] }, (s) => setJobs(s.tvJobs as Job[]));
@@ -103,6 +109,39 @@ function HistorySection() {
     if (folder) chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: { action: 'open_folder', windowsPath: folder } });
   };
   const clear = () => chrome.runtime.sendMessage({ type: 'TUBE_VAULT_CLEAR_HISTORY' });
+  const toggle = (id: string) => setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+
+  // Group consecutive batch members into one accordion row; singles stand alone.
+  type Row = { kind: 'single'; job: Job } | { kind: 'batch'; batchId: string; members: Job[] };
+  const rows: Row[] = [];
+  const seen = new Set<string>();
+  for (const j of shown) {
+    if (!j.batchId) { rows.push({ kind: 'single', job: j }); continue; }
+    if (seen.has(j.batchId)) continue;
+    seen.add(j.batchId);
+    rows.push({ kind: 'batch', batchId: j.batchId, members: shown.filter((x) => x.batchId === j.batchId) });
+  }
+
+  const videoRow = (j: Job, indent: boolean, top: boolean) => {
+    const badge = BADGE[j.status] ?? BADGE.done;
+    const size = formatBytes(j.estBytes);
+    const when = j.finishedAt ? new Date(j.finishedAt).toLocaleString() : '';
+    return (
+      <div key={j.id} style={{ ...histRow, paddingLeft: indent ? 40 : 18, borderTop: top ? 'none' : '1px solid #262626', background: indent ? '#161616' : undefined }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={histTitle}>{j.label}</div>
+          <div style={histMeta}>
+            {!indent && j.batchLabel ? `${j.batchLabel} · ` : ''}{when}{size ? ` · ${size}` : ''}
+            {j.status === 'failed' && j.error ? ` · ${j.error.slice(0, 60)}` : ''}
+          </div>
+        </div>
+        <span style={{ ...badgeStyle, background: badge.bg, color: badge.fg }}>{badge.text}</span>
+        {j.status === 'done' && j.folder && (
+          <button style={iconBtn} title="Open folder" onClick={() => openFolder(j.folder)}><FiFolder size={15} /></button>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div>
@@ -118,27 +157,36 @@ function HistorySection() {
         {finished.length > 0 && <button onClick={clear} style={textBtn}>Clear history</button>}
       </div>
 
-      {shown.length === 0 ? (
+      {rows.length === 0 ? (
         <div style={emptyBox}>No downloads yet.</div>
       ) : (
         <div style={card}>
-          {shown.map((j, i) => {
-            const badge = BADGE[j.status] ?? BADGE.done;
-            const size = formatBytes(j.estBytes);
-            const when = j.finishedAt ? new Date(j.finishedAt).toLocaleString() : '';
+          {rows.map((r, i) => {
+            if (r.kind === 'single') return videoRow(r.job, false, i === 0);
+
+            const m = r.members;
+            const first = m[0];
+            const doneN = m.filter((x) => x.status === 'done').length;
+            const failN = m.filter((x) => x.status === 'failed').length;
+            const total = m.reduce((a, x) => a + (x.estBytes || 0), 0);
+            const when = first.finishedAt ? new Date(first.finishedAt).toLocaleString() : '';
+            const isOpen = expanded.has(r.batchId);
+            const parent = m.find((x) => x.folder)?.folder;  // category/uploader folder
             return (
-              <div key={j.id} style={{ ...histRow, borderTop: i === 0 ? 'none' : '1px solid #262626' }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={histTitle}>{j.label}</div>
-                  <div style={histMeta}>
-                    {j.batchLabel ? `${j.batchLabel} · ` : ''}{when}{size ? ` · ${size}` : ''}
-                    {j.status === 'failed' && j.error ? ` · ${j.error.slice(0, 60)}` : ''}
+              <div key={r.batchId}>
+                <div style={{ ...histRow, borderTop: i === 0 ? 'none' : '1px solid #262626', cursor: 'pointer' }} onClick={() => toggle(r.batchId)}>
+                  <span style={chevron}>{isOpen ? '▾' : '▸'}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={histTitle}>{first.batchLabel || first.category || 'Batch'}</div>
+                    <div style={histMeta}>
+                      {first.category ? `${first.category} · ` : ''}{m.length} videos · {doneN} done{failN ? ` · ${failN} failed` : ''}{total ? ` · ${formatBytes(total)}` : ''} · {when}
+                    </div>
                   </div>
+                  {parent && (
+                    <button style={iconBtn} title="Open folder" onClick={(e) => { e.stopPropagation(); openFolder(winDirname(parent)); }}><FiFolder size={15} /></button>
+                  )}
                 </div>
-                <span style={{ ...badgeStyle, background: badge.bg, color: badge.fg }}>{badge.text}</span>
-                {j.status === 'done' && j.folder && (
-                  <button style={iconBtn} title="Open folder" onClick={() => openFolder(j.folder)}><FiFolder size={15} /></button>
-                )}
+                {isOpen && m.map((j) => videoRow(j, true, false))}
               </div>
             );
           })}
@@ -380,6 +428,7 @@ const btn: React.CSSProperties = { background: '#cc0000', border: 'none', border
 const btnSaved: React.CSSProperties = { background: '#2e7d32' };
 const emptyBox: React.CSSProperties = { padding: '40px', textAlign: 'center', color: '#666', fontSize: 14, background: '#1a1a1a', borderRadius: 10, border: '1px solid #262626' };
 const histRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 12, padding: '12px 18px' };
+const chevron: React.CSSProperties = { color: '#999', fontSize: 12, width: 10, flexShrink: 0 };
 const histTitle: React.CSSProperties = { fontSize: 14, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
 const histMeta: React.CSSProperties = { fontSize: 12, color: '#888', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
 const badgeStyle: React.CSSProperties = { fontSize: 11, fontWeight: 600, padding: '3px 9px', borderRadius: 20, flexShrink: 0 };

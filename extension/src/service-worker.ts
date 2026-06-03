@@ -129,7 +129,8 @@ async function runJob(job: Job): Promise<void> {
       await updateJob(job.id, { status: 'failed', error: err, finishedAt: Date.now() });
     } else {
       const folder: string = response.windowsFolderPath ?? response.folderPath ?? '';
-      await updateJob(job.id, { status: 'done', folder, finishedAt: Date.now() });
+      const actual = typeof response.bytes === 'number' && response.bytes > 0 ? { estBytes: response.bytes } : {};
+      await updateJob(job.id, { status: 'done', folder, finishedAt: Date.now(), ...actual });
       notifyDone(job.label, folder);
       if (cachedSettings.autoOpenFolder && folder) {
         chrome.runtime.sendNativeMessage(NATIVE_HOST, { action: 'open_folder', windowsPath: folder }, () => { void chrome.runtime.lastError; });

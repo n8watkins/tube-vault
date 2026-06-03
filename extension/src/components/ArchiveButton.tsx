@@ -40,6 +40,23 @@ function formatBytes(b: number | null | undefined): string {
   return `${Math.round(b / 1e3)} KB`;
 }
 
+// Video id from a watch URL (for duplicate detection).
+const idOf = (u: string): string | null => { try { return new URL(u).searchParams.get('v'); } catch { return null; } };
+
+// Ids of videos we've already finished downloading (from the job history), so the
+// selection modal can flag + pre-uncheck duplicates.
+function getDownloadedIds(): Promise<Set<string>> {
+  return new Promise((res) => {
+    chrome.storage.local.get({ tvJobs: [] }, (s) => {
+      const ids = new Set<string>();
+      for (const j of (s.tvJobs as { status: string; videoUrl?: string }[])) {
+        if (j.status === 'done' && j.videoUrl) { const id = idOf(j.videoUrl); if (id) ids.add(id); }
+      }
+      res(ids);
+    });
+  });
+}
+
 interface Props {
   getUrl: () => string;
   playlist: boolean;
@@ -184,26 +201,31 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
   function runPlaylistFlow(components: Record<string, unknown>) {
     const playlistUrl = getUrl();
     showToast('Reading playlist…');
-    chrome.runtime.sendMessage(
-      { type: 'TUBE_VAULT_REQUEST', payload: { action: 'channel_plan', mode: 'all', count: 0, urls: [playlistUrl], components } },
-      (resp) => {
-        const plan = readPlan(resp, 'Couldn’t read playlist');
-        if (!plan) return;
-        const n = plan.totalVideos ?? plan.items.length;
-        const sizeNote = plan.estBytes ? `~${formatBytes(plan.estBytes)}${plan.sampled ? ' (estimated)' : ''}` : 'sized as they download';
-        // Use the real playlist/mix name (e.g. "Radical Optimism Tour Setlist",
-        // "Mix - Dua Lipa") for the title, the batch label, and the folder.
-        const name = (plan.playlistTitle || '').trim();
-        showSelection(
-          name ? `Download “${name}”?` : 'Download this playlist?',
-          `${name ? name + ' · ' : ''}${n} video${n === 1 ? '' : 's'} · Projected size: ${sizeNote}`,
-          plan.items,
-        ).then((picked) => {
-          if (!picked || !picked.length) { setBtnState('idle'); return; }
-          enqueue(picked, components, name || `Playlist — ${picked.length} video${picked.length === 1 ? '' : 's'}`, name || 'Playlist');
-        });
-      }
-    );
+    Promise.all([
+      getDownloadedIds(),
+      new Promise<any>((res) => chrome.runtime.sendMessage(
+        { type: 'TUBE_VAULT_REQUEST', payload: { action: 'channel_plan', mode: 'all', count: 0, urls: [playlistUrl], components } },
+        (resp) => res(resp),
+      )),
+    ]).then(([dlIds, resp]) => {
+      const plan = readPlan(resp, 'Couldn’t read playlist');
+      if (!plan) return;
+      const n = plan.totalVideos ?? plan.items.length;
+      const sizeNote = plan.estBytes ? `~${formatBytes(plan.estBytes)}${plan.sampled ? ' (estimated)' : ''}` : 'sized as they download';
+      // Use the real playlist/mix name (e.g. "Radical Optimism Tour Setlist",
+      // "Mix - Dua Lipa") for the title + batch label; the folder is prefixed
+      // "Playlist_" so playlist downloads are distinguishable from single videos.
+      const name = (plan.playlistTitle || '').trim();
+      showSelection(
+        name ? `Download “${name}”?` : 'Download this playlist?',
+        `${name ? name + ' · ' : ''}${n} video${n === 1 ? '' : 's'} · Projected size: ${sizeNote}`,
+        plan.items,
+        dlIds,
+      ).then((picked) => {
+        if (!picked || !picked.length) { setBtnState('idle'); return; }
+        enqueue(picked, components, name || `Playlist — ${picked.length} video${picked.length === 1 ? '' : 's'}`, name ? `Playlist_${name}` : 'Playlist');
+      });
+    });
   }
 
   // Channel: ask the helper to plan (rank/list), then let the user pick which
@@ -235,7 +257,10 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
       planPayload = { action: 'channel_plan', mode, count: chanCount, urls: [channel.channelVideosUrl()], components };
     }
 
-    chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: planPayload }, (resp) => {
+    Promise.all([
+      getDownloadedIds(),
+      new Promise<any>((res) => chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: planPayload }, (resp) => res(resp))),
+    ]).then(([dlIds, resp]) => {
       const plan = readPlan(resp, 'Couldn’t analyze channel');
       if (!plan) return;
 
@@ -254,6 +279,7 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
         'Download from this channel?',
         `${cap} · Projected size: ${sizeNote}`,
         plan.items,
+        dlIds,
       ).then((picked) => {
         if (!picked || !picked.length) { setBtnState('idle'); return; }
         enqueue(picked, components, cap, category);
@@ -334,9 +360,12 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
 // Batch selection dialog (our own, not window.confirm): a checkbox list of every
 // video in the playlist/channel, all checked by default. Uncheck the ones to skip.
 // Resolves the picked items, or null on cancel (backdrop click / Esc).
-function showSelection(title: string, subtitle: string, items: PlanItem[]): Promise<PlanItem[] | null> {
+function showSelection(title: string, subtitle: string, items: PlanItem[], downloadedIds?: Set<string>): Promise<PlanItem[] | null> {
   return new Promise((resolve) => {
-    const checked = items.map(() => true);
+    // Duplicate protection: videos already downloaded are pre-unchecked (overridable).
+    const dup = items.map((it) => { const id = idOf(it.url); return !!(id && downloadedIds?.has(id)); });
+    const dupCount = dup.filter(Boolean).length;
+    const checked = items.map((_, i) => !dup[i]);
 
     const backdrop = document.createElement('div');
     Object.assign(backdrop.style, {
@@ -360,7 +389,7 @@ function showSelection(title: string, subtitle: string, items: PlanItem[]): Prom
     h.textContent = title;
     Object.assign(h.style, { fontSize: '18px', fontWeight: '700', marginBottom: '6px' });
     const sub = document.createElement('div');
-    sub.textContent = subtitle;
+    sub.textContent = dupCount ? `${subtitle}  ·  ${dupCount} already downloaded (unchecked)` : subtitle;
     Object.assign(sub.style, { fontSize: '13px', color: '#aaa', lineHeight: '1.5' });
     head.append(h, sub);
 
@@ -406,6 +435,12 @@ function showSelection(title: string, subtitle: string, items: PlanItem[]): Prom
       t.textContent = it.title || it.url;
       Object.assign(t.style, { fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
       tWrap.append(t);
+      if (dup[i]) {
+        const tag = document.createElement('div');
+        tag.textContent = '✓ already downloaded';
+        Object.assign(tag.style, { fontSize: '11px', color: '#81c784', marginTop: '2px' });
+        tWrap.append(tag);
+      }
       const sz = document.createElement('div');
       sz.textContent = it.bytes ? formatBytes(it.bytes) : '—';
       Object.assign(sz.style, { fontSize: '12px', color: '#888', flexShrink: '0', minWidth: '54px', textAlign: 'right' });

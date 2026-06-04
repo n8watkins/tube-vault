@@ -100,7 +100,7 @@ const BTN_COLOR: Record<BtnState, string> = {
   error: '#b71c1c',
 };
 
-export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Props) {
+export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp, channel }: Props) {
   const [open, setOpen] = useState(false);
   const [btnState, setBtnState] = useState<BtnState>('idle');
   const [menuState, setMenuState] = useState<MenuState>(defaultMenuState);
@@ -254,11 +254,10 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
       const n = plan.totalVideos ?? plan.items.length;
       const sizeNote = plan.estBytes ? `~${formatBytes(plan.estBytes)}${plan.sampled ? ' (estimated)' : ''}` : 'sized as they download';
       // Use the real playlist/mix name (e.g. "Radical Optimism Tour Setlist",
-      // "Mix - Dua Lipa") for the title + batch label; the folder is prefixed
-      // "Playlist_" so playlist downloads are distinguishable from single videos.
+      // "Mix - Dua Lipa") for the title, batch label, and output category.
       const name = (plan.playlistTitle || '').trim();
       showSelection(
-        name ? `Download “${name}”?` : 'Download this playlist?',
+        name ? `Download “${name}”?` : `Download this ${playlistNoun.toLowerCase()}?`,
         `${name ? name + ' · ' : ''}${n} video${n === 1 ? '' : 's'} · Projected size: ${sizeNote}`,
         plan.items,
         dlIds,

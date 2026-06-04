@@ -115,6 +115,29 @@ function getVisibleReelActionBar(): Element | null {
   return null;
 }
 
+function getWatchActionRow(): Element | null {
+  const selectors = [
+    'ytd-watch-metadata #top-level-buttons-computed',
+    'ytd-watch-metadata ytd-menu-renderer #top-level-buttons-computed',
+    'ytd-watch-metadata #actions-inner #top-level-buttons-computed',
+    'ytd-watch-metadata #actions ytd-menu-renderer #top-level-buttons-computed',
+    '#top-level-buttons-computed',
+    'ytd-watch-metadata #actions-inner ytd-menu-renderer',
+    'ytd-watch-metadata #actions ytd-menu-renderer',
+    'ytd-watch-metadata #actions-inner',
+    'ytd-watch-metadata #actions',
+  ];
+
+  for (const selector of selectors) {
+    const el = document.querySelector(selector);
+    if (!el) continue;
+    const rect = el.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) return el;
+  }
+
+  return null;
+}
+
 // ── Shorts observer (handles re-injection on every scroll) ────────────────────
 
 function mountShortsButton(actionBar: Element): void {
@@ -188,11 +211,8 @@ function injectVideoButton(): void {
     // segmented-like-dislike-button-view-model, so anchoring to *it* buries our
     // button inside the like/dislike pill where it's invisible. Insert as a direct
     // child of the row, right after the like/dislike segment.
-    const actionRow =
-      document.querySelector('ytd-watch-metadata #top-level-buttons-computed') ??
-      document.querySelector('#top-level-buttons-computed');
-
-    if (!actionRow) { console.warn('[TubeVault] watch: action row NOT found yet', location.pathname); return; }
+    const actionRow = getWatchActionRow();
+    if (!actionRow) return; // caller will retry while YouTube finishes mounting
 
     const container = makeContainer(BUTTON_ID);
     const downloadBtn = actionRow.querySelector('ytd-download-button-renderer');

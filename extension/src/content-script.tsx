@@ -120,6 +120,19 @@ function getVisibleReelActionBar(): Element | null {
   return null;
 }
 
+function isVisibleElement(el: Element): boolean {
+  const rect = el.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+
+function getVisiblePlaylistPanel(): Element | null {
+  const panels = document.querySelectorAll('ytd-playlist-panel-renderer');
+  for (const panel of panels) {
+    if (isVisibleElement(panel)) return panel;
+  }
+  return null;
+}
+
 function getWatchActionRow(): Element | null {
   const selectors = [
     'ytd-watch-metadata #top-level-buttons-computed',
@@ -246,11 +259,13 @@ function injectPlaylistButton(): void {
   if (document.getElementById(PLAYLIST_BTN_ID)) return;
   if (!isPlaylistContext()) return;
 
+  const playlistPanel = getVisiblePlaylistPanel();
+
   // Find the shuffle button — scoped first to the playlist panel (watch+playlist),
   // then to the standalone playlist header (/playlist page).
   const shuffleEl =
-    document.querySelector('ytd-playlist-panel-renderer button[aria-label*="Shuffle"]') ??
-    document.querySelector('ytd-playlist-panel-renderer [aria-label*="Shuffle"]') ??
+    playlistPanel?.querySelector('button[aria-label*="Shuffle"]') ??
+    playlistPanel?.querySelector('[aria-label*="Shuffle"]') ??
     document.querySelector('ytd-playlist-header-renderer button[aria-label*="Shuffle"]') ??
     document.querySelector('ytd-playlist-header-renderer [aria-label*="Shuffle"]') ??
     document.querySelector('ytd-playlist-shuffle-button-renderer');
@@ -264,8 +279,9 @@ function injectPlaylistButton(): void {
   const container = makeContainer(PLAYLIST_BTN_ID);
   const isMix = isMixContext();
 
-  const playlistActions = document.querySelector('ytd-playlist-panel-renderer #playlist-actions');
-  if (isMix && playlistActions) {
+  const playlistActions = playlistPanel?.querySelector('#playlist-actions');
+  if (isMix) {
+    if (!playlistActions) return; // caller will retry while the visible Mix panel mounts
     Object.assign(container.style, {
       marginRight: '8px',
       marginLeft: '0',
@@ -276,7 +292,7 @@ function injectPlaylistButton(): void {
   } else {
     // Fallback: append to the buttons container
     const fallback =
-      document.querySelector('ytd-playlist-panel-renderer #top-level-buttons-computed') ??
+      playlistPanel?.querySelector('#top-level-buttons-computed') ??
       document.querySelector('ytd-playlist-header-renderer #button-sheet') ??
       document.querySelector('ytd-playlist-header-renderer #buttons');
 

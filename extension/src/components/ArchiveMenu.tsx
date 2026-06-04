@@ -20,13 +20,14 @@ interface Props {
   state: MenuState;
   onChange: (updates: Partial<MenuState>) => void;
   playlist: boolean;
+  playlistLabel?: string;
   channel?: ChannelControls;
   onArchive: () => void;
 }
 
 type TopLevel = 'popular' | 'latest' | 'all';
 
-export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, playlist, channel, onArchive }: Props) {
+export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, playlist, playlistLabel = 'Playlist', channel, onArchive }: Props) {
   const noneSelected = !state.video && !state.audio && !state.metadata && !state.thumbnail;
   const allSelected = state.video && state.audio && state.metadata && state.thumbnail;
 
@@ -39,7 +40,7 @@ export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, play
     ? { bottom: window.innerHeight - anchorRect.top + 8, left: anchorRect.left }
     : { top: anchorRect.bottom + 8, left: anchorRect.left };
 
-  const headerText = channel ? 'Download Channel' : playlist ? 'Download Playlist' : 'Download Options';
+  const headerText = channel ? 'Download Channel' : playlist ? `Download ${playlistLabel}` : 'Download Options';
 
   // ── Channel mode is stored as one of four values; the UI presents it as a
   //    top-level choice plus a Popular sub-choice. ──────────────────────────────
@@ -65,7 +66,7 @@ export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, play
 
   const archiveLabel = channel
     ? (topLevel === 'all' ? 'Download Everything' : `Download Top ${channel.count}`)
-    : playlist ? 'Download Playlist' : 'Download';
+    : playlist ? `Download ${playlistLabel}` : 'Download';
 
   const content = (
     <div ref={menuRef} style={{ ...panel, ...posStyle }} onClick={(e) => e.stopPropagation()}>

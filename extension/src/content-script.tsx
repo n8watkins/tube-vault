@@ -48,6 +48,11 @@ function isPlaylistContext() {
   return false;
 }
 
+function isMixContext() {
+  const listId = new URLSearchParams(location.search).get('list') ?? '';
+  return isWatchPage() && /^RD/.test(listId);
+}
+
 function getVideoUrl() {
   // Reconstruct a canonical URL from the ID so param order/extras never matter
   // (e.g. ?app=desktop&v=ID or ?si=...&v=ID would break naive ?-splitting).
@@ -257,8 +262,16 @@ function injectPlaylistButton(): void {
     shuffleEl;
 
   const container = makeContainer(PLAYLIST_BTN_ID);
+  const isMix = isMixContext();
 
-  if (shuffleAnchor) {
+  const playlistActions = document.querySelector('ytd-playlist-panel-renderer #playlist-actions');
+  if (isMix && playlistActions) {
+    Object.assign(container.style, {
+      marginRight: '8px',
+      marginLeft: '0',
+    });
+    playlistActions.insertBefore(container, playlistActions.firstChild);
+  } else if (shuffleAnchor) {
     shuffleAnchor.insertAdjacentElement('afterend', container);
   } else {
     // Fallback: append to the buttons container
@@ -272,7 +285,7 @@ function injectPlaylistButton(): void {
   }
 
   playlistRoot = createRoot(container);
-  playlistRoot.render(<ArchiveButton getUrl={getPlaylistUrl} playlist={true} />);
+  playlistRoot.render(<ArchiveButton getUrl={getPlaylistUrl} playlist={true} playlistLabel={isMix ? 'Mix' : 'Playlist'} />);
   playlistInjected = true;
 }
 

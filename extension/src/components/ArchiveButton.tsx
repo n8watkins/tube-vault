@@ -81,6 +81,7 @@ function componentSummary(m: MenuState): string {
 interface Props {
   getUrl: () => string;
   playlist: boolean;
+  playlistLabel?: string;
   compact?: boolean;
   dropUp?: boolean;
   channel?: ChannelConfig;
@@ -152,7 +153,8 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
     };
   }, []);
 
-  const labelSet = channel ? LABEL.channel : playlist ? LABEL.playlist : LABEL.video;
+  const playlistNoun = playlistLabel ?? 'Playlist';
+  const labelSet = channel ? LABEL.channel : playlist ? { ...LABEL.playlist, idle: `Download ${playlistNoun}` } : LABEL.video;
 
   function handleToggle(e: React.MouseEvent) {
     e.stopPropagation();
@@ -239,7 +241,7 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
   // Playlist: flat-list it, then let the user pick which videos to keep.
   function runPlaylistFlow(components: Record<string, unknown>) {
     const playlistUrl = getUrl();
-    showToast('Reading playlist…');
+    showToast(`Reading ${playlistNoun.toLowerCase()}…`);
     Promise.all([
       getDownloadedMap(),
       new Promise<any>((res) => chrome.runtime.sendMessage(
@@ -247,7 +249,7 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
         (resp) => res(resp),
       )),
     ]).then(([dlIds, resp]) => {
-      const plan = readPlan(resp, 'Couldn’t read playlist');
+      const plan = readPlan(resp, `Couldn’t read ${playlistNoun.toLowerCase()}`);
       if (!plan) return;
       const n = plan.totalVideos ?? plan.items.length;
       const sizeNote = plan.estBytes ? `~${formatBytes(plan.estBytes)}${plan.sampled ? ' (estimated)' : ''}` : 'sized as they download';
@@ -262,7 +264,7 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
         dlIds,
       ).then((picked) => {
         if (!picked || !picked.length) { setBtnState('idle'); return; }
-        enqueue(picked, components, name || `Playlist — ${picked.length} video${picked.length === 1 ? '' : 's'}`, name ? `Playlist_${name}` : 'Playlist');
+        enqueue(picked, components, name || `${playlistNoun} — ${picked.length} video${picked.length === 1 ? '' : 's'}`, name ? `${playlistNoun}_${name}` : playlistNoun);
       });
     });
   }
@@ -380,6 +382,7 @@ export function ArchiveButton({ getUrl, playlist, compact, dropUp, channel }: Pr
           state={menuState}
           onChange={(updates) => setMenuState((s) => ({ ...s, ...updates }))}
           playlist={playlist}
+          playlistLabel={playlistNoun}
           channel={channel ? {
             mode: chanMode,
             count: chanCount,

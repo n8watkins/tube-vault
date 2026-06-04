@@ -1,6 +1,6 @@
 {
   "name": "tube-vault-extension",
-  "version": "0.3.53",
+  "version": "0.3.54",
   "scripts": {
     "build": "node build.mjs",
     "screenshots": "node ../scripts/capture-extension-screenshots.mjs",

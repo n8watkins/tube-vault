@@ -66,10 +66,10 @@ function getPlaylistUrl() {
   const listId = params.get('list');
   if (!listId) return location.href;
   // Mixes / radios (list=RD…) are "unviewable" as a standalone /playlist page —
-  // yt-dlp can only expand them through the watch?v=…&list=… form.
+  // yt-dlp can only expand them through the watch?v=…&list=… form. Preserve the
+  // current watch URL so radio-specific params like start_radio=1 survive.
   if (/^RD/.test(listId)) {
-    const v = params.get('v');
-    return v ? `https://www.youtube.com/watch?v=${v}&list=${listId}` : location.href;
+    return location.href;
   }
   return `https://www.youtube.com/playlist?list=${listId}`;
 }

@@ -510,9 +510,8 @@ function showSelection(title: string, subtitle: string, items: PlanItem[], downl
 
     // Scrollable video list
     const list = document.createElement('div');
-    Object.assign(list.style, { overflowY: 'auto', flex: '1', padding: '4px 0' });
+    Object.assign(list.style, { overflowY: 'auto', flex: '1', padding: '0' });
 
-    const rowEls: HTMLDivElement[] = [];
     // Average size of the videos we already know, used to estimate selected videos
     // that are only sized at download time (playlist/channel "all" mode) — so the
     // total still moves when you check/uncheck an unsized video.
@@ -523,6 +522,66 @@ function showSelection(title: string, subtitle: string, items: PlanItem[], downl
     const selectedSize = () => items.reduce(
       (a, it, i) => (checked[i] ? a + (it.bytes && it.bytes > 0 ? it.bytes : avgKnown) : a), 0,
     );
+
+    // ── Virtualized list ──────────────────────────────────────────────────────
+    // A channel/playlist "all" download can be thousands of videos; one DOM node
+    // per row janks the whole page. Render only the rows in (and just around) the
+    // viewport, backed by a fixed-height spacer that drives the scrollbar.
+    const ROW_H = 44;
+    const sizer = document.createElement('div');
+    Object.assign(sizer.style, { position: 'relative', height: `${items.length * ROW_H}px` });
+    list.append(sizer);
+
+    function buildRow(i: number): HTMLDivElement {
+      const it = items[i];
+      const r = document.createElement('div');
+      Object.assign(r.style, {
+        position: 'absolute', top: `${i * ROW_H}px`, left: '0', right: '0', height: `${ROW_H}px`,
+        boxSizing: 'border-box', display: 'flex', alignItems: 'center', gap: '12px',
+        padding: '0 24px', cursor: 'pointer', opacity: checked[i] ? '1' : '0.45',
+      });
+      const box = document.createElement('div');
+      Object.assign(box.style, { width: '18px', height: '18px', borderRadius: '5px', flexShrink: '0', border: '2px solid #cc0000', background: checked[i] ? '#cc0000' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', color: '#fff', fontWeight: '700' });
+      box.textContent = checked[i] ? '✓' : '';
+      const tWrap = document.createElement('div');
+      Object.assign(tWrap.style, { flex: '1', minWidth: '0', display: 'flex', alignItems: 'center', gap: '8px' });
+      const t = document.createElement('div');
+      t.textContent = it.title || it.url;
+      Object.assign(t.style, { flex: '1', minWidth: '0', fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
+      tWrap.append(t);
+      if (dup[i]) {
+        const tag = document.createElement('div');
+        tag.textContent = when[i] ? `✓ ${new Date(when[i]).toLocaleDateString()}` : '✓ downloaded';
+        Object.assign(tag.style, { flexShrink: '0', fontSize: '11px', color: '#81c784' });
+        tWrap.append(tag);
+      }
+      const sz = document.createElement('div');
+      sz.textContent = it.bytes ? formatBytes(it.bytes) : '—';
+      Object.assign(sz.style, { fontSize: '12px', color: '#888', flexShrink: '0', minWidth: '54px', textAlign: 'right' });
+      r.append(box, tWrap, sz);
+      r.onclick = () => { checked[i] = !checked[i]; refresh(); };
+      return r;
+    }
+
+    let winStart = -1;
+    let winEnd = -1;
+    function renderWindow(force = false): void {
+      const viewH = list.clientHeight || 400;
+      const buffer = 6;
+      const start = Math.max(0, Math.floor(list.scrollTop / ROW_H) - buffer);
+      const end = Math.min(items.length, Math.ceil((list.scrollTop + viewH) / ROW_H) + buffer);
+      if (!force && start === winStart && end === winEnd) return;
+      winStart = start; winEnd = end;
+      sizer.replaceChildren();
+      for (let i = start; i < end; i++) sizer.append(buildRow(i));
+    }
+
+    let rafQueued = false;
+    list.addEventListener('scroll', () => {
+      if (rafQueued) return;
+      rafQueued = true;
+      requestAnimationFrame(() => { rafQueued = false; renderWindow(); });
+    });
 
     const refresh = () => {
       const n = numSelected();
@@ -536,41 +595,12 @@ function showSelection(title: string, subtitle: string, items: PlanItem[], downl
       go.textContent = n ? `Download ${n}` : 'Download';
       go.style.opacity = n ? '1' : '0.5';
       go.style.cursor = n ? 'pointer' : 'default';
-      rowEls.forEach((el, i) => { el.style.opacity = checked[i] ? '1' : '0.45'; });
+      renderWindow(true);  // repaint visible rows to reflect the new checked state
     };
-
-    items.forEach((it, i) => {
-      const r = document.createElement('div');
-      Object.assign(r.style, { display: 'flex', alignItems: 'center', gap: '12px', padding: '9px 24px', cursor: 'pointer' });
-      const box = document.createElement('div');
-      Object.assign(box.style, { width: '18px', height: '18px', borderRadius: '5px', flexShrink: '0', border: '2px solid #cc0000', background: '#cc0000', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', color: '#fff', fontWeight: '700' });
-      const tick = () => { box.textContent = checked[i] ? '✓' : ''; box.style.background = checked[i] ? '#cc0000' : 'transparent'; };
-      const tWrap = document.createElement('div');
-      Object.assign(tWrap.style, { flex: '1', minWidth: '0' });
-      const t = document.createElement('div');
-      t.textContent = it.title || it.url;
-      Object.assign(t.style, { fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
-      tWrap.append(t);
-      if (dup[i]) {
-        const tag = document.createElement('div');
-        tag.textContent = when[i] ? `✓ downloaded ${new Date(when[i]).toLocaleDateString()}` : '✓ already downloaded';
-        Object.assign(tag.style, { fontSize: '11px', color: '#81c784', marginTop: '2px' });
-        tWrap.append(tag);
-      }
-      const sz = document.createElement('div');
-      sz.textContent = it.bytes ? formatBytes(it.bytes) : '—';
-      Object.assign(sz.style, { fontSize: '12px', color: '#888', flexShrink: '0', minWidth: '54px', textAlign: 'right' });
-      r.append(box, tWrap, sz);
-      r.onclick = () => { checked[i] = !checked[i]; tick(); refresh(); };
-      tick();
-      rowEls.push(r);
-      list.append(r);
-    });
 
     toggleAll.onclick = () => {
       const all = numSelected() === items.length;
       checked.fill(!all);
-      rowEls.forEach((el) => { const box = el.firstChild as HTMLElement; box.textContent = !all ? '✓' : ''; box.style.background = !all ? '#cc0000' : 'transparent'; });
       refresh();
     };
 

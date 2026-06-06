@@ -131,17 +131,17 @@ function App() {
   return (
     <div style={panel}>
       <div style={header}>
-        <span style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+        <span style={brandPill}>
           <img src="icons/icon32.png" width={22} height={22} style={{ borderRadius: 5 }} alt="" />
-          <span style={{ fontWeight: 700, fontSize: 17 }}>TubeVault</span>
+          <span style={{ fontWeight: 700, fontSize: 16 }}>TubeVault</span>
         </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={statusPill}>
-            <span style={{ width: 8, height: 8, borderRadius: '50%', background: helper === 'ok' ? '#5dde6e' : helper === 'error' ? '#ff6b6b' : '#ccc' }} />
+            <span style={{ width: 9, height: 9, borderRadius: '50%', background: helper === 'ok' ? '#5dde6e' : helper === 'error' ? '#ff6b6b' : '#ccc' }} />
             {helper === 'ok' ? 'Connected' : helper === 'error' ? 'Disconnected' : 'Checking…'}
           </span>
-          <button style={hdrIconBtn} title="History" onClick={() => openOptions('downloads')}><FiClock size={16} /></button>
-          <button style={hdrIconBtn} title="Settings" onClick={() => openOptions('settings')}><FiSettings size={16} /></button>
+          <button style={hdrIconBtn} title="History" onClick={() => openOptions('downloads')}><FiClock size={18} /></button>
+          <button style={hdrIconBtn} title="Settings" onClick={() => openOptions('settings')}><FiSettings size={18} /></button>
         </span>
       </div>
 
@@ -174,7 +174,7 @@ function App() {
                   </div>
                 </div>
                 {j.status === 'done' && j.folder && (
-                  <button style={cancelX} title="Open folder" onClick={() => openFolder(j.folder)}><FiFolder size={14} /></button>
+                  <button style={cancelX} title="Open folder" onClick={() => openFolder(j.folder)}><FiFolder size={16} /></button>
                 )}
               </div>
             );
@@ -194,21 +194,26 @@ function App() {
 createRoot(document.getElementById('root')!).render(<App />);
 
 // ── Styles ────────────────────────────────────────────────────────────────────
-const panel: React.CSSProperties = { width: 380, background: '#181818', color: '#eee', fontFamily: 'Roboto, system-ui, sans-serif' };
-const header: React.CSSProperties = { background: '#cc0000', padding: '13px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
-const statusPill: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, background: 'rgba(0,0,0,0.32)', borderRadius: 12, padding: '4px 10px' };
-const versionPill: React.CSSProperties = { fontSize: 11, background: 'rgba(0,0,0,0.3)', borderRadius: 10, padding: '2px 8px' };
-const hdrIconBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: 8, border: 'none', background: 'rgba(0,0,0,0.28)', color: '#fff', cursor: 'pointer', padding: 0 };
-const body: React.CSSProperties = { maxHeight: 440, overflowY: 'auto', padding: '8px 0' };
-const empty: React.CSSProperties = { padding: '36px 18px', textAlign: 'center', color: '#888', fontSize: 14, lineHeight: 1.7 };
-const sectionLabel: React.CSSProperties = { fontSize: 11, fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: '0.07em', padding: '12px 16px 6px' };
-const jobRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 11, padding: '11px 16px' };
-const dot: React.CSSProperties = { width: 10, height: 10, borderRadius: '50%', flexShrink: 0 };
-const chevron: React.CSSProperties = { background: 'none', border: 'none', color: '#aaa', fontSize: 13, cursor: 'pointer', padding: 0, width: 11, flexShrink: 0, fontFamily: 'inherit' };
-const jobLabel: React.CSSProperties = { fontSize: 14, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
-const jobStatus: React.CSSProperties = { fontSize: 12, marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
-const cancelX: React.CSSProperties = { background: 'none', border: 'none', color: '#999', fontSize: 15, cursor: 'pointer', padding: '2px 7px', borderRadius: 6, fontFamily: 'inherit' };
-const miniBtn: React.CSSProperties = { background: '#2b2b2b', border: '1px solid #444', color: '#fff', fontSize: 12, fontWeight: 600, cursor: 'pointer', padding: '4px 10px', borderRadius: 6, fontFamily: 'inherit' };
+// Shared height so the brand pill, status pill, and icon buttons line up exactly.
+const CTRL_H = 32;
+const pillBase: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', height: CTRL_H, background: 'rgba(0,0,0,0.26)', borderRadius: CTRL_H / 2, boxSizing: 'border-box' };
+
+const panel: React.CSSProperties = { width: 400, background: '#181818', color: '#eee', fontFamily: 'Roboto, system-ui, sans-serif' };
+const header: React.CSSProperties = { background: '#cc0000', padding: '14px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 };
+const brandPill: React.CSSProperties = { ...pillBase, gap: 9, padding: '0 14px 0 11px' };
+const statusPill: React.CSSProperties = { ...pillBase, gap: 7, padding: '0 14px', fontSize: 13, fontWeight: 600, whiteSpace: 'nowrap' };
+const hdrIconBtn: React.CSSProperties = { ...pillBase, justifyContent: 'center', width: CTRL_H, padding: 0, border: 'none', color: '#fff', cursor: 'pointer' };
+const versionPill: React.CSSProperties = { fontSize: 11.5, fontWeight: 600, color: '#888', background: '#222', border: '1px solid #2e2e2e', borderRadius: 10, padding: '4px 10px', flexShrink: 0 };
+const body: React.CSSProperties = { maxHeight: 460, overflowY: 'auto', padding: '8px 0' };
+const empty: React.CSSProperties = { padding: '44px 20px', textAlign: 'center', color: '#888', fontSize: 15, lineHeight: 1.7 };
+const sectionLabel: React.CSSProperties = { fontSize: 12, fontWeight: 700, color: '#8a8a8a', textTransform: 'uppercase', letterSpacing: '0.07em', padding: '14px 18px 7px' };
+const jobRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 12, padding: '12px 18px' };
+const dot: React.CSSProperties = { width: 11, height: 11, borderRadius: '50%', flexShrink: 0 };
+const chevron: React.CSSProperties = { background: 'none', border: 'none', color: '#aaa', fontSize: 15, cursor: 'pointer', padding: 0, width: 13, flexShrink: 0, fontFamily: 'inherit' };
+const jobLabel: React.CSSProperties = { fontSize: 15, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
+const jobStatus: React.CSSProperties = { fontSize: 13, marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
+const cancelX: React.CSSProperties = { background: 'none', border: 'none', color: '#999', fontSize: 16, cursor: 'pointer', padding: '4px 8px', borderRadius: 7, fontFamily: 'inherit', display: 'inline-flex', alignItems: 'center' };
+const miniBtn: React.CSSProperties = { background: '#2b2b2b', border: '1px solid #444', color: '#fff', fontSize: 13, fontWeight: 600, cursor: 'pointer', padding: '5px 11px', borderRadius: 7, fontFamily: 'inherit' };
 const miniBtnRed: React.CSSProperties = { ...miniBtn, background: '#cc0000', borderColor: '#cc0000' };
-const footer: React.CSSProperties = { borderTop: '1px solid #2a2a2a', padding: '10px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 };
-const settingsBtn: React.CSSProperties = { background: 'none', border: 'none', color: '#aaa', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', padding: 0, fontFamily: 'inherit', whiteSpace: 'nowrap' };
+const footer: React.CSSProperties = { borderTop: '1px solid #2a2a2a', padding: '11px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 10 };
+const settingsBtn: React.CSSProperties = { background: 'none', border: 'none', color: '#aaa', fontSize: 13, fontWeight: 600, cursor: 'pointer', padding: 0, fontFamily: 'inherit', whiteSpace: 'nowrap' };

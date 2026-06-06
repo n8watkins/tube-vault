@@ -30,11 +30,27 @@ modal + single-video confirm), `extension/src/components/ArchiveMenu.tsx`
   Clear-history confirm** via reusable `ConfirmDialog` (4.5 + Area 5 #1), **larger
   pills/rows/text** (4.6); **Setup enlarged + GitHub link** (4.8).
 
-**Remaining:** Area 1 (batch modal: thumbnails, per-video sizes, width,
-cancel-left/download-icon, top summary, extra info), Area 2 (confirm
-cancel-left/icon), Area 3 (popup: recent list, header restructure, branding),
-4.1 branding icon, 4.3 decoupled default prefs, 4.7 status caching, Phase 5
-(SponsorBlock, `-N` faster downloads).
+- ✅ **v0.3.69** (+ helper) — **Batch modal overhaul** (Area 1): per-row
+  **thumbnails** (toggle setting), progressive **per-video size + duration +
+  views** probing (bounded concurrency), **wider** modal, top "Downloading per
+  video: …" summary, **Cancel moved left + Download icon** (batch + single-video
+  confirm, Area 2). Helper probe now returns view count.
+- ✅ **v0.3.70** — **Popup** restructure (Area 3): **Recent** (last 3) list,
+  header **⚙ Settings / 🕘 History** buttons + branding icon, version moved to
+  footer, **options tab deep-linking** (via `tvOpenTab`); branding icon in the
+  options sidebar (4.1).
+- ✅ **v0.3.71** — **Decoupled default prefs** (4.3): "Default quality & formats"
+  (always-on selects, seed the menu without checking anything) split from
+  "Pre-select components" (optional checkboxes).
+- ✅ **v0.3.72** — **Status caching** (4.7): cached last result shown instantly,
+  silent background refresh, "Checked Xm ago" — no more "Checking…" flash when
+  already connected.
+- ✅ **v0.3.73** (+ helper) — **Phase 5**: **SponsorBlock** (off/mark/remove) +
+  **Faster downloads** (`-N 4` concurrent fragments), as "Advanced downloads"
+  settings threaded through the service worker into the helper's media runs.
+
+**Remaining / backlog:** cookies (`--cookies-from-browser`), multi-video
+parallelism (kept serial by design). Everything else from the plan is shipped.
 
 ---
 

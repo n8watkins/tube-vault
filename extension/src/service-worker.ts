@@ -96,11 +96,17 @@ async function pumpQueue(): Promise<void> {
   if (pumping) return;
   pumping = true;
   try {
-    const jobs = await getJobs();
-    if (jobs.some((j) => j.status === 'running' || j.status === 'probing')) return;  // one at a time
-    const next = jobs.find((j) => j.status === 'queued');
-    if (!next) return;
-    runJob(next);
+    // Drain queued jobs one at a time. Holding `pumping` across the await is what
+    // makes selection safe: runJob resolves only once the job has left 'queued'
+    // (now 'probing'/'running'/'cancelled' in storage), so a concurrent pumpQueue
+    // can never re-select the same job and start it twice.
+    while (true) {
+      const jobs = await getJobs();
+      if (jobs.some((j) => j.status === 'running' || j.status === 'probing')) break;  // one at a time
+      const next = jobs.find((j) => j.status === 'queued');
+      if (!next) break;
+      await runJob(next);
+    }
   } finally {
     pumping = false;
   }

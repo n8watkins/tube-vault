@@ -5,13 +5,15 @@ export function isValidYouTubeUrl(url: string): boolean {
     const parsed = new URL(url);
     if (!['https:', 'http:'].includes(parsed.protocol)) return false;
     if (!ALLOWED_HOSTS.includes(parsed.hostname)) return false;
+    // youtu.be short links carry the id in the path (youtu.be/<id>), not ?v=.
+    const isShortLink = parsed.hostname === 'youtu.be' && /^\/[A-Za-z0-9_-]+$/.test(parsed.pathname);
     const isWatch    = parsed.pathname === '/watch' && parsed.searchParams.has('v');
     const isShorts   = /^\/shorts\/[A-Za-z0-9_-]+$/.test(parsed.pathname);
     const isLive     = /^\/live\/[A-Za-z0-9_-]+$/.test(parsed.pathname);
     const isPlaylist = parsed.pathname === '/playlist' && parsed.searchParams.has('list');
     // Channel URLs (and their /videos|/streams|/shorts tabs) — used for "latest/all" downloads
     const isChannel  = /^\/(@[\w.-]+|channel\/[\w-]+|c\/[\w.-]+|user\/[\w.-]+)(\/(videos|streams|shorts|featured))?\/?$/.test(parsed.pathname);
-    return isWatch || isShorts || isLive || isPlaylist || isChannel;
+    return isShortLink || isWatch || isShorts || isLive || isPlaylist || isChannel;
   } catch {
     return false;
   }

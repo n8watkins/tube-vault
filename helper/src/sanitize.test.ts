@@ -6,6 +6,8 @@ test('isValidYouTubeUrl accepts the supported page types', () => {
   const valid = [
     'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
     'https://youtube.com/watch?v=abc123&list=PLxyz',
+    'https://youtu.be/dQw4w9WgXcQ',                          // short link: id in the path
+    'https://youtu.be/dQw4w9WgXcQ?si=abc123&t=42',           // short link with tracking params
     'http://www.youtube.com/watch?v=abc123',                 // http allowed (local-only)
     'https://www.youtube.com/shorts/abc123DEF',
     'https://www.youtube.com/live/abc123DEF',
@@ -29,6 +31,7 @@ test('isValidYouTubeUrl rejects bad hosts, protocols, and non-URLs', () => {
     'https://www.youtube.com/playlist',                      // /playlist without ?list
     'https://www.youtube.com/',                              // bare host
     'https://www.youtube.com/results?search_query=x',        // unsupported path
+    'https://youtu.be/',                                     // short link with no id
     '-rf',                                                   // flag-shaped junk, not a URL
     '--exec=rm',                                             // flag-shaped junk
     '',                                                      // empty

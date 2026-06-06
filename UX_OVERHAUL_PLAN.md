@@ -17,6 +17,42 @@ modal + single-video confirm), `extension/src/components/ArchiveMenu.tsx`
 
 ---
 
+## Decisions (locked 2026-06-05)
+
+- **Support tab:** **removed entirely** — project is private; no support/sponsor
+  links, no "bounce action." (supersedes 4.9)
+- **Per-video extra info (1.5):** show **duration + view count**.
+- **Count presets (4.2):** **add/remove chips** — type a number, Enter adds a
+  pill, ✕ removes; digits only.
+- **Subtitles:** **yes** — add a Subtitles component (default English) to the
+  download menu + the helper's `custom` action.
+- **Notifications & folders (new settings group):**
+  - "Notify when a download finishes" toggle (browser notification; default on,
+    gates the existing `notifyDone`).
+  - "Auto-open the folder when done" toggle (default off; **single videos only**
+    so batches don't spawn N Explorer windows; wires the dormant
+    `autoOpenFolder`).
+  - Already exists, just label clearly — not new work: the **per-folder summary
+    log** (`<title>.txt` with channel/date/views/URL/files/path) is the
+    `summaryTxt` naming option; the **folder is already named by video title**
+    (`folderTemplate` / `buildBase`); a **per-batch** overview `.txt` is written
+    under `TubeVault Summaries/`.
+- **Advanced features — decisions/recommendations:**
+  - **SponsorBlock:** include as optional (default off). Default mode
+    `--sponsorblock-mark all` (adds chapters, lossless, safe); offer
+    `--sponsorblock-remove sponsor,selfpromo` (cuts segments, re-encodes) as an
+    explicit opt-in. Low risk. → **Phase 5.**
+  - **Cookies (`--cookies-from-browser`):** **backlog.** Unlocks age-restricted /
+    members / private content, but reads the browser cookie store and on Windows
+    Chrome locks its cookie DB while running (yt-dlp can fail). Revisit later as
+    an advanced opt-in with that caveat shown.
+  - **Concurrency:** keep the **serial multi-video queue** (intentional — avoids
+    YouTube rate-limiting). Do add yt-dlp **`-N` concurrent fragments** (per-file,
+    safe, faster large downloads) as a "Faster downloads" toggle. Multi-video
+    parallelism stays **backlog.** → `-N` toggle in **Phase 5.**
+
+---
+
 ## Area 1 — Batch selection modal (`showSelection` in ArchiveButton.tsx)
 
 This is the "downloader scroll thing" — the checklist shown when downloading a

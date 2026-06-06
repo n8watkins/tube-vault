@@ -7,7 +7,7 @@ param(
   [string]$ExtensionId
 )
 
-$manifestDir  = "C:\Users\natha\personal\tools\tube-vault\native-messaging"
+$manifestDir  = "C:\Users\natha\Projects\Tools\tube-vault\native-messaging"
 $manifestFile = Join-Path $manifestDir "com.tube_vault.helper.json"
 $regPath      = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.tube_vault.helper"
 

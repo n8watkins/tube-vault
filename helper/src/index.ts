@@ -6,6 +6,16 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 
+// Reported back to the popup on `ping`. Read from package.json (dist/ sits one
+// level below it at runtime) so it never drifts from the published helper version.
+const HELPER_VERSION: string = (() => {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8')).version;
+  } catch {
+    return 'unknown';
+  }
+})();
+
 const ALLOWED_ACTIONS: Action[] = [
   'custom',
   'channel_plan',
@@ -37,7 +47,7 @@ readMessages(async (raw) => {
   const req = raw as Record<string, unknown>;
 
   if (req.action === 'ping') {
-    writeMessage({ ok: true, status: 'ok', version: '0.1.0' });
+    writeMessage({ ok: true, status: 'ok', version: HELPER_VERSION });
     return;
   }
 

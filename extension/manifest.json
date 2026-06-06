@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TubeVault",
-  "version": "0.3.74",
+  "version": "0.3.75",
   "description": "Local YouTube archive helper — saves videos, thumbnails, and metadata to your machine.",
   "icons": {
     "16": "icons/icon16.png",

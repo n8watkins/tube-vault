@@ -255,7 +255,7 @@ function SettingsSection() {
   const [autoOpenFolder, setAutoOpenFolder] = useState(false);
   const [showThumbnails, setShowThumbnails] = useState(true);
   const [sponsorblock, setSponsorblock] = useState<'off' | 'mark' | 'remove'>('off');
-  const [fasterDownloads, setFasterDownloads] = useState(false);
+  const [fasterDownloads, setFasterDownloads] = useState(true);
   const [status, setStatus] = useState<'idle' | 'saved'>('idle');
 
   useEffect(() => {
@@ -263,7 +263,7 @@ function SettingsSection() {
       (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [NAMING_KEYS[k], defaultNaming[k]])
     );
     chrome.storage.local.get(
-      { outputRoot: DEFAULT_OUTPUT_ROOT, channelCounts: DEFAULT_CHANNEL_COUNTS, channelDefaultCount: DEFAULT_CHANNEL_COUNT, menuDefaults: defaultMenuState, collectHistory: true, historyRetentionDays: 0, notifyOnDone: true, autoOpenFolder: false, showThumbnails: true, sponsorblock: 'off', fasterDownloads: false, ...namingDefaults },
+      { outputRoot: DEFAULT_OUTPUT_ROOT, channelCounts: DEFAULT_CHANNEL_COUNTS, channelDefaultCount: DEFAULT_CHANNEL_COUNT, menuDefaults: defaultMenuState, collectHistory: true, historyRetentionDays: 0, notifyOnDone: true, autoOpenFolder: false, showThumbnails: true, sponsorblock: 'off', fasterDownloads: true, ...namingDefaults },
       (s) => {
         setOutputRoot(s.outputRoot); setCounts(s.channelCounts as number[]); setDefaultCount(s.channelDefaultCount);
         setPrefs({ ...defaultMenuState, ...(s.menuDefaults || {}) });
@@ -452,7 +452,7 @@ function SettingsSection() {
             </div>
             <label style={checkRow}>
               <input type="checkbox" checked={fasterDownloads} onChange={(e) => setFasterDownloads(e.target.checked)} style={cbx} />
-              <span>Faster downloads (parallel fragments)</span>
+              <span>Faster downloads (parallel fragments — recommended)</span>
             </label>
             <p style={muted}>SponsorBlock skips sponsor/self-promo/interaction segments. “Mark” just adds chapters (lossless); “Remove” cuts them out and re-encodes (slower).</p>
           </Field>

@@ -28,10 +28,10 @@ const isActive = (j: Job) => j.status === 'queued' || j.status === 'probing' || 
 
 // ── Settings cache ────────────────────────────────────────────────────────────
 const namingKeyList = Object.keys(NAMING_KEYS) as (keyof NamingOptions)[];
-let cachedSettings = { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: false, notifyOnDone: true, sponsorblock: 'off' as 'off' | 'mark' | 'remove', fasterDownloads: false, naming: { ...defaultNaming }, collectHistory: true, historyRetentionDays: 0 };
+let cachedSettings = { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: false, notifyOnDone: true, sponsorblock: 'off' as 'off' | 'mark' | 'remove', fasterDownloads: true, naming: { ...defaultNaming }, collectHistory: true, historyRetentionDays: 0 };
 const namingStorageDefaults = Object.fromEntries(namingKeyList.map((k) => [NAMING_KEYS[k], defaultNaming[k]]));
 chrome.storage.local.get(
-  { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: false, notifyOnDone: true, sponsorblock: 'off', fasterDownloads: false, collectHistory: true, historyRetentionDays: 0, ...namingStorageDefaults },
+  { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: false, notifyOnDone: true, sponsorblock: 'off', fasterDownloads: true, collectHistory: true, historyRetentionDays: 0, ...namingStorageDefaults },
   (s) => {
     cachedSettings.outputRoot = s.outputRoot ?? cachedSettings.outputRoot;
     cachedSettings.autoOpenFolder = !!s.autoOpenFolder;

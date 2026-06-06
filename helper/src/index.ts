@@ -1,6 +1,6 @@
 import { readMessages, writeMessage } from './protocol';
 import { handle, killActive, probeVideo, listVideos, writeBatchSummary, type DownloadRequest, type Action, type DownloadComponents, type BatchSummaryItem } from './downloader';
-import { isValidYouTubeUrl, windowsToWslPath } from './sanitize';
+import { isValidYouTubeUrl, windowsToWslPath, wslToWindowsPath } from './sanitize';
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -43,6 +43,29 @@ function clearPid(jobId: string): void {
 // in the service worker then resolves with a closed port → treated as cancelled.
 process.on('SIGTERM', () => { killActive(); process.exit(0); });
 
+// Running under WSL? (Windows kernel string + the distro env var Chrome's launcher keeps.)
+const IS_WSL = os.release().toLowerCase().includes('microsoft') || !!process.env.WSL_DISTRO_NAME;
+
+// Open a folder in the OS file manager. Under WSL we hand a Windows path to Explorer
+// via its ABSOLUTE path — the native-messaging host is launched with a stripped PATH
+// that often lacks the Windows interop dirs, so a bare `explorer.exe` silently fails
+// (that was the "folder button does nothing" bug). macOS uses `open`, Linux `xdg-open`.
+function openInFileManager(target: string): void {
+  try {
+    if (IS_WSL) {
+      const winPath = /^[A-Za-z]:/.test(target) ? target : wslToWindowsPath(target);
+      const exe = fs.existsSync('/mnt/c/Windows/explorer.exe') ? '/mnt/c/Windows/explorer.exe' : 'explorer.exe';
+      spawn(exe, [winPath], { detached: true, stdio: 'ignore' }).unref();
+    } else if (process.platform === 'win32') {
+      spawn('explorer.exe', [target], { detached: true, stdio: 'ignore' }).unref();
+    } else if (process.platform === 'darwin') {
+      spawn('open', [target], { detached: true, stdio: 'ignore' }).unref();
+    } else {
+      spawn('xdg-open', [target], { detached: true, stdio: 'ignore' }).unref();
+    }
+  } catch { /* best-effort — never crash the host over an open request */ }
+}
+
 readMessages(async (raw) => {
   const req = raw as Record<string, unknown>;
 
@@ -65,10 +88,8 @@ readMessages(async (raw) => {
   }
 
   if (req.action === 'open_folder') {
-    const windowsPath = req.windowsPath as string;
-    if (typeof windowsPath === 'string' && windowsPath) {
-      spawn('explorer.exe', [windowsPath], { detached: true, stdio: 'ignore' }).unref();
-    }
+    const target = (req.windowsPath ?? req.path) as string;
+    if (typeof target === 'string' && target) openInFileManager(target);
     writeMessage({ ok: true, status: 'ok' });
     return;
   }

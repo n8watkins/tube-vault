@@ -1,9 +1,13 @@
 import { spawn } from 'child_process';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { wslToWindowsPath, windowsToWslPath, sanitizeFilename } from './sanitize';
 
-const DEFAULT_OUTPUT_ROOT = '/mnt/c/Users/natha/Videos/Youtube Downloads';
+// Fallback save location when the extension doesn't send one. OS-aware so the
+// helper works on native Windows / macOS / Linux too (under WSL this resolves to
+// the Linux home — the extension normally passes a Windows path that overrides it).
+const DEFAULT_OUTPUT_ROOT = path.join(os.homedir(), 'Videos', 'YouTube Downloads');
 
 export type VideoQuality = 'best' | '1080' | '720' | '480' | '360';
 export type VideoFormat = 'mp4' | 'webm' | 'mkv';
@@ -388,9 +392,14 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
       const sbFlags = sb === 'mark' ? ['--sponsorblock-mark', 'all']
         : sb === 'remove' ? ['--sponsorblock-remove', 'sponsor,selfpromo,interaction'] : [];
       const fastFlags = req.options?.fasterDownloads ? ['-N', '4'] : [];
-      // File basename per component: by title (distinct extensions avoid collisions)
-      // or the legacy generic name.
-      const fileName = (generic: string) => (naming.titleFiles ? '%(title)s' : generic);
+      // File basename per component. With "name by title" on, every component is the
+      // same "<Title>.<ext>" save for the extension — hard to tell apart in a folder —
+      // so we tag each with its kind: "[VID] <Title>.mp4", "[AUD] <Title>.m4a", etc.
+      // With it off we keep the legacy generic name (video, audio, thumbnail…).
+      const TAGS: Record<string, string> = {
+        video: 'VID', audio: 'AUD', thumbnail: 'IMG', description: 'DESC', metadata: 'META', subtitles: 'SUB',
+      };
+      const fileName = (kind: string) => (naming.titleFiles ? `[${TAGS[kind]}] %(title)s` : kind);
       // One tab-separated capture line per run: filepath first (paths don't contain
       // tabs), then the metadata we need for the summary. after_move waits until the
       // file is on disk so filepath is exact; the plain variant covers skip-download.
@@ -425,10 +434,10 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
 
         if (hasMeta) {
           args.push('--write-info-json', '--write-description');
-          if (hasVideo) {
-            args.push('-o', `description:${customBase}/${fileName('description')}.%(ext)s`);
-            args.push('-o', `infojson:${customBase}/${fileName('metadata')}.%(ext)s`);
-          }
+          // Type-specific outputs so the description + info.json are tagged and land at a
+          // predictable path in both the video run and the skip-download (metadata-only) run.
+          args.push('-o', `description:${customBase}/${fileName('description')}.%(ext)s`);
+          args.push('-o', `infojson:${customBase}/${fileName('metadata')}.%(ext)s`);
         }
 
         if (hasSubs) {
@@ -663,17 +672,20 @@ function writeSummary(folder: string, mediaPath: string, req: DownloadRequest, m
     // Name the .txt after the media file if one survived; otherwise after any saved
     // file (e.g. the thumbnail .jpg), then the title, then a generic fallback.
     const firstFile = saved.find((f) => !f.endsWith('.txt'));
-    const base = mediaPath
+    const rawBase = mediaPath
       ? path.basename(mediaPath, path.extname(mediaPath))
       : (firstFile ? path.basename(firstFile, path.extname(firstFile)) : (sanitizeFilename(meta.title) || 'download'));
-    const txtName = `${base}.txt`;
+    // Drop any leading component tag ("[VID] ", "[AUD] "…) so the summary reads as the
+    // title, then label it [INFO] so it sorts/scans alongside the tagged component files.
+    const titleBase = rawBase.replace(/^\[[A-Z]+\]\s+/, '');
+    const txtName = `[INFO] ${titleBase}.txt`;
     saved = saved.filter((f) => f !== txtName);
     const collection = req.category
       ? `${req.category}${req.index && req.total ? ` — #${req.index} of ${req.total}` : ''}`
       : 'Single video';
     const url = meta.id && meta.id !== 'NA' ? `https://www.youtube.com/watch?v=${meta.id}` : req.url;
     const lines = [
-      meta.title && meta.title !== 'NA' ? meta.title : base,
+      meta.title && meta.title !== 'NA' ? meta.title : titleBase,
       '─'.repeat(44),
       `Channel:     ${meta.uploader && meta.uploader !== 'NA' ? meta.uploader : '—'}`,
       `Published:   ${fmtDate(meta.uploadDate)}`,

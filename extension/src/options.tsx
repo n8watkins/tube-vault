@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { FiFolder, FiRefreshCw, FiGithub } from 'react-icons/fi';
+import { FiFolder, FiRefreshCw, FiGithub, FiDownload, FiSettings, FiActivity, FiTool } from 'react-icons/fi';
 import { DEFAULT_CHANNEL_COUNTS, DEFAULT_CHANNEL_COUNT, NamingOptions, defaultNaming, NAMING_KEYS, MenuState, defaultMenuState, VideoQuality, VideoFormat, AudioFormat } from './types';
 
 export const DEFAULT_OUTPUT_ROOT = 'C:\\Users\\natha\\Videos\\Youtube Downloads';
@@ -67,19 +67,19 @@ function App() {
     return () => chrome.storage.onChanged.removeListener(onChg);
   }, []);
 
-  const tabs: { id: Tab; label: string }[] = [
-    { id: 'downloads', label: 'Downloads' },
-    { id: 'settings', label: 'Settings' },
-    { id: 'status', label: 'Status' },
-    { id: 'setup', label: 'Setup' },
+  const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
+    { id: 'downloads', label: 'Downloads', icon: <FiDownload size={18} /> },
+    { id: 'settings', label: 'Settings', icon: <FiSettings size={18} /> },
+    { id: 'status', label: 'Status', icon: <FiActivity size={18} /> },
+    { id: 'setup', label: 'Setup', icon: <FiTool size={18} /> },
   ];
 
   return (
     <div style={page}>
       <div style={shell}>
         <div style={sidebar}>
-          <div style={{ ...header, display: 'flex', alignItems: 'center', gap: 10 }}>
-            <img src="icons/icon32.png" width={26} height={26} style={{ borderRadius: 6, flexShrink: 0 }} alt="" />
+          <div style={{ ...header, display: 'flex', alignItems: 'center', gap: 11 }}>
+            <img src="icons/icon32.png" width={30} height={30} style={{ borderRadius: 7, flexShrink: 0 }} alt="" />
             <span style={logo}>TubeVault</span>
           </div>
           {tabs.map((t) => (
@@ -88,11 +88,12 @@ function App() {
               onClick={() => setTab(t.id)}
               style={{ ...navBtn, ...(tab === t.id ? navBtnActive : {}) }}
             >
+              <span style={{ display: 'inline-flex', width: 20, justifyContent: 'center', flexShrink: 0, color: tab === t.id ? '#ff5252' : '#888' }}>{t.icon}</span>
               {t.label}
             </button>
           ))}
           <div style={{ flex: 1 }} />
-          <div style={{ fontSize: 11, color: '#555', padding: '8px 14px' }}>v{version}</div>
+          <div style={{ fontSize: 11.5, color: '#555', padding: '10px 16px' }}>v{version}</div>
         </div>
 
         <div style={content}>
@@ -316,15 +317,14 @@ function SettingsSection() {
     <div>
       <SectionHeader title="Settings" />
       <div style={card}>
-        <div style={{ padding: 20 }}>
-          <Field label="Download Folder">
-            <p style={hint}>Windows path where videos will be saved.</p>
-            <input style={input} value={outputRoot} onChange={(e) => setOutputRoot(e.target.value)} placeholder={DEFAULT_OUTPUT_ROOT} spellCheck={false} />
-            <p style={muted}>Default: {DEFAULT_OUTPUT_ROOT}</p>
-          </Field>
-
-          <div style={divider} />
-
+        <div style={settingsGrid}>
+          <div style={spanAll}>
+            <Field label="Download Folder">
+              <p style={hint}>Windows path where videos will be saved.</p>
+              <input style={input} value={outputRoot} onChange={(e) => setOutputRoot(e.target.value)} placeholder={DEFAULT_OUTPUT_ROOT} spellCheck={false} />
+              <p style={muted}>Default: {DEFAULT_OUTPUT_ROOT}</p>
+            </Field>
+          </div>
           <Field label="File naming & folders">
             {([
               ['titleFiles', 'Name files by title (else generic video / audio / thumbnail)'],
@@ -340,9 +340,6 @@ function SettingsSection() {
             ))}
             <p style={muted}>Preview: {previewPath}</p>
           </Field>
-
-          <div style={divider} />
-
           <Field label="Channel Download Counts">
             <p style={hint}>Preset amounts offered when downloading a channel's popular/latest videos. Add or remove presets:</p>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
@@ -369,9 +366,6 @@ function SettingsSection() {
             </div>
             <p style={muted}>{counts.length ? counts.join(' · ') : '(none — will fall back to 1 · 5 · 10 · 30)'}</p>
           </Field>
-
-          <div style={divider} />
-
           <Field label="Default quality & formats">
             <p style={hint}>What each component defaults to when you turn it on. These only seed the dropdowns — they don't pre-select anything.</p>
             <div style={{ display: 'flex', flexWrap: 'wrap', gap: 22 }}>
@@ -394,9 +388,6 @@ function SettingsSection() {
               </div>
             </div>
           </Field>
-
-          <div style={divider} />
-
           <Field label="Pre-select components">
             <p style={hint}>Which components start checked when you open the download menu (optional — default is none).</p>
             <label style={checkRow}>
@@ -420,9 +411,6 @@ function SettingsSection() {
               <span>Metadata</span>
             </label>
           </Field>
-
-          <div style={divider} />
-
           <Field label="Notifications & folders">
             <label style={checkRow}>
               <input type="checkbox" checked={notifyOnDone} onChange={(e) => setNotifyOnDone(e.target.checked)} style={cbx} />
@@ -438,9 +426,6 @@ function SettingsSection() {
             </label>
             <p style={muted}>Each download also writes a <code style={inlineCode}>.txt</code> summary (title, channel, URL, files, path) into its folder — toggle that under “File naming &amp; folders”.</p>
           </Field>
-
-          <div style={divider} />
-
           <Field label="Advanced downloads">
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
               <span style={{ fontSize: 13, color: '#aaa' }}>SponsorBlock:</span>
@@ -456,9 +441,6 @@ function SettingsSection() {
             </label>
             <p style={muted}>SponsorBlock skips sponsor/self-promo/interaction segments. “Mark” just adds chapters (lossless); “Remove” cuts them out and re-encodes (slower).</p>
           </Field>
-
-          <div style={divider} />
-
           <Field label="History & privacy">
             <label style={checkRow}>
               <input type="checkbox" checked={collectHistory} onChange={(e) => setCollectHistory(e.target.checked)} style={cbx} />
@@ -476,12 +458,11 @@ function SettingsSection() {
               </select>
             </div>
           </Field>
-
-          <div style={divider} />
-
-          <button onClick={save} style={{ ...btn, ...(status === 'saved' ? btnSaved : {}) }}>
-            {status === 'saved' ? '✓ Saved' : 'Save Settings'}
-          </button>
+          <div style={{ ...spanAll, marginTop: 4 }}>
+            <button onClick={save} style={{ ...btn, ...(status === 'saved' ? btnSaved : {}) }}>
+              {status === 'saved' ? '✓ Saved' : 'Save Settings'}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -626,14 +607,16 @@ createRoot(document.getElementById('root')!).render(<App />);
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 const page: React.CSSProperties = { minHeight: '100vh', background: '#111', color: '#eee', fontFamily: 'system-ui, -apple-system, sans-serif', fontSize: 14 };
-const shell: React.CSSProperties = { display: 'flex', minHeight: '100vh', maxWidth: 900, margin: '0 auto' };
-const sidebar: React.CSSProperties = { width: 200, borderRight: '1px solid #222', display: 'flex', flexDirection: 'column', padding: '24px 12px', boxSizing: 'border-box' };
-const header: React.CSSProperties = { padding: '0 14px 20px' };
-const logo: React.CSSProperties = { fontSize: 20, fontWeight: 700, color: '#cc0000' };
-const navBtn: React.CSSProperties = { textAlign: 'left', background: 'none', border: 'none', color: '#aaa', fontSize: 14, fontWeight: 500, padding: '10px 14px', borderRadius: 8, cursor: 'pointer', fontFamily: 'inherit', marginBottom: 2 };
-const navBtnActive: React.CSSProperties = { background: '#1e1e1e', color: '#fff' };
-const content: React.CSSProperties = { flex: 1, padding: '40px 36px', boxSizing: 'border-box', minWidth: 0 };
-const card: React.CSSProperties = { background: '#1a1a1a', borderRadius: 10, border: '1px solid #262626', overflow: 'hidden' };
+const shell: React.CSSProperties = { display: 'flex', minHeight: '100vh', maxWidth: 1120, margin: '0 auto' };
+const sidebar: React.CSSProperties = { width: 240, borderRight: '1px solid #222', display: 'flex', flexDirection: 'column', padding: '28px 16px', boxSizing: 'border-box', background: '#141414' };
+const header: React.CSSProperties = { padding: '0 12px 24px' };
+const logo: React.CSSProperties = { fontSize: 21, fontWeight: 700, color: '#fff' };
+const navBtn: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 12, textAlign: 'left', background: 'none', border: 'none', color: '#aaa', fontSize: 14.5, fontWeight: 500, padding: '11px 14px', borderRadius: 9, cursor: 'pointer', fontFamily: 'inherit', marginBottom: 3 };
+const navBtnActive: React.CSSProperties = { background: '#1f1f1f', color: '#fff' };
+const content: React.CSSProperties = { flex: 1, padding: '44px 44px', boxSizing: 'border-box', minWidth: 0 };
+const card: React.CSSProperties = { background: '#1a1a1a', borderRadius: 12, border: '1px solid #262626', overflow: 'hidden' };
+const settingsGrid: React.CSSProperties = { padding: 28, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '28px 44px', alignItems: 'start' };
+const spanAll: React.CSSProperties = { gridColumn: '1 / -1' };
 const sectionLabel: React.CSSProperties = { fontSize: 11, fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 10 };
 const hint: React.CSSProperties = { margin: '0 0 8px', color: '#aaa', fontSize: 13 };
 const input: React.CSSProperties = { width: '100%', background: '#2a2a2a', border: '1px solid #444', borderRadius: 6, color: '#eee', fontSize: 13, padding: '8px 10px', boxSizing: 'border-box', outline: 'none', fontFamily: 'monospace' };

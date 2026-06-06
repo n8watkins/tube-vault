@@ -1,5 +1,5 @@
 import { readMessages, writeMessage } from './protocol';
-import { handle, killActive, probeVideo, listVideos, writeBatchSummary, type DownloadRequest, type Action, type DownloadComponents, type BatchSummaryItem } from './downloader';
+import { handle, killActive, probeVideo, listVideos, writeBatchSummary, defaultOutputRoot, type DownloadRequest, type Action, type DownloadComponents, type BatchSummaryItem } from './downloader';
 import { isValidYouTubeUrl, windowsToWslPath, wslToWindowsPath } from './sanitize';
 import { spawn } from 'child_process';
 import * as fs from 'fs';
@@ -70,7 +70,10 @@ readMessages(async (raw) => {
   const req = raw as Record<string, unknown>;
 
   if (req.action === 'ping') {
-    writeMessage({ ok: true, status: 'ok', version: HELPER_VERSION });
+    // Report the OS-resolved default save folder so the extension can seed it on
+    // first run instead of shipping a hardcoded Windows username/path.
+    const platform = IS_WSL ? 'wsl' : process.platform;
+    writeMessage({ ok: true, status: 'ok', version: HELPER_VERSION, platform, defaultRoot: defaultOutputRoot() });
     return;
   }
 

@@ -1,13 +1,41 @@
-import { spawn } from 'child_process';
+import { spawn, execFileSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
 import { wslToWindowsPath, windowsToWslPath, sanitizeFilename } from './sanitize';
 
-// Fallback save location when the extension doesn't send one. OS-aware so the
-// helper works on native Windows / macOS / Linux too (under WSL this resolves to
-// the Linux home — the extension normally passes a Windows path that overrides it).
-const DEFAULT_OUTPUT_ROOT = path.join(os.homedir(), 'Videos', 'YouTube Downloads');
+// Running under WSL? (Windows kernel string + the distro env var Chrome's launcher keeps.)
+const IS_WSL = os.release().toLowerCase().includes('microsoft') || !!process.env.WSL_DISTRO_NAME;
+
+// Discover the Windows user profile (e.g. C:\Users\natha) from inside WSL, cached.
+// The native host runs with a stripped PATH, so cmd.exe is called by absolute path.
+// This is how we avoid hardcoding any username in the default save location.
+let cachedWinHome: string | null | undefined;
+function windowsUserProfile(): string | null {
+  if (cachedWinHome !== undefined) return cachedWinHome;
+  cachedWinHome = null;
+  try {
+    const cmd = fs.existsSync('/mnt/c/Windows/System32/cmd.exe') ? '/mnt/c/Windows/System32/cmd.exe' : 'cmd.exe';
+    const out = execFileSync(cmd, ['/c', 'echo %USERPROFILE%'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    if (/^[A-Za-z]:\\/.test(out)) cachedWinHome = out;
+  } catch { /* ignore — fall back to the Linux home below */ }
+  return cachedWinHome;
+}
+
+// Fallback save location when the extension doesn't send one, resolved per-OS so
+// the helper works everywhere with no hardcoded username:
+//   • WSL    → the Windows user's Videos folder (files land on the Windows side,
+//              not the Linux rootfs) — discovered via cmd.exe %USERPROFILE%.
+//   • Windows / macOS / Linux → the current user's ~/Videos.
+// Returned as a Windows path under WSL (the canonical form the rest of the
+// pipeline expects there); the extension normally passes its own value anyway.
+export function defaultOutputRoot(): string {
+  if (IS_WSL) {
+    const win = windowsUserProfile();
+    if (win) return `${win}\\Videos\\YouTube Downloads`;
+  }
+  return path.join(os.homedir(), 'Videos', 'YouTube Downloads');
+}
 
 export type VideoQuality = 'best' | '1080' | '720' | '480' | '360';
 export type VideoFormat = 'mp4' | 'webm' | 'mkv';
@@ -356,7 +384,7 @@ export async function listVideos(url: string): Promise<PlanItem[]> {
 }
 
 export async function handle(req: DownloadRequest): Promise<DownloadResult> {
-  const rawRoot = req.options?.outputRoot ?? DEFAULT_OUTPUT_ROOT;
+  const rawRoot = req.options?.outputRoot || defaultOutputRoot();
   // Accept Windows paths (C:\...) from extension storage; convert to WSL paths for yt-dlp
   const root = /^[A-Za-z]:/.test(rawRoot) ? windowsToWslPath(rawRoot) : rawRoot;
   ensureDir(root);

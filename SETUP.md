@@ -1,108 +1,105 @@
 # TubeVault Setup
 
-This guide matches the current TubeVault WSL + Windows Chrome setup.
+TubeVault runs in two parts: the Chrome extension (the UI) and a small Node
+"native messaging" helper (it shells out to `yt-dlp`/`ffmpeg` to do the work).
+Setup differs slightly per platform — pick your case below.
 
-## Prerequisites
+## Prerequisites (all platforms)
 
-- Windows with Chrome.
-- WSL available from Windows.
-- Node.js and npm in WSL.
-- `yt-dlp` available to the helper runtime.
-- `ffmpeg` available to the helper runtime for media conversions.
+- Google Chrome (or another Chromium-family browser).
+- Node.js + npm.
+- `yt-dlp` and `ffmpeg` available to the helper runtime.
 
-Install the download tools in WSL if they are missing:
+Install the download tools:
 
 ```bash
+# macOS (Homebrew)
+brew install yt-dlp ffmpeg
+
+# Debian/Ubuntu (incl. WSL)
 sudo apt update && sudo apt install -y ffmpeg
 sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
 sudo chmod a+rx /usr/local/bin/yt-dlp
 ```
 
-## Install Dependencies
+## Install dependencies & build
 
-From the TubeVault repo:
+From the repo root:
 
 ```bash
-cd /home/natkins/personal/tools/extensions/tube-vault
 npm install --prefix extension
 npm install --prefix helper
-```
-
-## Build Helper
-
-```bash
 npm run build --prefix helper
-```
-
-This writes helper build files to:
-
-```text
-C:\Users\natha\Projects\Tools\tube-vault\helper\dist
-```
-
-## Register Native Messaging Host
-
-Run the install script from Windows PowerShell when native messaging needs to be registered or refreshed:
-
-```powershell
-C:\Users\natha\Projects\Tools\tube-vault\scripts\install.ps1
-```
-
-The native messaging manifest is:
-
-```text
-native-messaging/com.tube_vault.helper.json
-```
-
-The Windows launcher is:
-
-```text
-scripts/run-helper.bat
-```
-
-## Build Extension
-
-```bash
 npm run build --prefix extension
 ```
 
-This command:
+`npm run build --prefix helper` compiles the helper to `helper/dist`.
+`npm run build --prefix extension` bundles the extension. (On the WSL+Windows
+setup it also copies the build to the Windows Projects path.)
 
-1. Bumps the extension patch version.
-2. Bundles content script, service worker, popup, and options page.
-3. Copies extension files to:
+## Load the extension in Chrome
 
-```text
-C:\Users\natha\Projects\Tools\tube-vault\extension
+1. Open `chrome://extensions`, enable **Developer mode**.
+2. Click **Load unpacked** and select the `extension/` folder.
+   - On the WSL+Windows setup, select the Windows copy
+     (`C:\Users\<you>\Projects\Tools\tube-vault\extension`).
+3. Copy the extension's **ID** shown on its card — you need it to register the
+   helper.
+4. After every rebuild, click **Reload** on the card.
+
+## Register the native messaging host
+
+This is the only step that differs by OS. It tells Chrome how to launch the
+helper. Run it once (and again whenever the extension ID changes).
+
+### Windows + WSL
+
+The extension runs in Windows Chrome; the helper runs in WSL. Register via the
+registry from **PowerShell**:
+
+```powershell
+.\scripts\install.ps1 -ExtensionId <your-extension-id>
 ```
 
-4. Commits the extension build output in the TubeVault repo.
+This patches `native-messaging/com.tube_vault.helper.json` (launcher path +
+extension ID) and writes the Chrome `NativeMessagingHosts` registry key. The
+Windows launcher is `scripts/run-helper.bat`, which bridges into WSL via
+`wsl.exe`. No usernames are hardcoded — everything is derived from the repo's
+own location.
 
-## Load In Chrome
+### macOS / Linux (native Chrome)
 
-1. Open `chrome://extensions`.
-2. Enable Developer mode.
-3. Click Load unpacked.
-4. Select:
-
-```text
-C:\Users\natha\Projects\Tools\tube-vault\extension
+```bash
+./scripts/install.sh <your-extension-id>
 ```
 
-5. After each build, click Reload on the TubeVault extension card.
+This drops `com.tube_vault.helper.json` into the `NativeMessagingHosts`
+directory of each Chromium-family browser it finds (Chrome, Chromium, Brave,
+Edge), pointing at `scripts/run-helper.sh`, which runs the Node helper directly.
 
-## Check Status
+## Default save folder
 
-Open the TubeVault options page and use the Status section. It checks:
+You don't need to configure a path. On first connect the helper reports an
+OS-appropriate default, which the extension fills in:
 
-- Native helper connectivity.
-- `yt-dlp` availability/version.
-- `ffmpeg` availability/version.
-- Output folder configuration.
+- **Windows / WSL** → `C:\Users\<you>\Videos\YouTube Downloads`
+  (discovered from `%USERPROFILE%` — files land on the Windows side, not the
+  Linux rootfs).
+- **macOS / Linux** → `~/Videos/YouTube Downloads`.
 
-## Common Fixes
+Override it anytime in **Settings → Download Folder**.
 
-- If the helper is offline, rebuild the helper and rerun `scripts/install.ps1`.
-- If downloads fail immediately, check `yt-dlp` and `ffmpeg` availability from WSL.
-- If Chrome still shows old UI, reload the unpacked extension at `chrome://extensions`.
-- If paths are wrong, confirm Chrome is loading the Windows folder and not the WSL source folder.
+## Check status
+
+Open the extension's options page → **Status**. It verifies helper
+connectivity, `yt-dlp`/`ffmpeg` availability, and the resolved output folder.
+
+## Common fixes
+
+- **Helper offline** — rebuild the helper and re-run the install script for your
+  OS, then reload the extension.
+- **Downloads fail immediately** — confirm `yt-dlp` and `ffmpeg` are on the
+  helper's PATH.
+- **macOS/Linux: "node not found"** — `run-helper.sh` probes nvm/fnm/Homebrew/
+  system locations; if your node is elsewhere, ensure it's on your login PATH.
+- **Stale UI** — reload the unpacked extension at `chrome://extensions`.

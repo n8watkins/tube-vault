@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import { FiFolder, FiRefreshCw } from 'react-icons/fi';
+import { FiFolder, FiRefreshCw, FiGithub } from 'react-icons/fi';
 import { DEFAULT_CHANNEL_COUNTS, DEFAULT_CHANNEL_COUNT, NamingOptions, defaultNaming, NAMING_KEYS, MenuState, defaultMenuState, VideoQuality, VideoFormat, AudioFormat } from './types';
 
 export const DEFAULT_OUTPUT_ROOT = 'C:\\Users\\natha\\Videos\\Youtube Downloads';
@@ -86,6 +86,7 @@ function HistorySection() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [filter, setFilter] = useState<'all' | 'done' | 'failed' | 'cancelled'>('all');
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [confirmClear, setConfirmClear] = useState(false);
 
   useEffect(() => {
     const load = () => chrome.storage.local.get({ tvJobs: [] }, (s) => setJobs(s.tvJobs as Job[]));
@@ -103,6 +104,13 @@ function HistorySection() {
   };
   const clear = () => chrome.runtime.sendMessage({ type: 'TUBE_VAULT_CLEAR_HISTORY' });
   const toggle = (id: string) => setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const exportHistory = () => {
+    const blob = new Blob([JSON.stringify(jobs, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `tubevault-history-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click(); URL.revokeObjectURL(url);
+  };
 
   // Group consecutive batch members into one accordion row; singles stand alone.
   type Row = { kind: 'single'; job: Job } | { kind: 'batch'; batchId: string; members: Job[] };
@@ -140,15 +148,31 @@ function HistorySection() {
     <div>
       <SectionHeader title="Download history" subtitle={`${finished.length} finished`} />
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-        <div style={{ display: 'flex', gap: 6 }}>
+        <div style={{ display: 'flex', gap: 8 }}>
           {(['all', 'done', 'failed', 'cancelled'] as const).map((f) => (
             <button key={f} onClick={() => setFilter(f)} style={{ ...filterChip, ...(filter === f ? filterChipActive : {}) }}>
               {f[0].toUpperCase() + f.slice(1)}
             </button>
           ))}
         </div>
-        {finished.length > 0 && <button onClick={clear} style={textBtn}>Clear history</button>}
+        {finished.length > 0 && (
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+            <button onClick={exportHistory} style={miniBtn}>Export JSON</button>
+            <button onClick={() => setConfirmClear(true)} style={textBtn}>Clear history</button>
+          </div>
+        )}
       </div>
+
+      {confirmClear && (
+        <ConfirmDialog
+          title="Clear download history?"
+          message="This removes every finished entry from this list. Your downloaded files on disk are not touched."
+          confirmLabel="Clear history"
+          danger
+          onConfirm={() => { clear(); setConfirmClear(false); }}
+          onCancel={() => setConfirmClear(false)}
+        />
+      )}
 
       {rows.length === 0 ? (
         <div style={emptyBox}>No downloads yet.</div>
@@ -243,16 +267,6 @@ function SettingsSection() {
     chrome.storage.local.set({ outputRoot: root, channelCounts: finalCounts, channelDefaultCount: def, menuDefaults: prefs, collectHistory, historyRetentionDays: retention, notifyOnDone, autoOpenFolder, ...namingFlat }, () => {
       setOutputRoot(root); setCounts(finalCounts); setDefaultCount(def);
       setStatus('saved'); setTimeout(() => setStatus('idle'), 2000);
-    });
-  }
-
-  function exportHistory() {
-    chrome.storage.local.get({ tvJobs: [] }, (s) => {
-      const blob = new Blob([JSON.stringify(s.tvJobs, null, 2)], { type: 'application/json' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = `tubevault-history-${new Date().toISOString().slice(0, 10)}.json`;
-      a.click(); URL.revokeObjectURL(url);
     });
   }
 
@@ -397,7 +411,6 @@ function SettingsSection() {
                 <option value={365}>1 year</option>
               </select>
             </div>
-            <button onClick={exportHistory} style={{ ...miniBtn, marginTop: 14 }}>Export history (JSON)</button>
           </Field>
 
           <div style={divider} />
@@ -452,10 +465,13 @@ function SetupSection() {
   return (
     <div>
       <SectionHeader title="Setup" subtitle="One-time installation for the local download helper." />
-      <div style={card}>
-        <div style={{ padding: 20 }}>
+      <a href="https://github.com/n8watkins/tube-vault#readme" target="_blank" rel="noreferrer" style={githubLink}>
+        <FiGithub size={18} /> Full setup guide &amp; tips on GitHub →
+      </a>
+      <div style={{ ...card, marginTop: 16 }}>
+        <div style={{ padding: 24 }}>
           <div style={sectionLabel}>Installation guide</div>
-          <p style={hint}>TubeVault runs downloads through a small helper in WSL. One-time setup:</p>
+          <p style={{ ...hint, fontSize: 14.5 }}>TubeVault runs downloads through a small helper in WSL. One-time setup:</p>
           <ol style={guideList}>
             <li><b>Install WSL</b> (Ubuntu) from the Microsoft Store, then open it once to finish setup.</li>
             <li><b>Install yt-dlp &amp; ffmpeg</b> inside WSL:
@@ -496,6 +512,29 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   return <div style={{ marginBottom: 4 }}><div style={sectionLabel}>{label}</div>{children}</div>;
 }
 
+// On-brand confirmation modal for destructive actions (Cancel left, action right).
+function ConfirmDialog({ title, message, confirmLabel = 'Confirm', danger, onConfirm, onCancel }: {
+  title: string; message: string; confirmLabel?: string; danger?: boolean; onConfirm: () => void; onCancel: () => void;
+}) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onCancel(); else if (e.key === 'Enter') onConfirm(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onConfirm, onCancel]);
+  return (
+    <div style={confirmBackdrop} onClick={onCancel}>
+      <div style={confirmCard} onClick={(e) => e.stopPropagation()}>
+        <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 10 }}>{title}</div>
+        <p style={{ fontSize: 14, color: '#bbb', lineHeight: 1.55, margin: '0 0 22px' }}>{message}</p>
+        <div style={{ display: 'flex', justifyContent: 'space-between', gap: 10 }}>
+          <button onClick={onCancel} style={confirmCancelBtn}>Cancel</button>
+          <button onClick={onConfirm} style={{ ...confirmGoBtn, ...(danger ? { background: '#cc0000' } : {}) }}>{confirmLabel}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 createRoot(document.getElementById('root')!).render(<App />);
 
 // ── Styles ────────────────────────────────────────────────────────────────────
@@ -520,17 +559,22 @@ const bigStatus: React.CSSProperties = { display: 'flex', alignItems: 'center', 
 const btn: React.CSSProperties = { background: '#cc0000', border: 'none', borderRadius: 6, color: '#fff', fontSize: 13, fontWeight: 600, padding: '9px 20px', cursor: 'pointer', transition: 'background 0.2s', fontFamily: 'inherit' };
 const btnSaved: React.CSSProperties = { background: '#2e7d32' };
 const emptyBox: React.CSSProperties = { padding: '40px', textAlign: 'center', color: '#666', fontSize: 14, background: '#1a1a1a', borderRadius: 10, border: '1px solid #262626' };
-const histRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 12, padding: '12px 18px' };
-const chevron: React.CSSProperties = { color: '#999', fontSize: 12, width: 10, flexShrink: 0 };
-const histTitle: React.CSSProperties = { fontSize: 14, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
-const histMeta: React.CSSProperties = { fontSize: 12, color: '#888', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
-const badgeStyle: React.CSSProperties = { fontSize: 11, fontWeight: 600, padding: '3px 9px', borderRadius: 20, flexShrink: 0 };
-const iconBtn: React.CSSProperties = { background: '#2a2a2a', border: '1px solid #3a3a3a', color: '#bbb', cursor: 'pointer', borderRadius: 7, width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 };
+const histRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 14, padding: '15px 20px' };
+const chevron: React.CSSProperties = { color: '#999', fontSize: 13, width: 12, flexShrink: 0 };
+const histTitle: React.CSSProperties = { fontSize: 15.5, fontWeight: 500, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
+const histMeta: React.CSSProperties = { fontSize: 13, color: '#888', marginTop: 3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
+const badgeStyle: React.CSSProperties = { fontSize: 12, fontWeight: 600, padding: '4px 11px', borderRadius: 20, flexShrink: 0 };
+const iconBtn: React.CSSProperties = { background: '#2a2a2a', border: '1px solid #3a3a3a', color: '#bbb', cursor: 'pointer', borderRadius: 8, width: 34, height: 34, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 };
 const countChip: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 7, background: '#2a2a2a', border: '1px solid #3a3a3a', borderRadius: 18, padding: '6px 7px 6px 13px', fontSize: 14, fontWeight: 600, color: '#eee' };
 const chipX: React.CSSProperties = { background: '#3a3a3a', border: 'none', color: '#ccc', cursor: 'pointer', borderRadius: '50%', width: 18, height: 18, fontSize: 9, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'inherit', lineHeight: 1, padding: 0 };
-const filterChip: React.CSSProperties = { background: 'none', border: '1px solid #333', color: '#999', fontSize: 12, padding: '4px 11px', borderRadius: 20, cursor: 'pointer', fontFamily: 'inherit' };
+const filterChip: React.CSSProperties = { background: 'none', border: '1px solid #333', color: '#bbb', fontSize: 13.5, fontWeight: 500, padding: '7px 15px', borderRadius: 20, cursor: 'pointer', fontFamily: 'inherit' };
 const filterChipActive: React.CSSProperties = { background: '#cc0000', borderColor: '#cc0000', color: '#fff' };
+const confirmBackdrop: React.CSSProperties = { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.7)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 };
+const confirmCard: React.CSSProperties = { background: '#1c1c1c', border: '1px solid #2e2e2e', borderRadius: 14, padding: 24, maxWidth: 420, width: '90%', boxShadow: '0 16px 48px rgba(0,0,0,0.7)' };
+const confirmCancelBtn: React.CSSProperties = { padding: '10px 18px', borderRadius: 9, border: '1px solid #444', background: '#2b2b2b', color: '#fff', fontSize: 14, fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit' };
+const confirmGoBtn: React.CSSProperties = { padding: '10px 18px', borderRadius: 9, border: 'none', background: '#cc0000', color: '#fff', fontSize: 14, fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit' };
 const textBtn: React.CSSProperties = { background: 'none', border: 'none', color: '#888', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' };
-const guideList: React.CSSProperties = { margin: '10px 0 0', paddingLeft: 20, fontSize: 13, color: '#ccc', lineHeight: 1.7 };
+const guideList: React.CSSProperties = { margin: '12px 0 0', paddingLeft: 22, fontSize: 15, color: '#ccc', lineHeight: 1.85 };
+const githubLink: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 9, padding: '12px 18px', background: '#1e1e1e', border: '1px solid #333', borderRadius: 10, color: '#eee', textDecoration: 'none', fontSize: 14.5, fontWeight: 600 };
 const code: React.CSSProperties = { background: '#0d0d0d', border: '1px solid #262626', borderRadius: 6, padding: '10px 12px', fontSize: 12, color: '#ddd', overflowX: 'auto', margin: '8px 0', whiteSpace: 'pre' };
 const inlineCode: React.CSSProperties = { background: '#0d0d0d', border: '1px solid #262626', borderRadius: 4, padding: '1px 5px', fontSize: 12 };

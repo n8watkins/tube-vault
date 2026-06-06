@@ -342,6 +342,10 @@ function SettingsSection() {
               <input type="checkbox" checked={prefs.metadata} onChange={(e) => setPref({ metadata: e.target.checked })} style={cbx} />
               <span>Metadata</span>
             </label>
+            <label style={checkRow}>
+              <input type="checkbox" checked={prefs.subtitles} onChange={(e) => setPref({ subtitles: e.target.checked })} style={cbx} />
+              <span>Subtitles</span>
+            </label>
           </Field>
 
           <div style={divider} />

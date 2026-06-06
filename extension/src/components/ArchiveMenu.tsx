@@ -1,6 +1,6 @@
 import React from 'react';
 import { createPortal } from 'react-dom';
-import { FiVideo, FiHeadphones, FiFileText, FiImage, FiCheckSquare, FiSquare } from 'react-icons/fi';
+import { FiVideo, FiHeadphones, FiFileText, FiImage, FiType, FiCheckSquare, FiSquare } from 'react-icons/fi';
 import { MenuState, VideoQuality, VideoFormat, AudioFormat, ChannelMode, RECENT_POOL } from '../types';
 
 interface ChannelControls {
@@ -28,12 +28,12 @@ interface Props {
 type TopLevel = 'popular' | 'latest' | 'all';
 
 export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, playlist, playlistLabel = 'Playlist', channel, onArchive }: Props) {
-  const noneSelected = !state.video && !state.audio && !state.metadata && !state.thumbnail;
-  const allSelected = state.video && state.audio && state.metadata && state.thumbnail;
+  const noneSelected = !state.video && !state.audio && !state.metadata && !state.thumbnail && !state.subtitles;
+  const allSelected = state.video && state.audio && state.metadata && state.thumbnail && state.subtitles;
 
   const toggleAll = () => {
     const v = !allSelected;
-    onChange({ video: v, audio: v, metadata: v, thumbnail: v });
+    onChange({ video: v, audio: v, metadata: v, thumbnail: v, subtitles: v });
   };
 
   const posStyle = dropUp
@@ -167,6 +167,7 @@ export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, play
 
       <Card on={state.metadata} onToggle={() => onChange({ metadata: !state.metadata })} icon={<FiFileText size={17} />} label="Metadata" />
       <Card on={state.thumbnail} onToggle={() => onChange({ thumbnail: !state.thumbnail })} icon={<FiImage size={17} />} label="Thumbnail" />
+      <Card on={state.subtitles} onToggle={() => onChange({ subtitles: !state.subtitles })} icon={<FiType size={17} />} label="Subtitles" />
 
       <div style={divider} />
 

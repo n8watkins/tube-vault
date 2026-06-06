@@ -10,6 +10,7 @@ export interface MenuState {
   audioFormat: AudioFormat;
   metadata: boolean;
   thumbnail: boolean;
+  subtitles: boolean;
 }
 
 export const defaultMenuState: MenuState = {
@@ -20,6 +21,7 @@ export const defaultMenuState: MenuState = {
   audioFormat: 'm4a',
   metadata: false,
   thumbnail: false,
+  subtitles: false,
 };
 
 // ── File naming & folder layout ───────────────────────────────────────────────

@@ -216,6 +216,7 @@ export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp
     if (menuState.audio) components['audio'] = { format: menuState.audioFormat };
     if (menuState.metadata) components['metadata'] = true;
     if (menuState.thumbnail) components['thumbnail'] = true;
+    if (menuState.subtitles) components['subtitles'] = true;
 
     if (channel) {
       runChannelFlow(components);
@@ -239,6 +240,7 @@ export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp
     // thumbnail/metadata sidecars are tiny fixed sizes (mirrors helper sidecarBytes).
     const THUMB_BYTES = 120_000;
     const META_BYTES = 100_000;
+    const SUBS_BYTES = 50_000;
     const rowProbes: Promise<ConfirmRow>[] = [];
     if (menuState.video) {
       const q = menuState.videoQuality === 'best' ? 'best' : `${menuState.videoQuality}p`;
@@ -255,6 +257,7 @@ export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp
     }
     if (menuState.thumbnail) rowProbes.push(Promise.resolve({ label: 'Thumbnail · jpg', bytes: THUMB_BYTES }));
     if (menuState.metadata) rowProbes.push(Promise.resolve({ label: 'Metadata · info.json + description', bytes: META_BYTES }));
+    if (menuState.subtitles) rowProbes.push(Promise.resolve({ label: 'Subtitles · srt (en)', bytes: SUBS_BYTES }));
 
     Promise.all([getDownloadedMap(), Promise.all(rowProbes)]).then(([dl, rows]) => {
       const dupWhen = (id && dl.get(id)) || 0;

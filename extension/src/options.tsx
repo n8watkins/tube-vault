@@ -310,7 +310,7 @@ function SettingsSection() {
     'MrBeast',
     naming.categoryFolders ? 'Most Popular' : null,
     `${naming.numbering ? '001 - ' : ''}I Spent 50 Hours${naming.includeId ? ' [abc123]' : ''}`,
-    `${naming.titleFiles ? 'I Spent 50 Hours' : 'video'}.mp4`,
+    `${naming.titleFiles ? '[VID] I Spent 50 Hours' : 'video'}.mp4`,
   ].filter(Boolean).join(' / ');
 
   return (
@@ -320,14 +320,14 @@ function SettingsSection() {
         <div style={settingsGrid}>
           <div style={spanAll}>
             <Field label="Download Folder">
-              <p style={hint}>Windows path where videos will be saved.</p>
+              <p style={hint}>Local folder where downloads are saved. On Windows/WSL use a Windows path (e.g. <code style={inlineCode}>C:\Users\you\Videos</code>); on macOS or Linux use a native path (e.g. <code style={inlineCode}>/home/you/Videos</code>).</p>
               <input style={input} value={outputRoot} onChange={(e) => setOutputRoot(e.target.value)} placeholder={DEFAULT_OUTPUT_ROOT} spellCheck={false} />
               <p style={muted}>Default: {DEFAULT_OUTPUT_ROOT}</p>
             </Field>
           </div>
           <Field label="File naming & folders">
             {([
-              ['titleFiles', 'Name files by title (else generic video / audio / thumbnail)'],
+              ['titleFiles', 'Name files by title, tagged by type — [VID] / [AUD] / [SUB] / [IMG] / [META] (else generic video / audio / thumbnail)'],
               ['summaryTxt', 'Write a .txt summary in each folder'],
               ['categoryFolders', 'Group batches into Most Popular / Latest / Playlist folders'],
               ['numbering', 'Number batch folders (001, 002…)'],
@@ -427,19 +427,21 @@ function SettingsSection() {
             <p style={muted}>Each download also writes a <code style={inlineCode}>.txt</code> summary (title, channel, URL, files, path) into its folder — toggle that under “File naming &amp; folders”.</p>
           </Field>
           <Field label="Advanced downloads">
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+            <p style={hint}><b>SponsorBlock</b> uses the community database to find in-video sponsor reads, self-promo, and interaction reminders (“like &amp; subscribe”). It’s <b>off by default</b> — turn it on to mark or strip those segments from your downloads.</p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
               <span style={{ fontSize: 13, color: '#aaa' }}>SponsorBlock:</span>
               <select value={sponsorblock} onChange={(e) => setSponsorblock(e.target.value as 'off' | 'mark' | 'remove')} style={{ ...input, width: 'auto', padding: '6px 8px', fontFamily: 'inherit' }}>
-                <option value="off">Off</option>
+                <option value="off">Off (default)</option>
                 <option value="mark">Mark segments (chapters)</option>
                 <option value="remove">Remove segments (re-encodes)</option>
               </select>
             </div>
+            <p style={muted}>“Mark” keeps the full video but adds chapter markers at each segment (lossless, fast). “Remove” cuts the segments out of the file and re-encodes it (slower, but the sponsor is gone).</p>
+            <div style={divider} />
             <label style={checkRow}>
               <input type="checkbox" checked={fasterDownloads} onChange={(e) => setFasterDownloads(e.target.checked)} style={cbx} />
               <span>Faster downloads (parallel fragments — recommended)</span>
             </label>
-            <p style={muted}>SponsorBlock skips sponsor/self-promo/interaction segments. “Mark” just adds chapters (lossless); “Remove” cuts them out and re-encodes (slower).</p>
           </Field>
           <Field label="History & privacy">
             <label style={checkRow}>
@@ -577,7 +579,7 @@ function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }
   );
 }
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return <div style={{ marginBottom: 4 }}><div style={sectionLabel}>{label}</div>{children}</div>;
+  return <div style={{ marginBottom: 4 }}><div style={fieldLabel}>{label}</div>{children}</div>;
 }
 
 // On-brand confirmation modal for destructive actions (Cancel left, action right).
@@ -615,9 +617,12 @@ const navBtn: React.CSSProperties = { display: 'flex', alignItems: 'center', gap
 const navBtnActive: React.CSSProperties = { background: '#1f1f1f', color: '#fff' };
 const content: React.CSSProperties = { flex: 1, padding: '44px 44px', boxSizing: 'border-box', minWidth: 0 };
 const card: React.CSSProperties = { background: '#1a1a1a', borderRadius: 12, border: '1px solid #262626', overflow: 'hidden' };
-const settingsGrid: React.CSSProperties = { padding: 28, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '28px 44px', alignItems: 'start' };
+const settingsGrid: React.CSSProperties = { padding: 28, display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '38px 44px', alignItems: 'start' };
 const spanAll: React.CSSProperties = { gridColumn: '1 / -1' };
 const sectionLabel: React.CSSProperties = { fontSize: 11, fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 10 };
+// Settings sub-section heading — larger and clearly separated so each group reads
+// as its own block rather than a faint label.
+const fieldLabel: React.CSSProperties = { fontSize: 16.5, fontWeight: 700, color: '#fff', marginBottom: 13, paddingBottom: 9, borderBottom: '1px solid #2c2c2c' };
 const hint: React.CSSProperties = { margin: '0 0 8px', color: '#aaa', fontSize: 13 };
 const input: React.CSSProperties = { width: '100%', background: '#2a2a2a', border: '1px solid #444', borderRadius: 6, color: '#eee', fontSize: 13, padding: '8px 10px', boxSizing: 'border-box', outline: 'none', fontFamily: 'monospace' };
 const muted: React.CSSProperties = { margin: '6px 0 0', fontSize: 11, color: '#555' };

@@ -28,13 +28,14 @@ const isActive = (j: Job) => j.status === 'queued' || j.status === 'probing' || 
 
 // ── Settings cache ────────────────────────────────────────────────────────────
 const namingKeyList = Object.keys(NAMING_KEYS) as (keyof NamingOptions)[];
-let cachedSettings = { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: true, naming: { ...defaultNaming }, collectHistory: true, historyRetentionDays: 0 };
+let cachedSettings = { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: false, notifyOnDone: true, naming: { ...defaultNaming }, collectHistory: true, historyRetentionDays: 0 };
 const namingStorageDefaults = Object.fromEntries(namingKeyList.map((k) => [NAMING_KEYS[k], defaultNaming[k]]));
 chrome.storage.local.get(
-  { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: true, collectHistory: true, historyRetentionDays: 0, ...namingStorageDefaults },
+  { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: false, notifyOnDone: true, collectHistory: true, historyRetentionDays: 0, ...namingStorageDefaults },
   (s) => {
     cachedSettings.outputRoot = s.outputRoot ?? cachedSettings.outputRoot;
-    cachedSettings.autoOpenFolder = s.autoOpenFolder ?? cachedSettings.autoOpenFolder;
+    cachedSettings.autoOpenFolder = !!s.autoOpenFolder;
+    cachedSettings.notifyOnDone = s.notifyOnDone !== false;
     cachedSettings.collectHistory = s.collectHistory !== false;
     cachedSettings.historyRetentionDays = Number(s.historyRetentionDays) || 0;
     for (const k of namingKeyList) cachedSettings.naming[k] = !!s[NAMING_KEYS[k]];
@@ -43,7 +44,8 @@ chrome.storage.local.get(
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
   if (changes.outputRoot) cachedSettings.outputRoot = changes.outputRoot.newValue;
-  if (changes.autoOpenFolder) cachedSettings.autoOpenFolder = changes.autoOpenFolder.newValue;
+  if (changes.autoOpenFolder) cachedSettings.autoOpenFolder = !!changes.autoOpenFolder.newValue;
+  if (changes.notifyOnDone) cachedSettings.notifyOnDone = changes.notifyOnDone.newValue !== false;
   if (changes.collectHistory) cachedSettings.collectHistory = changes.collectHistory.newValue !== false;
   if (changes.historyRetentionDays) cachedSettings.historyRetentionDays = Number(changes.historyRetentionDays.newValue) || 0;
   for (const k of namingKeyList) {
@@ -150,8 +152,11 @@ async function runJob(job: Job): Promise<void> {
       const folder: string = response.windowsFolderPath ?? response.folderPath ?? '';
       const actual = typeof response.bytes === 'number' && response.bytes > 0 ? { estBytes: response.bytes } : {};
       await updateJob(job.id, { status: 'done', folder, finishedAt: Date.now(), ...actual });
-      notifyDone(job.label, folder);
-      // No auto-open — folders are opened on demand via the folder button in History.
+      if (cachedSettings.notifyOnDone) notifyDone(job.label, folder);
+      // Auto-open only for single videos so a batch doesn't spawn N Explorer windows.
+      if (cachedSettings.autoOpenFolder && folder && !job.batchId) {
+        chrome.runtime.sendNativeMessage(NATIVE_HOST, { action: 'open_folder', windowsPath: folder }, () => { void chrome.runtime.lastError; });
+      }
     }
     await maybeWriteBatchSummary(job.batchId);
     pumpQueue();

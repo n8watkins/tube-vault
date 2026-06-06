@@ -1,18 +1,11 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { FiFolder, FiRefreshCw } from 'react-icons/fi';
-import { FaGithub, FaMugHot } from 'react-icons/fa';
 import { DEFAULT_CHANNEL_COUNTS, DEFAULT_CHANNEL_COUNT, NamingOptions, defaultNaming, NAMING_KEYS, MenuState, defaultMenuState, VideoQuality, VideoFormat, AudioFormat } from './types';
 
 export const DEFAULT_OUTPUT_ROOT = 'C:\\Users\\natha\\Videos\\Youtube Downloads';
 
-// Support links — fill these in when ready.
-const SUPPORT_LINKS = {
-  githubSponsors: '#',     // e.g. https://github.com/sponsors/<you>
-  buyMeACoffee: '#',       // e.g. https://buymeacoffee.com/<you>
-};
-
-type Tab = 'downloads' | 'settings' | 'status' | 'setup' | 'support';
+type Tab = 'downloads' | 'settings' | 'status' | 'setup';
 
 type JobStatus = 'queued' | 'probing' | 'running' | 'done' | 'failed' | 'cancelled';
 interface Job {
@@ -52,7 +45,6 @@ function App() {
     { id: 'settings', label: 'Settings' },
     { id: 'status', label: 'Status' },
     { id: 'setup', label: 'Setup' },
-    { id: 'support', label: 'Support' },
   ];
 
   return (
@@ -80,7 +72,6 @@ function App() {
           {tab === 'settings' && <SettingsSection />}
           {tab === 'status' && <StatusSection />}
           {tab === 'setup' && <SetupSection />}
-          {tab === 'support' && <SupportSection />}
         </div>
       </div>
     </div>
@@ -212,6 +203,8 @@ function SettingsSection() {
   const [prefs, setPrefs] = useState<MenuState>(defaultMenuState);
   const [collectHistory, setCollectHistory] = useState(true);
   const [retention, setRetention] = useState(0);
+  const [notifyOnDone, setNotifyOnDone] = useState(true);
+  const [autoOpenFolder, setAutoOpenFolder] = useState(false);
   const [status, setStatus] = useState<'idle' | 'saved'>('idle');
 
   useEffect(() => {
@@ -219,12 +212,14 @@ function SettingsSection() {
       (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [NAMING_KEYS[k], defaultNaming[k]])
     );
     chrome.storage.local.get(
-      { outputRoot: DEFAULT_OUTPUT_ROOT, channelCounts: DEFAULT_CHANNEL_COUNTS, channelDefaultCount: DEFAULT_CHANNEL_COUNT, menuDefaults: defaultMenuState, collectHistory: true, historyRetentionDays: 0, ...namingDefaults },
+      { outputRoot: DEFAULT_OUTPUT_ROOT, channelCounts: DEFAULT_CHANNEL_COUNTS, channelDefaultCount: DEFAULT_CHANNEL_COUNT, menuDefaults: defaultMenuState, collectHistory: true, historyRetentionDays: 0, notifyOnDone: true, autoOpenFolder: false, ...namingDefaults },
       (s) => {
         setOutputRoot(s.outputRoot); setCountsText((s.channelCounts as number[]).join(', ')); setDefaultCount(s.channelDefaultCount);
         setPrefs({ ...defaultMenuState, ...(s.menuDefaults || {}) });
         setCollectHistory(s.collectHistory !== false);
         setRetention(Number(s.historyRetentionDays) || 0);
+        setNotifyOnDone(s.notifyOnDone !== false);
+        setAutoOpenFolder(!!s.autoOpenFolder);
         setNaming(Object.fromEntries(
           (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [k, !!s[NAMING_KEYS[k]]])
         ) as unknown as NamingOptions);
@@ -243,7 +238,7 @@ function SettingsSection() {
     const namingFlat = Object.fromEntries(
       (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [NAMING_KEYS[k], naming[k]])
     );
-    chrome.storage.local.set({ outputRoot: root, channelCounts: counts, channelDefaultCount: def, menuDefaults: prefs, collectHistory, historyRetentionDays: retention, ...namingFlat }, () => {
+    chrome.storage.local.set({ outputRoot: root, channelCounts: counts, channelDefaultCount: def, menuDefaults: prefs, collectHistory, historyRetentionDays: retention, notifyOnDone, autoOpenFolder, ...namingFlat }, () => {
       setOutputRoot(root); setCountsText(counts.join(', ')); setDefaultCount(def);
       setStatus('saved'); setTimeout(() => setStatus('idle'), 2000);
     });
@@ -351,6 +346,20 @@ function SettingsSection() {
 
           <div style={divider} />
 
+          <Field label="Notifications & folders">
+            <label style={checkRow}>
+              <input type="checkbox" checked={notifyOnDone} onChange={(e) => setNotifyOnDone(e.target.checked)} style={cbx} />
+              <span>Show a notification when a download finishes</span>
+            </label>
+            <label style={checkRow}>
+              <input type="checkbox" checked={autoOpenFolder} onChange={(e) => setAutoOpenFolder(e.target.checked)} style={cbx} />
+              <span>Open the folder automatically when a single video finishes</span>
+            </label>
+            <p style={muted}>Each download also writes a <code style={inlineCode}>.txt</code> summary (title, channel, URL, files, path) into its folder — toggle that under “File naming &amp; folders”.</p>
+          </Field>
+
+          <div style={divider} />
+
           <Field label="History & privacy">
             <label style={checkRow}>
               <input type="checkbox" checked={collectHistory} onChange={(e) => setCollectHistory(e.target.checked)} style={cbx} />
@@ -453,36 +462,6 @@ function StatusLine({ label, value, ok, bad }: { label: string; value: string; o
   );
 }
 
-// ── Support ───────────────────────────────────────────────────────────────────
-function SupportSection() {
-  return (
-    <div>
-      <SectionHeader title="Support" subtitle="TubeVault is free & open. If it saved you time, consider chipping in." />
-      <div style={aboutBox}>
-        <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 8 }}>About TubeVault</div>
-        <p style={aboutText}>
-          TubeVault is a local-first YouTube archive tool. The extension does not send videos to a TubeVault server because there is no TubeVault server.
-        </p>
-        <p style={aboutText}>
-          Chrome talks to a native helper on this machine, and the helper runs local <code style={inlineCode}>yt-dlp</code> commands that write files to your configured output folder.
-        </p>
-        <p style={{ ...aboutText, marginBottom: 0 }}>
-          YouTube and <code style={inlineCode}>yt-dlp</code> still operate under their own network behavior and terms.
-        </p>
-      </div>
-      <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
-        <a href={SUPPORT_LINKS.githubSponsors} target="_blank" rel="noreferrer" style={{ ...supportBtn, background: '#24292e' }}>
-          <FaGithub size={22} /> <span>GitHub Sponsors</span>
-        </a>
-        <a href={SUPPORT_LINKS.buyMeACoffee} target="_blank" rel="noreferrer" style={{ ...supportBtn, background: '#ffdd00', color: '#222' }}>
-          <FaMugHot size={20} /> <span>Buy Me a Coffee</span>
-        </a>
-      </div>
-      <p style={{ ...muted, marginTop: 18 }}>Thank you for using TubeVault. ♥</p>
-    </div>
-  );
-}
-
 // ── Shared bits ───────────────────────────────────────────────────────────────
 function SectionHeader({ title, subtitle }: { title: string; subtitle?: string }) {
   return (
@@ -532,6 +511,3 @@ const textBtn: React.CSSProperties = { background: 'none', border: 'none', color
 const guideList: React.CSSProperties = { margin: '10px 0 0', paddingLeft: 20, fontSize: 13, color: '#ccc', lineHeight: 1.7 };
 const code: React.CSSProperties = { background: '#0d0d0d', border: '1px solid #262626', borderRadius: 6, padding: '10px 12px', fontSize: 12, color: '#ddd', overflowX: 'auto', margin: '8px 0', whiteSpace: 'pre' };
 const inlineCode: React.CSSProperties = { background: '#0d0d0d', border: '1px solid #262626', borderRadius: 4, padding: '1px 5px', fontSize: 12 };
-const supportBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 10, padding: '14px 22px', borderRadius: 10, color: '#fff', textDecoration: 'none', fontSize: 15, fontWeight: 600 };
-const aboutBox: React.CSSProperties = { background: '#1a1a1a', border: '1px solid #262626', borderRadius: 10, padding: '18px 20px', marginBottom: 18 };
-const aboutText: React.CSSProperties = { margin: '0 0 10px', color: '#cfcfcf', fontSize: 14, lineHeight: 1.55 };

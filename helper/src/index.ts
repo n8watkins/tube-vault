@@ -84,7 +84,7 @@ readMessages(async (raw) => {
     const url = req.url as string;
     if (!isValidYouTubeUrl(url)) { writeMessage({ ok: false, status: 'failed', error: 'Invalid URL' }); return; }
     const p = await probeVideo(url, req.components as DownloadComponents | undefined);
-    writeMessage({ ok: true, status: 'ok', title: p.title, bytes: p.bytes, duration: p.duration });
+    writeMessage({ ok: true, status: 'ok', title: p.title, bytes: p.bytes, duration: p.duration, views: p.views });
     return;
   }
 

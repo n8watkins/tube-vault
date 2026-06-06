@@ -322,22 +322,24 @@ const sumBytes = (items: PlanItem[]) => sum(items.map((i) => i.bytes ?? 0));
 
 // Single-video probe: title + approx size + duration, for lazy sizing in the queue.
 // Size respects the selected components (matches the confirmation estimate).
-export async function probeVideo(url: string, components?: DownloadComponents): Promise<{ title: string; bytes: number | null; duration: number | null }> {
+export async function probeVideo(url: string, components?: DownloadComponents): Promise<{ title: string; bytes: number | null; duration: number | null; views: number | null }> {
   const fmt = components ? mediaFormatFlag(components) : null;
   const args = ['--no-warnings', '--skip-download'];
   if (fmt) args.push('-f', fmt);
-  args.push('--print', '%(title)s\t%(filesize_approx)s\t%(duration)s', '--', url);
+  args.push('--print', '%(title)s\t%(filesize_approx)s\t%(duration)s\t%(view_count)s', '--', url);
   const { out, code } = await run('yt-dlp', args);
-  if (code !== 0) return { title: '', bytes: null, duration: null };
+  if (code !== 0) return { title: '', bytes: null, duration: null, views: null };
   const parts = out.trim().split('\t');
   const title = parts[0] || '';
   const approx = parseInt(parts[1], 10);
   const duration = parseInt(parts[2], 10);
+  const views = parseInt(parts[3], 10);
   const bytes = sizeForComponents(Number.isFinite(approx) ? approx : 0, components);
   return {
     title,
     bytes: bytes > 0 ? bytes : null,
     duration: Number.isFinite(duration) ? duration : null,
+    views: Number.isFinite(views) ? views : null,
   };
 }
 

@@ -289,6 +289,7 @@ export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp
         `${name ? name + ' · ' : ''}${n} video${n === 1 ? '' : 's'}`,
         plan.items,
         dlIds,
+        plan.estBytes,
       ).then((picked) => {
         if (!picked || !picked.length) { setBtnState('idle'); return; }
         enqueue(picked, components, name || `${playlistNoun} — ${picked.length} video${picked.length === 1 ? '' : 's'}`, name ? `${playlistNoun}_${name}` : playlistNoun);
@@ -347,6 +348,7 @@ export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp
         cap,
         plan.items,
         dlIds,
+        plan.estBytes,
       ).then((picked) => {
         if (!picked || !picked.length) { setBtnState('idle'); return; }
         enqueue(picked, components, cap, category);
@@ -527,7 +529,7 @@ function showVideoConfirm(title: string, thumbUrl: string, rows: ConfirmRow[], t
   });
 }
 
-function showSelection(title: string, subtitle: string, items: PlanItem[], downloaded?: Map<string, number>): Promise<PlanItem[] | null> {
+function showSelection(title: string, subtitle: string, items: PlanItem[], downloaded?: Map<string, number>, estBytes?: number | null): Promise<PlanItem[] | null> {
   return new Promise((resolve) => {
     // Duplicate protection: videos already in download history are pre-unchecked
     // (overridable). `when` is the date we last downloaded each (0 = unknown date).
@@ -579,7 +581,11 @@ function showSelection(title: string, subtitle: string, items: PlanItem[], downl
     // that are only sized at download time (playlist/channel "all" mode) — so the
     // total still moves when you check/uncheck an unsized video.
     const knownSizes = items.map((it) => it.bytes || 0).filter((b) => b > 0);
-    const avgKnown = knownSizes.length ? knownSizes.reduce((a, b) => a + b, 0) / knownSizes.length : 0;
+    // When no individual sizes are known (channel "all" / playlist mode, sized at
+    // download), fall back to the plan's sampled average so the estimate still shows
+    // and still tracks the selection instead of collapsing to "sized at download".
+    const planAvg = estBytes && items.length ? estBytes / items.length : 0;
+    const avgKnown = knownSizes.length ? knownSizes.reduce((a, b) => a + b, 0) / knownSizes.length : planAvg;
     const hasUnknown = items.some((it) => !it.bytes);
     const numSelected = () => checked.filter(Boolean).length;
     const selectedSize = () => items.reduce(

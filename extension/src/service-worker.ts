@@ -28,14 +28,16 @@ const isActive = (j: Job) => j.status === 'queued' || j.status === 'probing' || 
 
 // ── Settings cache ────────────────────────────────────────────────────────────
 const namingKeyList = Object.keys(NAMING_KEYS) as (keyof NamingOptions)[];
-let cachedSettings = { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: false, notifyOnDone: true, naming: { ...defaultNaming }, collectHistory: true, historyRetentionDays: 0 };
+let cachedSettings = { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: false, notifyOnDone: true, sponsorblock: 'off' as 'off' | 'mark' | 'remove', fasterDownloads: false, naming: { ...defaultNaming }, collectHistory: true, historyRetentionDays: 0 };
 const namingStorageDefaults = Object.fromEntries(namingKeyList.map((k) => [NAMING_KEYS[k], defaultNaming[k]]));
 chrome.storage.local.get(
-  { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: false, notifyOnDone: true, collectHistory: true, historyRetentionDays: 0, ...namingStorageDefaults },
+  { outputRoot: DEFAULT_OUTPUT_ROOT, autoOpenFolder: false, notifyOnDone: true, sponsorblock: 'off', fasterDownloads: false, collectHistory: true, historyRetentionDays: 0, ...namingStorageDefaults },
   (s) => {
     cachedSettings.outputRoot = s.outputRoot ?? cachedSettings.outputRoot;
     cachedSettings.autoOpenFolder = !!s.autoOpenFolder;
     cachedSettings.notifyOnDone = s.notifyOnDone !== false;
+    cachedSettings.sponsorblock = (s.sponsorblock as 'off' | 'mark' | 'remove') || 'off';
+    cachedSettings.fasterDownloads = !!s.fasterDownloads;
     cachedSettings.collectHistory = s.collectHistory !== false;
     cachedSettings.historyRetentionDays = Number(s.historyRetentionDays) || 0;
     for (const k of namingKeyList) cachedSettings.naming[k] = !!s[NAMING_KEYS[k]];
@@ -46,6 +48,8 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (changes.outputRoot) cachedSettings.outputRoot = changes.outputRoot.newValue;
   if (changes.autoOpenFolder) cachedSettings.autoOpenFolder = !!changes.autoOpenFolder.newValue;
   if (changes.notifyOnDone) cachedSettings.notifyOnDone = changes.notifyOnDone.newValue !== false;
+  if (changes.sponsorblock) cachedSettings.sponsorblock = (changes.sponsorblock.newValue as 'off' | 'mark' | 'remove') || 'off';
+  if (changes.fasterDownloads) cachedSettings.fasterDownloads = !!changes.fasterDownloads.newValue;
   if (changes.collectHistory) cachedSettings.collectHistory = changes.collectHistory.newValue !== false;
   if (changes.historyRetentionDays) cachedSettings.historyRetentionDays = Number(changes.historyRetentionDays.newValue) || 0;
   for (const k of namingKeyList) {
@@ -140,7 +144,7 @@ async function runJob(job: Job): Promise<void> {
     index: job.index,
     total: job.total,
     category: job.category,
-    options: { outputRoot: cachedSettings.outputRoot || DEFAULT_OUTPUT_ROOT, naming: cachedSettings.naming },
+    options: { outputRoot: cachedSettings.outputRoot || DEFAULT_OUTPUT_ROOT, naming: cachedSettings.naming, sponsorblock: cachedSettings.sponsorblock, fasterDownloads: cachedSettings.fasterDownloads },
   };
   chrome.runtime.sendNativeMessage(NATIVE_HOST, payload, async (response) => {
     if (await isCancelled(job.id)) { await maybeWriteBatchSummary(job.batchId); pumpQueue(); return; }

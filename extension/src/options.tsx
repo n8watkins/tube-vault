@@ -254,6 +254,8 @@ function SettingsSection() {
   const [notifyOnDone, setNotifyOnDone] = useState(true);
   const [autoOpenFolder, setAutoOpenFolder] = useState(false);
   const [showThumbnails, setShowThumbnails] = useState(true);
+  const [sponsorblock, setSponsorblock] = useState<'off' | 'mark' | 'remove'>('off');
+  const [fasterDownloads, setFasterDownloads] = useState(false);
   const [status, setStatus] = useState<'idle' | 'saved'>('idle');
 
   useEffect(() => {
@@ -261,7 +263,7 @@ function SettingsSection() {
       (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [NAMING_KEYS[k], defaultNaming[k]])
     );
     chrome.storage.local.get(
-      { outputRoot: DEFAULT_OUTPUT_ROOT, channelCounts: DEFAULT_CHANNEL_COUNTS, channelDefaultCount: DEFAULT_CHANNEL_COUNT, menuDefaults: defaultMenuState, collectHistory: true, historyRetentionDays: 0, notifyOnDone: true, autoOpenFolder: false, showThumbnails: true, ...namingDefaults },
+      { outputRoot: DEFAULT_OUTPUT_ROOT, channelCounts: DEFAULT_CHANNEL_COUNTS, channelDefaultCount: DEFAULT_CHANNEL_COUNT, menuDefaults: defaultMenuState, collectHistory: true, historyRetentionDays: 0, notifyOnDone: true, autoOpenFolder: false, showThumbnails: true, sponsorblock: 'off', fasterDownloads: false, ...namingDefaults },
       (s) => {
         setOutputRoot(s.outputRoot); setCounts(s.channelCounts as number[]); setDefaultCount(s.channelDefaultCount);
         setPrefs({ ...defaultMenuState, ...(s.menuDefaults || {}) });
@@ -270,6 +272,8 @@ function SettingsSection() {
         setNotifyOnDone(s.notifyOnDone !== false);
         setAutoOpenFolder(!!s.autoOpenFolder);
         setShowThumbnails(s.showThumbnails !== false);
+        setSponsorblock((s.sponsorblock as 'off' | 'mark' | 'remove') || 'off');
+        setFasterDownloads(!!s.fasterDownloads);
         setNaming(Object.fromEntries(
           (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [k, !!s[NAMING_KEYS[k]]])
         ) as unknown as NamingOptions);
@@ -294,7 +298,7 @@ function SettingsSection() {
     const namingFlat = Object.fromEntries(
       (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [NAMING_KEYS[k], naming[k]])
     );
-    chrome.storage.local.set({ outputRoot: root, channelCounts: finalCounts, channelDefaultCount: def, menuDefaults: prefs, collectHistory, historyRetentionDays: retention, notifyOnDone, autoOpenFolder, showThumbnails, ...namingFlat }, () => {
+    chrome.storage.local.set({ outputRoot: root, channelCounts: finalCounts, channelDefaultCount: def, menuDefaults: prefs, collectHistory, historyRetentionDays: retention, notifyOnDone, autoOpenFolder, showThumbnails, sponsorblock, fasterDownloads, ...namingFlat }, () => {
       setOutputRoot(root); setCounts(finalCounts); setDefaultCount(def);
       setStatus('saved'); setTimeout(() => setStatus('idle'), 2000);
     });
@@ -433,6 +437,24 @@ function SettingsSection() {
               <span>Show video thumbnails in the playlist/channel download list</span>
             </label>
             <p style={muted}>Each download also writes a <code style={inlineCode}>.txt</code> summary (title, channel, URL, files, path) into its folder — toggle that under “File naming &amp; folders”.</p>
+          </Field>
+
+          <div style={divider} />
+
+          <Field label="Advanced downloads">
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+              <span style={{ fontSize: 13, color: '#aaa' }}>SponsorBlock:</span>
+              <select value={sponsorblock} onChange={(e) => setSponsorblock(e.target.value as 'off' | 'mark' | 'remove')} style={{ ...input, width: 'auto', padding: '6px 8px', fontFamily: 'inherit' }}>
+                <option value="off">Off</option>
+                <option value="mark">Mark segments (chapters)</option>
+                <option value="remove">Remove segments (re-encodes)</option>
+              </select>
+            </div>
+            <label style={checkRow}>
+              <input type="checkbox" checked={fasterDownloads} onChange={(e) => setFasterDownloads(e.target.checked)} style={cbx} />
+              <span>Faster downloads (parallel fragments)</span>
+            </label>
+            <p style={muted}>SponsorBlock skips sponsor/self-promo/interaction segments. “Mark” just adds chapters (lossless); “Remove” cuts them out and re-encodes (slower).</p>
           </Field>
 
           <div style={divider} />

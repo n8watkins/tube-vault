@@ -15,6 +15,7 @@ const CHANNEL_BTN_ID = 'tube-vault-channel-btn';
 let currentUrl = location.href;
 let videoInjected = false;
 let playlistInjected = false;
+let channelInjected = false;
 
 let videoRoot: Root | null = null;
 let playlistRoot: Root | null = null;
@@ -22,6 +23,7 @@ let channelRoot: Root | null = null;
 
 let videoTimerId: ReturnType<typeof setTimeout> | null = null;
 let playlistTimerId: ReturnType<typeof setTimeout> | null = null;
+let channelTimerId: ReturnType<typeof setTimeout> | null = null;
 
 // Tracks which channel the channel-button belongs to, so same-channel SPA nav
 // (e.g. Home → Videos, including our own Popular-sort click) doesn't tear it down.
@@ -410,6 +412,7 @@ function injectChannelButton(): void {
     />
   );
   channelKey = channelBasePath();
+  channelInjected = true;
 }
 
 // ── Cleanup ───────────────────────────────────────────────────────────────────
@@ -418,6 +421,7 @@ function removeChannelButton() {
   channelRoot?.unmount();
   channelRoot = null;
   document.getElementById(CHANNEL_BTN_ID)?.remove();
+  channelInjected = false;
 }
 
 function removeVideoButton() {
@@ -444,6 +448,7 @@ function onNavigate() {
 
   if (videoTimerId !== null) { clearTimeout(videoTimerId); videoTimerId = null; }
   if (playlistTimerId !== null) { clearTimeout(playlistTimerId); playlistTimerId = null; }
+  if (channelTimerId !== null) { clearTimeout(channelTimerId); channelTimerId = null; }
 
   if (wasShorts && !isNowShorts) stopShortsObservers();
 
@@ -459,6 +464,10 @@ function onNavigate() {
   }
   if (isWatchPage()) videoTimerId = setTimeout(() => tryInjectVideo(10), 500);
   if (isPlaylistContext()) playlistTimerId = setTimeout(() => tryInjectPlaylist(10), 500);
+  // Re-inject on every channel nav. The guard inside tryInjectChannel makes this a
+  // no-op when the button persisted (same-channel nav), and a real retry when it
+  // was torn down (moving to a different channel).
+  if (isChannelPage()) channelTimerId = setTimeout(() => tryInjectChannel(15), 300);
 }
 
 function tryInjectVideo(attempts: number) {
@@ -474,6 +483,20 @@ function tryInjectPlaylist(attempts: number) {
   injectPlaylistButton();
   if (!playlistInjected && attempts > 0) {
     playlistTimerId = setTimeout(() => tryInjectPlaylist(attempts - 1), 400);
+  }
+}
+
+// Channel headers (yt-flexible-actions-view-model) mount noticeably later than
+// the watch/playlist anchors, so — like those — channel needs its own retry chain
+// rather than waiting on the 1.5s heartbeat. Without this, a freshly-loaded
+// channel's button only appears on a later heartbeat tick (or not at all if the
+// anchor settled between ticks); the persisted button on same-channel back-nav
+// masked the gap.
+function tryInjectChannel(attempts: number) {
+  if (document.getElementById(CHANNEL_BTN_ID)) return;
+  injectChannelButton();
+  if (!channelInjected && attempts > 0) {
+    channelTimerId = setTimeout(() => tryInjectChannel(attempts - 1), 400);
   }
 }
 
@@ -541,5 +564,7 @@ setInterval(() => {
   syncForCurrentPage();
 }, 1500);
 
-// Initial injection on first load.
+// Initial injection on first load. A fresh channel URL doesn't pass through
+// onNavigate, so kick its retry chain here too.
 syncForCurrentPage();
+if (isChannelPage()) channelTimerId = setTimeout(() => tryInjectChannel(15), 300);

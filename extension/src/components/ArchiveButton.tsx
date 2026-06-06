@@ -33,6 +33,9 @@ interface ChannelConfig {
   readShownUrls: (count: number) => string[];
 }
 
+// One row in the single-video confirmation breakdown (a selected component).
+type ConfirmRow = { label: string; bytes: number | null; title?: string };
+
 function formatBytes(b: number | null | undefined): string {
   if (!b || b <= 0) return 'unknown';
   if (b >= 1e9) return `${(b / 1e9).toFixed(1)} GB`;
@@ -66,16 +69,6 @@ function probeVideo(url: string, components: Record<string, unknown>): Promise<{
   return new Promise((res) =>
     chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: { action: 'probe', url, components } },
       (r) => res(chrome.runtime.lastError || !r?.ok ? null : r)));
-}
-
-// Human summary of the selected components (for the single-video confirm).
-function componentSummary(m: MenuState): string {
-  const parts: string[] = [];
-  if (m.video) parts.push(`Video ${m.videoQuality === 'best' ? 'best' : m.videoQuality + 'p'} ${m.videoFormat}`);
-  if (m.audio) parts.push(`Audio ${m.audioFormat}`);
-  if (m.thumbnail) parts.push('Thumbnail');
-  if (m.metadata) parts.push('Metadata');
-  return parts.join('  ·  ') || 'Nothing selected';
 }
 
 interface Props {
@@ -221,19 +214,43 @@ export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp
       return;
     }
 
-    // Single video: probe for title/size, then show a confirmation (with a
-    // duplicate warning if we've grabbed it before) before queueing.
+    // Single video: probe each selected component for its own size, then show a
+    // confirmation with a per-component breakdown + thumbnail (and a duplicate
+    // warning if we've grabbed it before) before queueing.
     const url = getUrl();
+    const id = idOf(url);
+    const thumbUrl = id ? `https://i.ytimg.com/vi/${id}/mqdefault.jpg` : '';
     const pageTitle = document.title.replace(/\s*-\s*YouTube.*$/, '').trim() || 'Video';
     showToast('Checking video…');
-    Promise.all([getDownloadedMap(), probeVideo(url, components)]).then(([dl, p]) => {
-      const id = idOf(url);
+
+    // Video/audio are probed individually so each row shows its own size; the
+    // thumbnail/metadata sidecars are tiny fixed sizes (mirrors helper sidecarBytes).
+    const THUMB_BYTES = 120_000;
+    const META_BYTES = 100_000;
+    const rowProbes: Promise<ConfirmRow>[] = [];
+    if (menuState.video) {
+      const q = menuState.videoQuality === 'best' ? 'best' : `${menuState.videoQuality}p`;
+      rowProbes.push(
+        probeVideo(url, { video: { quality: menuState.videoQuality, format: menuState.videoFormat } })
+          .then((p) => ({ label: `Video · ${q} ${menuState.videoFormat}`, bytes: p?.bytes ?? null, title: p?.title })),
+      );
+    }
+    if (menuState.audio) {
+      rowProbes.push(
+        probeVideo(url, { audio: { format: menuState.audioFormat } })
+          .then((p) => ({ label: `Audio · ${menuState.audioFormat}`, bytes: p?.bytes ?? null, title: p?.title })),
+      );
+    }
+    if (menuState.thumbnail) rowProbes.push(Promise.resolve({ label: 'Thumbnail · jpg', bytes: THUMB_BYTES }));
+    if (menuState.metadata) rowProbes.push(Promise.resolve({ label: 'Metadata · info.json + description', bytes: META_BYTES }));
+
+    Promise.all([getDownloadedMap(), Promise.all(rowProbes)]).then(([dl, rows]) => {
       const dupWhen = (id && dl.get(id)) || 0;
-      const title = p?.title || pageTitle;
-      const sizeText = p?.bytes ? formatBytes(p.bytes) : 'sized at download';
-      showVideoConfirm(title, componentSummary(menuState), sizeText, dupWhen).then((ok) => {
+      const title = rows.find((r) => r.title)?.title || pageTitle;
+      const total = rows.reduce((a, r) => a + (r.bytes ?? 0), 0);
+      showVideoConfirm(title, thumbUrl, rows, total, dupWhen).then((ok) => {
         if (!ok) { setBtnState('idle'); return; }
-        enqueue([{ url, title, bytes: p?.bytes ?? null }], components);
+        enqueue([{ url, title, bytes: total > 0 ? total : null }], components);
       });
     });
   }
@@ -399,9 +416,10 @@ export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp
 // Batch selection dialog (our own, not window.confirm): a checkbox list of every
 // video in the playlist/channel, all checked by default. Uncheck the ones to skip.
 // Resolves the picked items, or null on cancel (backdrop click / Esc).
-// Single-video confirmation: title, what you're grabbing, size, and a duplicate
-// warning if applicable. Backdrop/Esc = cancel, Enter/Download = confirm.
-function showVideoConfirm(title: string, components: string, sizeText: string, dupWhen: number): Promise<boolean> {
+// Single-video confirmation: thumbnail + title, a per-component size breakdown
+// with a total, and a duplicate warning if applicable. Backdrop/Esc = cancel,
+// Enter/Download = confirm.
+function showVideoConfirm(title: string, thumbUrl: string, rows: ConfirmRow[], totalBytes: number, dupWhen: number): Promise<boolean> {
   return new Promise((resolve) => {
     const backdrop = document.createElement('div');
     Object.assign(backdrop.style, {
@@ -412,29 +430,60 @@ function showVideoConfirm(title: string, components: string, sizeText: string, d
     const card = document.createElement('div');
     Object.assign(card.style, {
       background: '#1c1c1c', border: '1px solid #2e2e2e', borderRadius: '16px',
-      boxShadow: '0 16px 48px rgba(0,0,0,0.7)', maxWidth: '440px', width: '90%', color: '#fff', padding: '24px',
+      boxShadow: '0 16px 48px rgba(0,0,0,0.7)', maxWidth: '460px', width: '90%', color: '#fff', padding: '24px',
     });
     card.onclick = (e) => e.stopPropagation();
 
     const heading = document.createElement('div');
     heading.textContent = 'Download this video?';
-    Object.assign(heading.style, { fontSize: '15px', color: '#aaa', fontWeight: '600', marginBottom: '10px' });
+    Object.assign(heading.style, { fontSize: '15px', color: '#aaa', fontWeight: '600', marginBottom: '14px' });
 
+    // Thumbnail next to the title.
+    const headRow = document.createElement('div');
+    Object.assign(headRow.style, { display: 'flex', gap: '14px', alignItems: 'flex-start', marginBottom: '18px' });
+    if (thumbUrl) {
+      const img = document.createElement('img');
+      img.src = thumbUrl;
+      Object.assign(img.style, { width: '120px', height: '68px', objectFit: 'cover', borderRadius: '8px', flexShrink: '0', background: '#000' });
+      img.onerror = () => { img.style.display = 'none'; };
+      headRow.append(img);
+    }
     const t = document.createElement('div');
     t.textContent = title;
-    Object.assign(t.style, { fontSize: '18px', fontWeight: '700', marginBottom: '16px', lineHeight: '1.35' });
+    Object.assign(t.style, { flex: '1', minWidth: '0', fontSize: '16px', fontWeight: '700', lineHeight: '1.3' });
+    headRow.append(t);
 
-    const meta = document.createElement('div');
-    Object.assign(meta.style, { fontSize: '14px', color: '#ccc', lineHeight: '1.7', marginBottom: '18px' });
-    meta.innerHTML = '';
-    const cRow = document.createElement('div'); cRow.textContent = components; meta.append(cRow);
-    const sRow = document.createElement('div'); sRow.textContent = `Size: ${sizeText}`; sRow.style.color = '#999'; meta.append(sRow);
+    // Per-component breakdown, one row each, plus a total.
+    const listEl = document.createElement('div');
+    Object.assign(listEl.style, { border: '1px solid #2e2e2e', borderRadius: '10px', overflow: 'hidden', marginBottom: '18px' });
+    const anyUnknown = rows.some((r) => r.bytes == null);
+    rows.forEach((rowData, i) => {
+      const r = document.createElement('div');
+      Object.assign(r.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '12px', padding: '10px 14px', borderBottom: i < rows.length - 1 ? '1px solid #262626' : 'none' });
+      const lbl = document.createElement('div');
+      lbl.textContent = rowData.label;
+      Object.assign(lbl.style, { fontSize: '13px', color: '#ddd' });
+      const sz = document.createElement('div');
+      sz.textContent = rowData.bytes != null ? formatBytes(rowData.bytes) : 'sized at download';
+      Object.assign(sz.style, { fontSize: '13px', color: '#999', fontWeight: '600', flexShrink: '0' });
+      r.append(lbl, sz);
+      listEl.append(r);
+    });
+    const totalRow = document.createElement('div');
+    Object.assign(totalRow.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', background: 'rgba(255,255,255,0.04)', borderTop: '1px solid #2e2e2e' });
+    const tl = document.createElement('div'); tl.textContent = 'Total';
+    Object.assign(tl.style, { fontSize: '13px', color: '#fff', fontWeight: '700' });
+    const tr = document.createElement('div');
+    tr.textContent = totalBytes > 0 ? `${anyUnknown ? '~' : ''}${formatBytes(totalBytes)}` : 'sized at download';
+    Object.assign(tr.style, { fontSize: '13px', color: '#fff', fontWeight: '700' });
+    totalRow.append(tl, tr);
+    listEl.append(totalRow);
 
+    let warn: HTMLDivElement | null = null;
     if (dupWhen) {
-      const warn = document.createElement('div');
+      warn = document.createElement('div');
       warn.textContent = `⚠ Already downloaded ${new Date(dupWhen).toLocaleDateString()} — this will download it again.`;
       Object.assign(warn.style, { fontSize: '13px', color: '#ffb74d', background: 'rgba(255,167,38,0.1)', border: '1px solid rgba(255,167,38,0.3)', borderRadius: '8px', padding: '8px 12px', marginBottom: '18px', lineHeight: '1.4' });
-      meta.after(warn);
     }
 
     const row = document.createElement('div');
@@ -457,7 +506,9 @@ function showVideoConfirm(title: string, components: string, sizeText: string, d
     go.onclick = () => cleanup(true);
     document.addEventListener('keydown', onKey, true);
 
-    card.append(heading, t, meta, row);
+    card.append(heading, headRow, listEl);
+    if (warn) card.append(warn);
+    card.append(row);
     backdrop.appendChild(card);
     document.body.appendChild(backdrop);
     go.focus();

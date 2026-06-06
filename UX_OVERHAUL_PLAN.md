@@ -17,6 +17,27 @@ modal + single-video confirm), `extension/src/components/ArchiveMenu.tsx`
 
 ---
 
+## Progress log
+
+- ✅ **v0.3.65** — Removed Support tab (4.9); added "Notifications & folders"
+  settings: notify-on-done toggle + auto-open-folder (single videos), wired in
+  the service worker.
+- ✅ **v0.3.66** (+ helper) — **Subtitles** download component (menu + button +
+  helper `--write-subs --write-auto-subs --sub-langs en.* --convert-subs srt`).
+- ✅ **v0.3.67** — Channel count presets are now **add/remove chips** (digits
+  only) (4.2).
+- ✅ **v0.3.68** — Downloads tab: **Export moved into History** (4.4), **on-brand
+  Clear-history confirm** via reusable `ConfirmDialog` (4.5 + Area 5 #1), **larger
+  pills/rows/text** (4.6); **Setup enlarged + GitHub link** (4.8).
+
+**Remaining:** Area 1 (batch modal: thumbnails, per-video sizes, width,
+cancel-left/download-icon, top summary, extra info), Area 2 (confirm
+cancel-left/icon), Area 3 (popup: recent list, header restructure, branding),
+4.1 branding icon, 4.3 decoupled default prefs, 4.7 status caching, Phase 5
+(SponsorBlock, `-N` faster downloads).
+
+---
+
 ## Decisions (locked 2026-06-05)
 
 - **Support tab:** **removed entirely** — project is private; no support/sponsor

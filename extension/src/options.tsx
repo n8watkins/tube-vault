@@ -3,7 +3,9 @@ import { createRoot } from 'react-dom/client';
 import { FiFolder, FiRefreshCw, FiGithub, FiDownload, FiSettings, FiActivity, FiTool } from 'react-icons/fi';
 import { DEFAULT_CHANNEL_COUNTS, DEFAULT_CHANNEL_COUNT, NamingOptions, defaultNaming, NAMING_KEYS, MenuState, defaultMenuState, VideoQuality, VideoFormat, AudioFormat } from './types';
 
-export const DEFAULT_OUTPUT_ROOT = 'C:\\Users\\natha\\Videos\\Youtube Downloads';
+// Empty = "let the helper pick the OS-appropriate default". The real path is
+// reported by the helper on ping (see helperDefault below) — no hardcoded user.
+export const DEFAULT_OUTPUT_ROOT = '';
 
 type Tab = 'downloads' | 'settings' | 'status' | 'setup';
 
@@ -258,6 +260,15 @@ function SettingsSection() {
   const [sponsorblock, setSponsorblock] = useState<'off' | 'mark' | 'remove'>('off');
   const [fasterDownloads, setFasterDownloads] = useState(true);
   const [status, setStatus] = useState<'idle' | 'saved'>('idle');
+  const [helperDefault, setHelperDefault] = useState('');
+
+  // Ask the helper for the OS-resolved default save folder, used as the
+  // placeholder / "Default:" hint so it's correct on Windows, WSL, macOS, Linux.
+  useEffect(() => {
+    chrome.runtime.sendMessage({ type: 'TUBE_VAULT_PING' }, (resp) => {
+      if (!chrome.runtime.lastError && resp?.ok && resp.defaultRoot) setHelperDefault(resp.defaultRoot);
+    });
+  }, []);
 
   useEffect(() => {
     const namingDefaults = Object.fromEntries(
@@ -293,7 +304,7 @@ function SettingsSection() {
   const removeCount = (n: number) => setCounts((c) => c.filter((x) => x !== n));
 
   function save() {
-    const root = outputRoot.trim() || DEFAULT_OUTPUT_ROOT;
+    const root = outputRoot.trim() || helperDefault || DEFAULT_OUTPUT_ROOT;
     const finalCounts = counts.length ? counts : DEFAULT_CHANNEL_COUNTS;
     const def = finalCounts.includes(defaultCount) ? defaultCount : finalCounts[finalCounts.length - 1];
     const namingFlat = Object.fromEntries(
@@ -320,9 +331,9 @@ function SettingsSection() {
         <div style={settingsGrid}>
           <div style={spanAll}>
             <Field label="Download Folder">
-              <p style={hint}>Local folder where downloads are saved. On Windows/WSL use a Windows path (e.g. <code style={inlineCode}>C:\Users\you\Videos</code>); on macOS or Linux use a native path (e.g. <code style={inlineCode}>/home/you/Videos</code>).</p>
-              <input style={input} value={outputRoot} onChange={(e) => setOutputRoot(e.target.value)} placeholder={DEFAULT_OUTPUT_ROOT} spellCheck={false} />
-              <p style={muted}>Default: {DEFAULT_OUTPUT_ROOT}</p>
+              <p style={hint}>Local folder where downloads are saved. On Windows/WSL use a Windows path (e.g. <code style={inlineCode}>C:\Users\you\Videos</code>); on macOS or Linux use a native path (e.g. <code style={inlineCode}>/home/you/Videos</code>). Leave blank to use the default below.</p>
+              <input style={input} value={outputRoot} onChange={(e) => setOutputRoot(e.target.value)} placeholder={helperDefault || 'Detected automatically once the helper connects'} spellCheck={false} />
+              <p style={muted}>Default: {helperDefault || '…detecting from helper'}</p>
             </Field>
           </div>
           <Field label="File naming & folders">

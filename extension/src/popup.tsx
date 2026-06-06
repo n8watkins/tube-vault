@@ -2,7 +2,9 @@ import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { FiSettings, FiClock, FiFolder } from 'react-icons/fi';
 
-const DEFAULT_OUTPUT_ROOT = 'C:\\Users\\natha\\Videos\\Youtube Downloads';
+// Empty = let the helper resolve the OS-appropriate default; the real path comes
+// back on ping (helperDefault). No hardcoded username — works on any platform.
+const DEFAULT_OUTPUT_ROOT = '';
 
 // Open the options page on a specific tab (popup → options deep-link via storage).
 function openOptions(tab: 'downloads' | 'settings' | 'status' | 'setup') {
@@ -44,6 +46,7 @@ function App() {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [helper, setHelper] = useState<'checking' | 'ok' | 'error'>('checking');
   const [outputRoot, setOutputRoot] = useState(DEFAULT_OUTPUT_ROOT);
+  const [helperDefault, setHelperDefault] = useState('');
   const [confirmId, setConfirmId] = useState<string | null>(null);  // job id or "batch:<id>"
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
@@ -56,7 +59,10 @@ function App() {
     };
     chrome.storage.onChanged.addListener(onChg);
     chrome.storage.local.get({ outputRoot: DEFAULT_OUTPUT_ROOT }, (s) => setOutputRoot(s.outputRoot || DEFAULT_OUTPUT_ROOT));
-    chrome.runtime.sendMessage({ type: 'TUBE_VAULT_PING' }, (r) => setHelper(chrome.runtime.lastError || !r?.ok ? 'error' : 'ok'));
+    chrome.runtime.sendMessage({ type: 'TUBE_VAULT_PING' }, (r) => {
+      setHelper(chrome.runtime.lastError || !r?.ok ? 'error' : 'ok');
+      if (!chrome.runtime.lastError && r?.ok && r.defaultRoot) setHelperDefault(r.defaultRoot);
+    });
     return () => chrome.storage.onChanged.removeListener(onChg);
   }, []);
 
@@ -184,7 +190,7 @@ function App() {
       </div>
 
       <div style={footer}>
-        <div style={{ fontSize: 10, color: '#666', wordBreak: 'break-all', flex: 1, minWidth: 0 }}>{outputRoot}</div>
+        <div style={{ fontSize: 10, color: '#666', wordBreak: 'break-all', flex: 1, minWidth: 0 }}>{outputRoot || helperDefault}</div>
         <span style={versionPill}>v{version}</span>
       </div>
     </div>

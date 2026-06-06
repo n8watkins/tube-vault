@@ -1,7 +1,10 @@
 import { NamingOptions, defaultNaming, NAMING_KEYS } from './types';
 
 const NATIVE_HOST = 'com.tube_vault.helper';
-const DEFAULT_OUTPUT_ROOT = 'C:\\Users\\natha\\Videos\\Youtube Downloads';
+// Empty = "let the helper pick the OS-appropriate default" (Windows/WSL Videos
+// folder, or ~/Videos on macOS/Linux). The real path is seeded into storage on
+// the first successful ping — see TUBE_VAULT_PING below. No hardcoded username.
+const DEFAULT_OUTPUT_ROOT = '';
 const JOBS_KEY = 'tvJobs';
 const MAX_HISTORY = 100;  // finished jobs retained for the History page
 
@@ -230,7 +233,17 @@ async function cancelBatch(batchId: string): Promise<void> {
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (msg.type === 'TUBE_VAULT_PING') {
     chrome.runtime.sendNativeMessage(NATIVE_HOST, { action: 'ping' }, (response) => {
-      sendResponse(chrome.runtime.lastError || !response?.ok ? { ok: false, error: chrome.runtime.lastError?.message } : { ok: true, version: response.version });
+      if (chrome.runtime.lastError || !response?.ok) {
+        sendResponse({ ok: false, error: chrome.runtime.lastError?.message });
+        return;
+      }
+      // Seed the OS-resolved save folder the first time we reach the helper, so a
+      // fresh install on any platform shows a real default instead of a blank.
+      if (response.defaultRoot && !cachedSettings.outputRoot) {
+        cachedSettings.outputRoot = response.defaultRoot;
+        chrome.storage.local.set({ outputRoot: response.defaultRoot });
+      }
+      sendResponse({ ok: true, version: response.version, platform: response.platform, defaultRoot: response.defaultRoot });
     });
     return true;
   }

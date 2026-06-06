@@ -12,6 +12,8 @@ interface PlanItem {
   url: string;
   title: string;
   bytes: number | null;
+  duration?: number | null;  // seconds, filled lazily by the row probe
+  views?: number | null;     // filled lazily by the row probe
 }
 interface ChannelPlan {
   totalVideos: number | null;
@@ -41,6 +43,45 @@ function formatBytes(b: number | null | undefined): string {
   if (b >= 1e9) return `${(b / 1e9).toFixed(1)} GB`;
   if (b >= 1e6) return `${Math.round(b / 1e6)} MB`;
   return `${Math.round(b / 1e3)} KB`;
+}
+
+function fmtDuration(s: number | null | undefined): string {
+  if (!s || !Number.isFinite(s) || s <= 0) return '';
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = Math.floor(s % 60);
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}` : `${m}:${String(sec).padStart(2, '0')}`;
+}
+
+function fmtViews(n: number | null | undefined): string {
+  if (n == null || !Number.isFinite(n) || n < 0) return '';
+  if (n >= 1e9) return `${(n / 1e9).toFixed(1)}B views`;
+  if (n >= 1e6) return `${(n / 1e6).toFixed(1)}M views`;
+  if (n >= 1e3) return `${(n / 1e3).toFixed(1)}K views`;
+  return `${n} views`;
+}
+
+// Feather "download" glyph as a detached SVG, for the hand-built (non-React) dialogs.
+function downloadIconSvg(size = 17): SVGSVGElement {
+  const ns = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(ns, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24'); svg.setAttribute('width', String(size)); svg.setAttribute('height', String(size));
+  svg.setAttribute('fill', 'none'); svg.setAttribute('stroke', 'currentColor'); svg.setAttribute('stroke-width', '2');
+  svg.setAttribute('stroke-linecap', 'round'); svg.setAttribute('stroke-linejoin', 'round');
+  const path = document.createElementNS(ns, 'path'); path.setAttribute('d', 'M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4');
+  const poly = document.createElementNS(ns, 'polyline'); poly.setAttribute('points', '7 10 12 15 17 10');
+  const line = document.createElementNS(ns, 'line'); line.setAttribute('x1', '12'); line.setAttribute('y1', '15'); line.setAttribute('x2', '12'); line.setAttribute('y2', '3');
+  svg.append(path, poly, line);
+  return svg;
+}
+
+// Compact "what we're downloading" summary for the batch header.
+function componentsSummary(m: MenuState): string {
+  const parts: string[] = [];
+  if (m.video) parts.push(`Video ${m.videoQuality === 'best' ? 'best' : m.videoQuality + 'p'} ${m.videoFormat}`);
+  if (m.audio) parts.push(`Audio ${m.audioFormat}`);
+  if (m.subtitles) parts.push('Subtitles');
+  if (m.thumbnail) parts.push('Thumbnail');
+  if (m.metadata) parts.push('Metadata');
+  return parts.join(' · ');
 }
 
 // Video id from a watch URL (for duplicate detection).
@@ -76,8 +117,8 @@ function getDownloadedMap(): Promise<Map<string, number>> {
   });
 }
 
-// Probe one video (title + component-aware size) via the background worker.
-function probeVideo(url: string, components: Record<string, unknown>): Promise<{ title?: string; bytes?: number } | null> {
+// Probe one video (title + component-aware size + duration + views) via the worker.
+function probeVideo(url: string, components: Record<string, unknown>): Promise<{ title?: string; bytes?: number; duration?: number; views?: number } | null> {
   return new Promise((res) =>
     chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: { action: 'probe', url, components } },
       (r) => res(chrome.runtime.lastError || !r?.ok ? null : r)));
@@ -117,6 +158,7 @@ export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp
   const [chanCounts, setChanCounts] = useState<number[]>(DEFAULT_CHANNEL_COUNTS);
   const [chanVideoCount, setChanVideoCount] = useState<number | null>(null);
   const [chanSortState, setChanSortState] = useState<'popular' | 'other' | null>(null);
+  const [showThumbs, setShowThumbs] = useState(true);
   const defaultedMode = useRef(false);
 
   useEffect(() => {
@@ -133,8 +175,9 @@ export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp
 
   // Apply the user's saved default download preferences to the menu.
   useEffect(() => {
-    chrome.storage.local.get({ menuDefaults: null }, (s) => {
+    chrome.storage.local.get({ menuDefaults: null, showThumbnails: true }, (s) => {
       if (s.menuDefaults && typeof s.menuDefaults === 'object') setMenuState((m) => ({ ...m, ...s.menuDefaults }));
+      setShowThumbs(s.showThumbnails !== false);
     });
   }, []);
 
@@ -291,8 +334,10 @@ export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp
         name ? `Download “${name}”?` : `Download this ${playlistNoun.toLowerCase()}?`,
         `${name ? name + ' · ' : ''}${n} video${n === 1 ? '' : 's'}`,
         plan.items,
-        dlIds,
-        plan.estBytes,
+        {
+          downloaded: dlIds, estBytes: plan.estBytes, summary: componentsSummary(menuState), showThumbnails: showThumbs,
+          probe: (u) => probeVideo(u, components).then((p) => ({ bytes: p?.bytes ?? null, duration: p?.duration ?? null, views: p?.views ?? null })),
+        },
       ).then((picked) => {
         if (!picked || !picked.length) { setBtnState('idle'); return; }
         enqueue(picked, components, name || `${playlistNoun} — ${picked.length} video${picked.length === 1 ? '' : 's'}`, name ? `${playlistNoun}_${name}` : playlistNoun);
@@ -350,8 +395,10 @@ export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp
         'Download from this channel?',
         cap,
         plan.items,
-        dlIds,
-        plan.estBytes,
+        {
+          downloaded: dlIds, estBytes: plan.estBytes, summary: componentsSummary(menuState), showThumbnails: showThumbs,
+          probe: (u) => probeVideo(u, components).then((p) => ({ bytes: p?.bytes ?? null, duration: p?.duration ?? null, views: p?.views ?? null })),
+        },
       ).then((picked) => {
         if (!picked || !picked.length) { setBtnState('idle'); return; }
         enqueue(picked, components, cap, category);
@@ -504,13 +551,14 @@ function showVideoConfirm(title: string, thumbUrl: string, rows: ConfirmRow[], t
     }
 
     const row = document.createElement('div');
-    Object.assign(row.style, { display: 'flex', gap: '10px', justifyContent: 'flex-end' });
+    Object.assign(row.style, { display: 'flex', gap: '10px', justifyContent: 'space-between', alignItems: 'center' });
     const cancel = document.createElement('button');
     cancel.textContent = 'Cancel';
-    Object.assign(cancel.style, { padding: '10px 18px', borderRadius: '10px', border: '1px solid #444', background: '#2b2b2b', color: '#fff', fontSize: '14px', fontWeight: '600', cursor: 'pointer', fontFamily: 'inherit' });
+    Object.assign(cancel.style, { padding: '11px 20px', borderRadius: '10px', border: '1px solid #444', background: '#2b2b2b', color: '#fff', fontSize: '14px', fontWeight: '600', cursor: 'pointer', fontFamily: 'inherit' });
     const go = document.createElement('button');
-    go.textContent = 'Download';
-    Object.assign(go.style, { padding: '10px 18px', borderRadius: '10px', border: 'none', background: '#cc0000', color: '#fff', fontSize: '14px', fontWeight: '700', cursor: 'pointer', fontFamily: 'inherit' });
+    Object.assign(go.style, { display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '11px 22px', borderRadius: '10px', border: 'none', background: '#cc0000', color: '#fff', fontSize: '14px', fontWeight: '700', cursor: 'pointer', fontFamily: 'inherit' });
+    const goLabel = document.createElement('span'); goLabel.textContent = 'Download';
+    go.append(downloadIconSvg(17), goLabel);
     row.append(cancel, go);
 
     const onKey = (e: KeyboardEvent) => {
@@ -532,7 +580,14 @@ function showVideoConfirm(title: string, thumbUrl: string, rows: ConfirmRow[], t
   });
 }
 
-function showSelection(title: string, subtitle: string, items: PlanItem[], downloaded?: Map<string, number>, estBytes?: number | null): Promise<PlanItem[] | null> {
+function showSelection(title: string, subtitle: string, items: PlanItem[], opts: {
+  downloaded?: Map<string, number>;
+  estBytes?: number | null;
+  summary?: string;
+  showThumbnails?: boolean;
+  probe?: (url: string) => Promise<{ bytes: number | null; duration: number | null; views: number | null }>;
+} = {}): Promise<PlanItem[] | null> {
+  const { downloaded, estBytes, summary, showThumbnails, probe } = opts;
   return new Promise((resolve) => {
     // Duplicate protection: videos already in download history are pre-unchecked
     // (overridable). `when` is the date we last downloaded each (0 = unknown date).
@@ -551,8 +606,8 @@ function showSelection(title: string, subtitle: string, items: PlanItem[], downl
     const card = document.createElement('div');
     Object.assign(card.style, {
       background: '#1c1c1c', border: '1px solid #2e2e2e', borderRadius: '16px',
-      boxShadow: '0 16px 48px rgba(0,0,0,0.7)', maxWidth: '520px', width: '92%',
-      maxHeight: '80vh', display: 'flex', flexDirection: 'column', color: '#fff', overflow: 'hidden',
+      boxShadow: '0 16px 48px rgba(0,0,0,0.7)', maxWidth: '700px', width: '94%',
+      maxHeight: '82vh', display: 'flex', flexDirection: 'column', color: '#fff', overflow: 'hidden',
     });
     card.onclick = (e) => e.stopPropagation();
 
@@ -566,6 +621,12 @@ function showSelection(title: string, subtitle: string, items: PlanItem[], downl
     const dupNote = dupCount ? `  ·  ${dupCount} already downloaded (unchecked)` : '';
     Object.assign(sub.style, { fontSize: '13px', color: '#aaa', lineHeight: '1.5' });
     head.append(h, sub);  // text set live in refresh()
+    if (summary) {
+      const sumEl = document.createElement('div');
+      sumEl.textContent = `Downloading per video:  ${summary}`;
+      Object.assign(sumEl.style, { fontSize: '12px', color: '#ff8a80', marginTop: '7px', fontWeight: '600' });
+      head.append(sumEl);
+    }
 
     // Select-all / deselect-all toggle row
     const toolRow = document.createElement('div');
@@ -583,23 +644,24 @@ function showSelection(title: string, subtitle: string, items: PlanItem[], downl
     // Average size of the videos we already know, used to estimate selected videos
     // that are only sized at download time (playlist/channel "all" mode) — so the
     // total still moves when you check/uncheck an unsized video.
-    const knownSizes = items.map((it) => it.bytes || 0).filter((b) => b > 0);
-    // When no individual sizes are known (channel "all" / playlist mode, sized at
-    // download), fall back to the plan's sampled average so the estimate still shows
-    // and still tracks the selection instead of collapsing to "sized at download".
+    // Average known size — recomputed as row probes fill sizes in — used to
+    // estimate not-yet-sized selected videos so the total keeps refining. Falls
+    // back to the plan's sampled average before anything is probed.
     const planAvg = estBytes && items.length ? estBytes / items.length : 0;
-    const avgKnown = knownSizes.length ? knownSizes.reduce((a, b) => a + b, 0) / knownSizes.length : planAvg;
-    const hasUnknown = items.some((it) => !it.bytes);
+    const currentAvg = () => {
+      const known = items.map((it) => it.bytes || 0).filter((b) => b > 0);
+      return known.length ? known.reduce((a, b) => a + b, 0) / known.length : planAvg;
+    };
     const numSelected = () => checked.filter(Boolean).length;
-    const selectedSize = () => items.reduce(
-      (a, it, i) => (checked[i] ? a + (it.bytes && it.bytes > 0 ? it.bytes : avgKnown) : a), 0,
-    );
+    const selectedSize = () => { const avg = currentAvg(); return items.reduce(
+      (a, it, i) => (checked[i] ? a + (it.bytes && it.bytes > 0 ? it.bytes : avg) : a), 0,
+    ); };
 
     // ── Virtualized list ──────────────────────────────────────────────────────
     // A channel/playlist "all" download can be thousands of videos; one DOM node
     // per row janks the whole page. Render only the rows in (and just around) the
     // viewport, backed by a fixed-height spacer that drives the scrollbar.
-    const ROW_H = 44;
+    const ROW_H = showThumbnails ? 58 : 48;
     const sizer = document.createElement('div');
     Object.assign(sizer.style, { position: 'relative', height: `${items.length * ROW_H}px` });
     list.append(sizer);
@@ -610,29 +672,82 @@ function showSelection(title: string, subtitle: string, items: PlanItem[], downl
       Object.assign(r.style, {
         position: 'absolute', top: `${i * ROW_H}px`, left: '0', right: '0', height: `${ROW_H}px`,
         boxSizing: 'border-box', display: 'flex', alignItems: 'center', gap: '12px',
-        padding: '0 24px', cursor: 'pointer', opacity: checked[i] ? '1' : '0.45',
+        padding: '0 22px', cursor: 'pointer', opacity: checked[i] ? '1' : '0.45',
       });
       const box = document.createElement('div');
       Object.assign(box.style, { width: '18px', height: '18px', borderRadius: '5px', flexShrink: '0', border: '2px solid #cc0000', background: checked[i] ? '#cc0000' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '12px', color: '#fff', fontWeight: '700' });
       box.textContent = checked[i] ? '✓' : '';
+      r.append(box);
+
+      if (showThumbnails) {
+        const id = idOf(it.url);
+        const thumb = document.createElement('img');
+        if (id) thumb.src = `https://i.ytimg.com/vi/${id}/mqdefault.jpg`;
+        thumb.loading = 'lazy';
+        Object.assign(thumb.style, { width: '72px', height: '40px', objectFit: 'cover', borderRadius: '5px', flexShrink: '0', background: '#000' });
+        thumb.onerror = () => { thumb.style.visibility = 'hidden'; };
+        r.append(thumb);
+      }
+
       const tWrap = document.createElement('div');
-      Object.assign(tWrap.style, { flex: '1', minWidth: '0', display: 'flex', alignItems: 'center', gap: '8px' });
+      Object.assign(tWrap.style, { flex: '1', minWidth: '0', display: 'flex', flexDirection: 'column', gap: '2px' });
       const t = document.createElement('div');
       t.textContent = it.title || it.url;
-      Object.assign(t.style, { flex: '1', minWidth: '0', fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
-      tWrap.append(t);
-      if (dup[i]) {
-        const tag = document.createElement('div');
-        tag.textContent = when[i] ? `✓ ${new Date(when[i]).toLocaleDateString()}` : '✓ downloaded';
-        Object.assign(tag.style, { flexShrink: '0', fontSize: '11px', color: '#81c784' });
-        tWrap.append(tag);
-      }
+      Object.assign(t.style, { fontSize: '14px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
+      const meta = document.createElement('div');
+      Object.assign(meta.style, { fontSize: '11.5px', color: '#888', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' });
+      const metaParts = [fmtDuration(it.duration), fmtViews(it.views)].filter(Boolean);
+      if (dup[i]) metaParts.push(when[i] ? `✓ downloaded ${new Date(when[i]).toLocaleDateString()}` : '✓ downloaded');
+      meta.textContent = metaParts.join('  ·  ');
+      if (dup[i]) meta.style.color = '#81c784';
+      tWrap.append(t, meta);
+
       const sz = document.createElement('div');
-      sz.textContent = it.bytes ? formatBytes(it.bytes) : '—';
-      Object.assign(sz.style, { fontSize: '12px', color: '#888', flexShrink: '0', minWidth: '54px', textAlign: 'right' });
-      r.append(box, tWrap, sz);
+      sz.textContent = it.bytes ? formatBytes(it.bytes) : (probingSet.has(i) ? '…' : '—');
+      Object.assign(sz.style, { fontSize: '12px', color: '#999', flexShrink: '0', minWidth: '58px', textAlign: 'right', fontWeight: '600' });
+      r.append(tWrap, sz);
       r.onclick = () => { checked[i] = !checked[i]; refresh(); };
       return r;
+    }
+
+    // ── Progressive sizing/info: probe rows as they enter the viewport ─────────
+    // Bounded concurrency so a long playlist never floods YouTube. Each probe
+    // fills the row's size/duration/views, then a coalesced refresh repaints.
+    const probedSet = new Set<number>();
+    const probingSet = new Set<number>();
+    const probeQueue: number[] = [];
+    let activeProbes = 0;
+    const CONCURRENCY = 3;
+    function pumpProbes(): void {
+      while (probe && activeProbes < CONCURRENCY && probeQueue.length) {
+        const i = probeQueue.shift()!;
+        if (probedSet.has(i) || probingSet.has(i)) continue;
+        probingSet.add(i);
+        activeProbes++;
+        probe(items[i].url).then((res) => {
+          if (res) {
+            if (res.bytes != null) items[i].bytes = res.bytes;
+            if (res.duration != null) items[i].duration = res.duration;
+            if (res.views != null) items[i].views = res.views;
+          }
+        }).catch(() => { /* leave as unsized */ }).finally(() => {
+          probedSet.add(i); probingSet.delete(i); activeProbes--;
+          scheduleRefresh(); pumpProbes();
+        });
+      }
+    }
+    function enqueueVisibleProbes(): void {
+      if (!probe) return;
+      for (let i = winStart; i < winEnd; i++) {
+        if (!probedSet.has(i) && !probingSet.has(i)) probeQueue.push(i);
+      }
+      pumpProbes();
+    }
+    let refreshScheduled = false;
+    function scheduleRefresh(): void {
+      if (refreshScheduled) return;
+      refreshScheduled = true;
+      requestAnimationFrame(() => { refreshScheduled = false; refresh(); });
     }
 
     let winStart = -1;
@@ -646,6 +761,7 @@ function showSelection(title: string, subtitle: string, items: PlanItem[], downl
       winStart = start; winEnd = end;
       sizer.replaceChildren();
       for (let i = start; i < end; i++) sizer.append(buildRow(i));
+      enqueueVisibleProbes();
     }
 
     let rafQueued = false;
@@ -658,13 +774,14 @@ function showSelection(title: string, subtitle: string, items: PlanItem[], downl
     const refresh = () => {
       const n = numSelected();
       const size = selectedSize();
+      const stillUnknown = items.some((it) => !it.bytes);
       const sizeStr = size > 0
-        ? `${hasUnknown ? '~' : ''}${formatBytes(size)}${hasUnknown ? ' (est.)' : ''}`
+        ? `${stillUnknown ? '~' : ''}${formatBytes(size)}${stillUnknown ? ' (est.)' : ''}`
         : 'sized at download';
       sub.textContent = `${subtitle}${dupNote}  ·  ${sizeStr}`;
       countLbl.textContent = `${n} of ${items.length}`;
       toggleAll.textContent = n === items.length ? 'Deselect all' : 'Select all';
-      go.textContent = n ? `Download ${n}` : 'Download';
+      goText.textContent = n ? `Download ${n}` : 'Download';
       go.style.opacity = n ? '1' : '0.5';
       go.style.cursor = n ? 'pointer' : 'default';
       renderWindow(true);  // repaint visible rows to reflect the new checked state
@@ -678,12 +795,14 @@ function showSelection(title: string, subtitle: string, items: PlanItem[], downl
 
     // Footer actions
     const foot = document.createElement('div');
-    Object.assign(foot.style, { display: 'flex', gap: '10px', justifyContent: 'flex-end', padding: '14px 24px', borderTop: '1px solid #2a2a2a' });
+    Object.assign(foot.style, { display: 'flex', gap: '10px', justifyContent: 'space-between', alignItems: 'center', padding: '14px 22px', borderTop: '1px solid #2a2a2a' });
     const cancel = document.createElement('button');
     cancel.textContent = 'Cancel';
-    Object.assign(cancel.style, { padding: '10px 18px', borderRadius: '10px', border: '1px solid #444', background: '#2b2b2b', color: '#fff', fontSize: '14px', fontWeight: '600', cursor: 'pointer', fontFamily: 'inherit' });
+    Object.assign(cancel.style, { padding: '11px 20px', borderRadius: '10px', border: '1px solid #444', background: '#2b2b2b', color: '#fff', fontSize: '14px', fontWeight: '600', cursor: 'pointer', fontFamily: 'inherit' });
     const go = document.createElement('button');
-    Object.assign(go.style, { padding: '10px 18px', borderRadius: '10px', border: 'none', background: '#cc0000', color: '#fff', fontSize: '14px', fontWeight: '700', cursor: 'pointer', fontFamily: 'inherit' });
+    Object.assign(go.style, { display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '11px 22px', borderRadius: '10px', border: 'none', background: '#cc0000', color: '#fff', fontSize: '14px', fontWeight: '700', cursor: 'pointer', fontFamily: 'inherit' });
+    const goText = document.createElement('span');
+    go.append(downloadIconSvg(17), goText);
     foot.append(cancel, go);
 
     const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); cleanup(null); } };

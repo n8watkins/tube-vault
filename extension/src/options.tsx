@@ -225,6 +225,7 @@ function SettingsSection() {
   const [retention, setRetention] = useState(0);
   const [notifyOnDone, setNotifyOnDone] = useState(true);
   const [autoOpenFolder, setAutoOpenFolder] = useState(false);
+  const [showThumbnails, setShowThumbnails] = useState(true);
   const [status, setStatus] = useState<'idle' | 'saved'>('idle');
 
   useEffect(() => {
@@ -232,7 +233,7 @@ function SettingsSection() {
       (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [NAMING_KEYS[k], defaultNaming[k]])
     );
     chrome.storage.local.get(
-      { outputRoot: DEFAULT_OUTPUT_ROOT, channelCounts: DEFAULT_CHANNEL_COUNTS, channelDefaultCount: DEFAULT_CHANNEL_COUNT, menuDefaults: defaultMenuState, collectHistory: true, historyRetentionDays: 0, notifyOnDone: true, autoOpenFolder: false, ...namingDefaults },
+      { outputRoot: DEFAULT_OUTPUT_ROOT, channelCounts: DEFAULT_CHANNEL_COUNTS, channelDefaultCount: DEFAULT_CHANNEL_COUNT, menuDefaults: defaultMenuState, collectHistory: true, historyRetentionDays: 0, notifyOnDone: true, autoOpenFolder: false, showThumbnails: true, ...namingDefaults },
       (s) => {
         setOutputRoot(s.outputRoot); setCounts(s.channelCounts as number[]); setDefaultCount(s.channelDefaultCount);
         setPrefs({ ...defaultMenuState, ...(s.menuDefaults || {}) });
@@ -240,6 +241,7 @@ function SettingsSection() {
         setRetention(Number(s.historyRetentionDays) || 0);
         setNotifyOnDone(s.notifyOnDone !== false);
         setAutoOpenFolder(!!s.autoOpenFolder);
+        setShowThumbnails(s.showThumbnails !== false);
         setNaming(Object.fromEntries(
           (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [k, !!s[NAMING_KEYS[k]]])
         ) as unknown as NamingOptions);
@@ -264,7 +266,7 @@ function SettingsSection() {
     const namingFlat = Object.fromEntries(
       (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [NAMING_KEYS[k], naming[k]])
     );
-    chrome.storage.local.set({ outputRoot: root, channelCounts: finalCounts, channelDefaultCount: def, menuDefaults: prefs, collectHistory, historyRetentionDays: retention, notifyOnDone, autoOpenFolder, ...namingFlat }, () => {
+    chrome.storage.local.set({ outputRoot: root, channelCounts: finalCounts, channelDefaultCount: def, menuDefaults: prefs, collectHistory, historyRetentionDays: retention, notifyOnDone, autoOpenFolder, showThumbnails, ...namingFlat }, () => {
       setOutputRoot(root); setCounts(finalCounts); setDefaultCount(def);
       setStatus('saved'); setTimeout(() => setStatus('idle'), 2000);
     });
@@ -389,6 +391,10 @@ function SettingsSection() {
             <label style={checkRow}>
               <input type="checkbox" checked={autoOpenFolder} onChange={(e) => setAutoOpenFolder(e.target.checked)} style={cbx} />
               <span>Open the folder automatically when a single video finishes</span>
+            </label>
+            <label style={checkRow}>
+              <input type="checkbox" checked={showThumbnails} onChange={(e) => setShowThumbnails(e.target.checked)} style={cbx} />
+              <span>Show video thumbnails in the playlist/channel download list</span>
             </label>
             <p style={muted}>Each download also writes a <code style={inlineCode}>.txt</code> summary (title, channel, URL, files, path) into its folder — toggle that under “File naming &amp; folders”.</p>
           </Field>

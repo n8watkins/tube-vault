@@ -252,13 +252,12 @@ export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp
       const plan = readPlan(resp, `Couldn’t read ${playlistNoun.toLowerCase()}`);
       if (!plan) return;
       const n = plan.totalVideos ?? plan.items.length;
-      const sizeNote = plan.estBytes ? `~${formatBytes(plan.estBytes)}${plan.sampled ? ' (estimated)' : ''}` : 'sized as they download';
       // Use the real playlist/mix name (e.g. "Radical Optimism Tour Setlist",
       // "Mix - Dua Lipa") for the title, batch label, and output category.
       const name = (plan.playlistTitle || '').trim();
       showSelection(
         name ? `Download “${name}”?` : `Download this ${playlistNoun.toLowerCase()}?`,
-        `${name ? name + ' · ' : ''}${n} video${n === 1 ? '' : 's'} · Projected size: ${sizeNote}`,
+        `${name ? name + ' · ' : ''}${n} video${n === 1 ? '' : 's'}`,
         plan.items,
         dlIds,
       ).then((picked) => {
@@ -310,14 +309,13 @@ export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp
         mode === 'latest' ? `the latest ${n}` :
         mode === 'popular_alltime' ? `the top ${n} most-viewed (all-time)` :
         `the top ${n} most-viewed (recent ${RECENT_POOL})`;
-      const sizeNote = plan.estBytes ? `~${formatBytes(plan.estBytes)}${plan.sampled ? ' (estimated)' : ''}` : 'sized as they download';
       const cap = what.charAt(0).toUpperCase() + what.slice(1);
       // Category folder name derived from the resolved mode.
       const category = mode === 'popular_alltime' || mode === 'popular_recent' ? 'Most Popular' : 'Latest';
 
       showSelection(
         'Download from this channel?',
-        `${cap} · Projected size: ${sizeNote}`,
+        cap,
         plan.items,
         dlIds,
       ).then((picked) => {
@@ -407,7 +405,7 @@ function showVideoConfirm(title: string, components: string, sizeText: string, d
   return new Promise((resolve) => {
     const backdrop = document.createElement('div');
     Object.assign(backdrop.style, {
-      position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(2px)',
+      position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.78)',
       zIndex: '2147483647', display: 'flex', alignItems: 'center', justifyContent: 'center',
       fontFamily: 'Roboto, system-ui, Arial, sans-serif',
     });
@@ -477,7 +475,7 @@ function showSelection(title: string, subtitle: string, items: PlanItem[], downl
 
     const backdrop = document.createElement('div');
     Object.assign(backdrop.style, {
-      position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.6)', backdropFilter: 'blur(2px)',
+      position: 'fixed', inset: '0', background: 'rgba(0,0,0,0.78)',
       zIndex: '2147483647', display: 'flex', alignItems: 'center', justifyContent: 'center',
       fontFamily: 'Roboto, system-ui, Arial, sans-serif',
     });
@@ -497,9 +495,9 @@ function showSelection(title: string, subtitle: string, items: PlanItem[], downl
     h.textContent = title;
     Object.assign(h.style, { fontSize: '18px', fontWeight: '700', marginBottom: '6px' });
     const sub = document.createElement('div');
-    sub.textContent = dupCount ? `${subtitle}  ·  ${dupCount} already downloaded (unchecked)` : subtitle;
+    const dupNote = dupCount ? `  ·  ${dupCount} already downloaded (unchecked)` : '';
     Object.assign(sub.style, { fontSize: '13px', color: '#aaa', lineHeight: '1.5' });
-    head.append(h, sub);
+    head.append(h, sub);  // text set live in refresh()
 
     // Select-all / deselect-all toggle row
     const toolRow = document.createElement('div');
@@ -515,15 +513,25 @@ function showSelection(title: string, subtitle: string, items: PlanItem[], downl
     Object.assign(list.style, { overflowY: 'auto', flex: '1', padding: '4px 0' });
 
     const rowEls: HTMLDivElement[] = [];
-    const sumSelected = () => items.reduce((a, it, i) => a + (checked[i] && it.bytes ? it.bytes : 0), 0);
-    const anyUnknownSelected = () => items.some((it, i) => checked[i] && !it.bytes);
+    // Average size of the videos we already know, used to estimate selected videos
+    // that are only sized at download time (playlist/channel "all" mode) — so the
+    // total still moves when you check/uncheck an unsized video.
+    const knownSizes = items.map((it) => it.bytes || 0).filter((b) => b > 0);
+    const avgKnown = knownSizes.length ? knownSizes.reduce((a, b) => a + b, 0) / knownSizes.length : 0;
+    const hasUnknown = items.some((it) => !it.bytes);
     const numSelected = () => checked.filter(Boolean).length;
+    const selectedSize = () => items.reduce(
+      (a, it, i) => (checked[i] ? a + (it.bytes && it.bytes > 0 ? it.bytes : avgKnown) : a), 0,
+    );
 
     const refresh = () => {
       const n = numSelected();
-      const total = sumSelected();
-      const sizeStr = total ? `${formatBytes(total)}${anyUnknownSelected() ? '+' : ''}` : (anyUnknownSelected() ? 'sized at download' : '0');
-      countLbl.textContent = `${n} of ${items.length} · ${sizeStr}`;
+      const size = selectedSize();
+      const sizeStr = size > 0
+        ? `${hasUnknown ? '~' : ''}${formatBytes(size)}${hasUnknown ? ' (est.)' : ''}`
+        : 'sized at download';
+      sub.textContent = `${subtitle}${dupNote}  ·  ${sizeStr}`;
+      countLbl.textContent = `${n} of ${items.length}`;
       toggleAll.textContent = n === items.length ? 'Deselect all' : 'Select all';
       go.textContent = n ? `Download ${n}` : 'Download';
       go.style.opacity = n ? '1' : '0.5';

@@ -35,6 +35,14 @@ function formatBytes(b?: number): string {
   return `${Math.round(b / 1e3)} KB`;
 }
 
+function agoText(ts: number): string {
+  const s = Math.floor((Date.now() - ts) / 1000);
+  if (s < 60) return 'just now';
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m ago`;
+  return `${Math.floor(m / 60)}h ago`;
+}
+
 // ── App shell with tabs ───────────────────────────────────────────────────────
 const TAB_IDS: Tab[] = ['downloads', 'settings', 'status', 'setup'];
 
@@ -462,16 +470,36 @@ function SettingsSection() {
 function StatusSection() {
   const [diag, setDiag] = useState<{ ytdlp: string | null; ffmpeg: string | null; outputRoot: string | null } | null>(null);
   const [helper, setHelper] = useState<'idle' | 'checking' | 'ok' | 'error'>('idle');
+  const [lastChecked, setLastChecked] = useState(0);
 
-  const check = () => {
-    setHelper('checking');
+  // Only show the "Checking…" state when there's no cached result yet; otherwise
+  // refresh silently in the background so returning to this tab doesn't flash a
+  // loading state when the helper is already connected.
+  const runCheck = (silent: boolean) => {
+    if (!silent) setHelper('checking');
     chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: { action: 'diagnostics' } }, (resp) => {
-      if (chrome.runtime.lastError || !resp?.ok) { setHelper('error'); setDiag(null); return; }
-      setHelper('ok');
-      setDiag(resp.diagnostics ?? null);
+      const ok = !(chrome.runtime.lastError || !resp?.ok);
+      const d = ok ? (resp.diagnostics ?? null) : null;
+      setHelper(ok ? 'ok' : 'error');
+      setDiag(d);
+      const at = Date.now();
+      setLastChecked(at);
+      chrome.storage.local.set({ tvDiag: { ok, diag: d, at } });
     });
   };
-  useEffect(check, []);
+  const check = () => runCheck(false);
+
+  useEffect(() => {
+    chrome.storage.local.get({ tvDiag: null }, (s) => {
+      const cached = s.tvDiag as { ok: boolean; diag: typeof diag; at: number } | null;
+      if (cached) {
+        setHelper(cached.ok ? 'ok' : 'error'); setDiag(cached.diag); setLastChecked(cached.at);
+        runCheck(true);   // refresh quietly
+      } else {
+        runCheck(false);  // first run — show the spinner
+      }
+    });
+  }, []);
 
   const connected = helper === 'ok' && !!diag?.ytdlp && !!diag?.ffmpeg;
   return (
@@ -480,7 +508,10 @@ function StatusSection() {
       <div style={{ ...bigStatus, background: connected ? 'rgba(76,175,80,0.12)' : helper === 'checking' ? '#1a1a1a' : 'rgba(239,83,80,0.1)', borderColor: connected ? 'rgba(76,175,80,0.4)' : helper === 'error' ? 'rgba(239,83,80,0.4)' : '#2a2a2a' }}>
         <span style={{ width: 12, height: 12, borderRadius: '50%', background: connected ? '#4caf50' : helper === 'checking' ? '#888' : '#ef5350' }} />
         <span style={{ fontSize: 17, fontWeight: 700 }}>{helper === 'checking' ? 'Checking…' : connected ? 'Connected' : 'Not connected'}</span>
-        <button onClick={check} style={{ ...textBtn, marginLeft: 'auto' }}><FiRefreshCw size={13} style={{ verticalAlign: -2, marginRight: 5 }} />Re-check</button>
+        <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
+          {lastChecked > 0 && <span style={{ fontSize: 12, color: '#777' }}>Checked {agoText(lastChecked)}</span>}
+          <button onClick={check} style={textBtn}><FiRefreshCw size={13} style={{ verticalAlign: -2, marginRight: 5 }} />Re-check</button>
+        </span>
       </div>
       <div style={{ ...card, marginTop: 16 }}>
         <div style={{ padding: 20 }}>

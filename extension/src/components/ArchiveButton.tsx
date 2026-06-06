@@ -46,6 +46,18 @@ function formatBytes(b: number | null | undefined): string {
 // Video id from a watch URL (for duplicate detection).
 const idOf = (u: string): string | null => { try { return new URL(u).searchParams.get('v'); } catch { return null; } };
 
+// Video id from any single-video URL form — watch (?v=), /shorts/<id>, /live/<id>,
+// or youtu.be/<id> — so the confirm dialog can show a thumbnail for all of them.
+const videoIdFor = (u: string): string | null => {
+  try {
+    const url = new URL(u);
+    if (url.pathname.startsWith('/shorts/')) return url.pathname.split('/')[2] || null;
+    if (url.pathname.startsWith('/live/')) return url.pathname.split('/')[2] || null;
+    if (url.hostname === 'youtu.be') return url.pathname.slice(1) || null;
+    return url.searchParams.get('v');
+  } catch { return null; }
+};
+
 // Map of already-downloaded video id → when (newest finishedAt), read from the job
 // history in storage, so the selection modal can flag + pre-uncheck duplicates and
 // show when each was last grabbed.
@@ -218,7 +230,7 @@ export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp
     // confirmation with a per-component breakdown + thumbnail (and a duplicate
     // warning if we've grabbed it before) before queueing.
     const url = getUrl();
-    const id = idOf(url);
+    const id = videoIdFor(url);
     const thumbUrl = id ? `https://i.ytimg.com/vi/${id}/mqdefault.jpg` : '';
     const pageTitle = document.title.replace(/\s*-\s*YouTube.*$/, '').trim() || 'Video';
     showToast('Checking video…');

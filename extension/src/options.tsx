@@ -360,33 +360,45 @@ function SettingsSection() {
 
           <div style={divider} />
 
-          <Field label="Default download preferences">
-            <p style={hint}>What the download menu is pre-set to each time you open it.</p>
-            <label style={checkRow}>
-              <input type="checkbox" checked={prefs.video} onChange={(e) => setPref({ video: e.target.checked })} style={cbx} />
-              <span>Video</span>
-            </label>
-            {prefs.video && (
-              <div style={{ display: 'flex', gap: 8, margin: '0 0 10px 24px' }}>
-                <select value={prefs.videoQuality} onChange={(e) => setPref({ videoQuality: e.target.value as VideoQuality })} style={{ ...input, width: 'auto', padding: '6px 8px', fontFamily: 'inherit' }}>
-                  {(['best', '1080', '720', '480', '360'] as VideoQuality[]).map((q) => <option key={q} value={q}>{q === 'best' ? 'Best' : q + 'p'}</option>)}
-                </select>
-                <select value={prefs.videoFormat} onChange={(e) => setPref({ videoFormat: e.target.value as VideoFormat })} style={{ ...input, width: 'auto', padding: '6px 8px', fontFamily: 'inherit' }}>
-                  {(['mp4', 'webm', 'mkv'] as VideoFormat[]).map((f) => <option key={f} value={f}>{f}</option>)}
-                </select>
+          <Field label="Default quality & formats">
+            <p style={hint}>What each component defaults to when you turn it on. These only seed the dropdowns — they don't pre-select anything.</p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 22 }}>
+              <div>
+                <div style={prefSubLabel}>Video</div>
+                <div style={{ display: 'flex', gap: 8 }}>
+                  <select value={prefs.videoQuality} onChange={(e) => setPref({ videoQuality: e.target.value as VideoQuality })} style={{ ...input, width: 'auto', padding: '6px 8px', fontFamily: 'inherit' }}>
+                    {(['best', '1080', '720', '480', '360'] as VideoQuality[]).map((q) => <option key={q} value={q}>{q === 'best' ? 'Best' : q + 'p'}</option>)}
+                  </select>
+                  <select value={prefs.videoFormat} onChange={(e) => setPref({ videoFormat: e.target.value as VideoFormat })} style={{ ...input, width: 'auto', padding: '6px 8px', fontFamily: 'inherit' }}>
+                    {(['mp4', 'webm', 'mkv'] as VideoFormat[]).map((f) => <option key={f} value={f}>{f}</option>)}
+                  </select>
+                </div>
               </div>
-            )}
-            <label style={checkRow}>
-              <input type="checkbox" checked={prefs.audio} onChange={(e) => setPref({ audio: e.target.checked })} style={cbx} />
-              <span>Audio</span>
-            </label>
-            {prefs.audio && (
-              <div style={{ margin: '0 0 10px 24px' }}>
+              <div>
+                <div style={prefSubLabel}>Audio</div>
                 <select value={prefs.audioFormat} onChange={(e) => setPref({ audioFormat: e.target.value as AudioFormat })} style={{ ...input, width: 'auto', padding: '6px 8px', fontFamily: 'inherit' }}>
                   {(['m4a', 'mp3', 'wav', 'opus'] as AudioFormat[]).map((f) => <option key={f} value={f}>{f}</option>)}
                 </select>
               </div>
-            )}
+            </div>
+          </Field>
+
+          <div style={divider} />
+
+          <Field label="Pre-select components">
+            <p style={hint}>Which components start checked when you open the download menu (optional — default is none).</p>
+            <label style={checkRow}>
+              <input type="checkbox" checked={prefs.video} onChange={(e) => setPref({ video: e.target.checked })} style={cbx} />
+              <span>Video</span>
+            </label>
+            <label style={checkRow}>
+              <input type="checkbox" checked={prefs.audio} onChange={(e) => setPref({ audio: e.target.checked })} style={cbx} />
+              <span>Audio</span>
+            </label>
+            <label style={checkRow}>
+              <input type="checkbox" checked={prefs.subtitles} onChange={(e) => setPref({ subtitles: e.target.checked })} style={cbx} />
+              <span>Subtitles</span>
+            </label>
             <label style={checkRow}>
               <input type="checkbox" checked={prefs.thumbnail} onChange={(e) => setPref({ thumbnail: e.target.checked })} style={cbx} />
               <span>Thumbnail</span>
@@ -394,10 +406,6 @@ function SettingsSection() {
             <label style={checkRow}>
               <input type="checkbox" checked={prefs.metadata} onChange={(e) => setPref({ metadata: e.target.checked })} style={cbx} />
               <span>Metadata</span>
-            </label>
-            <label style={checkRow}>
-              <input type="checkbox" checked={prefs.subtitles} onChange={(e) => setPref({ subtitles: e.target.checked })} style={cbx} />
-              <span>Subtitles</span>
             </label>
           </Field>
 
@@ -580,6 +588,7 @@ const muted: React.CSSProperties = { margin: '6px 0 0', fontSize: 11, color: '#5
 const divider: React.CSSProperties = { height: 1, background: '#262626', margin: '20px 0' };
 const checkRow: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 9, cursor: 'pointer', marginBottom: 10, userSelect: 'none' };
 const cbx: React.CSSProperties = { accentColor: '#cc0000', width: 15, height: 15, cursor: 'pointer', flexShrink: 0 };
+const prefSubLabel: React.CSSProperties = { fontSize: 13, color: '#ccc', fontWeight: 600, marginBottom: 7 };
 const miniBtn: React.CSSProperties = { background: '#2a2a2a', border: '1px solid #3a3a3a', color: '#ddd', borderRadius: 7, fontSize: 13, fontWeight: 600, padding: '8px 14px', cursor: 'pointer', fontFamily: 'inherit' };
 const bigStatus: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 12, padding: '16px 20px', borderRadius: 10, border: '1px solid #2a2a2a' };
 const btn: React.CSSProperties = { background: '#cc0000', border: 'none', borderRadius: 6, color: '#fff', fontSize: 13, fontWeight: 600, padding: '9px 20px', cursor: 'pointer', transition: 'background 0.2s', fontFamily: 'inherit' };

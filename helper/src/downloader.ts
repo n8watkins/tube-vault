@@ -14,6 +14,7 @@ export interface DownloadComponents {
   audio?: { format: AudioFormat };
   metadata?: boolean;
   thumbnail?: boolean;
+  subtitles?: boolean;
 }
 
 export type Action =
@@ -181,6 +182,7 @@ function sidecarBytes(c?: DownloadComponents): number {
   let b = 0;
   if (c?.thumbnail) b += 120_000;  // ~120 KB jpg
   if (c?.metadata) b += 100_000;   // info.json + description
+  if (c?.subtitles) b += 50_000;   // ~50 KB srt
   return b;
 }
 // Total approx size for one video given the selected components. `approx` is the
@@ -368,8 +370,9 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
       const hasAudio = !!comp.audio;
       const hasMeta = !!comp.metadata;
       const hasThumb = !!comp.thumbnail;
+      const hasSubs = !!comp.subtitles;
 
-      if (!hasVideo && !hasAudio && !hasMeta && !hasThumb) {
+      if (!hasVideo && !hasAudio && !hasMeta && !hasThumb && !hasSubs) {
         return { ok: false, status: 'failed', error: 'No components selected' };
       }
 
@@ -385,8 +388,8 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
 
       const jobs: Promise<{ out: string; err: string; code: number }>[] = [];
 
-      // Video download run (also carries thumbnail/metadata flags when applicable)
-      if (hasVideo || hasMeta || hasThumb) {
+      // Video download run (also carries thumbnail/metadata/subtitle flags when applicable)
+      if (hasVideo || hasMeta || hasThumb || hasSubs) {
         const args: string[] = [];
 
         if (hasVideo) {
@@ -415,6 +418,12 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
             args.push('-o', `description:${customBase}/${fileName('description')}.%(ext)s`);
             args.push('-o', `infojson:${customBase}/${fileName('metadata')}.%(ext)s`);
           }
+        }
+
+        if (hasSubs) {
+          // English subtitles (uploaded + auto-generated), converted to .srt.
+          args.push('--write-subs', '--write-auto-subs', '--sub-langs', 'en.*', '--convert-subs', 'srt');
+          args.push('-o', `subtitle:${customBase}/${fileName('subtitles')}.%(ext)s`);
         }
 
         args.push(...limitFlag, ...noPlaylistFlag, '--', ...targets);

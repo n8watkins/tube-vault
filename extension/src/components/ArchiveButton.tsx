@@ -104,24 +104,29 @@ const videoIdFor = (u: string): string | null => {
 // show when each was last grabbed.
 function getDownloadedMap(): Promise<Map<string, number>> {
   return new Promise((res) => {
-    chrome.storage.local.get({ tvJobs: [] }, (s) => {
-      const m = new Map<string, number>();
-      for (const j of (s.tvJobs as { status: string; videoUrl?: string; finishedAt?: number }[])) {
-        if (j.status === 'done' && j.videoUrl) {
-          const id = idOf(j.videoUrl);
-          if (id) m.set(id, Math.max(m.get(id) ?? 0, j.finishedAt ?? 0));
+    try {
+      chrome.storage.local.get({ tvJobs: [] }, (s) => {
+        const m = new Map<string, number>();
+        for (const j of (s.tvJobs as { status: string; videoUrl?: string; finishedAt?: number }[])) {
+          if (j.status === 'done' && j.videoUrl) {
+            const id = idOf(j.videoUrl);
+            if (id) m.set(id, Math.max(m.get(id) ?? 0, j.finishedAt ?? 0));
+          }
         }
-      }
-      res(m);
-    });
+        res(m);
+      });
+    } catch { res(new Map()); }  // extension context invalidated (reloaded) — fail soft
   });
 }
 
 // Probe one video (title + component-aware size + duration + views) via the worker.
 function probeVideo(url: string, components: Record<string, unknown>): Promise<{ title?: string; bytes?: number; duration?: number; views?: number } | null> {
-  return new Promise((res) =>
-    chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: { action: 'probe', url, components } },
-      (r) => res(chrome.runtime.lastError || !r?.ok ? null : r)));
+  return new Promise((res) => {
+    try {
+      chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: { action: 'probe', url, components } },
+        (r) => res(chrome.runtime.lastError || !r?.ok ? null : r));
+    } catch { res(null); }  // extension context invalidated — fail soft
+  });
 }
 
 interface Props {
@@ -163,22 +168,26 @@ export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp
 
   useEffect(() => {
     if (!channel) return;
-    chrome.storage.local.get(
-      { channelCounts: DEFAULT_CHANNEL_COUNTS, channelDefaultCount: DEFAULT_CHANNEL_COUNT },
-      (s) => {
-        const counts: number[] = Array.isArray(s.channelCounts) && s.channelCounts.length ? s.channelCounts : DEFAULT_CHANNEL_COUNTS;
-        setChanCounts(counts);
-        setChanCount(counts.includes(s.channelDefaultCount) ? s.channelDefaultCount : counts[counts.length - 1]);
-      }
-    );
+    try {
+      chrome.storage.local.get(
+        { channelCounts: DEFAULT_CHANNEL_COUNTS, channelDefaultCount: DEFAULT_CHANNEL_COUNT },
+        (s) => {
+          const counts: number[] = Array.isArray(s.channelCounts) && s.channelCounts.length ? s.channelCounts : DEFAULT_CHANNEL_COUNTS;
+          setChanCounts(counts);
+          setChanCount(counts.includes(s.channelDefaultCount) ? s.channelDefaultCount : counts[counts.length - 1]);
+        }
+      );
+    } catch { /* extension context invalidated — keep defaults */ }
   }, [channel]);
 
   // Apply the user's saved default download preferences to the menu.
   useEffect(() => {
-    chrome.storage.local.get({ menuDefaults: null, showThumbnails: true }, (s) => {
-      if (s.menuDefaults && typeof s.menuDefaults === 'object') setMenuState((m) => ({ ...m, ...s.menuDefaults }));
-      setShowThumbs(s.showThumbnails !== false);
-    });
+    try {
+      chrome.storage.local.get({ menuDefaults: null, showThumbnails: true }, (s) => {
+        if (s.menuDefaults && typeof s.menuDefaults === 'object') setMenuState((m) => ({ ...m, ...s.menuDefaults }));
+        setShowThumbs(s.showThumbnails !== false);
+      });
+    } catch { /* extension context invalidated — keep defaults */ }
   }, []);
 
   const rootRef = useRef<HTMLDivElement>(null);

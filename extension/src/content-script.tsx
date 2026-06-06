@@ -516,8 +516,30 @@ function ensureButtons() {
 }
 
 function syncForCurrentPage() {
+  if (!extAlive()) { teardown(); return; }  // extension reloaded — stop touching dead chrome.* APIs
   if (location.href !== currentUrl) onNavigate(); // URL changed → tear down old page's buttons
   ensureButtons();
+}
+
+// When the extension is reloaded/updated, this content script keeps running on the
+// already-open page but its chrome.* APIs are invalidated — every storage/runtime
+// call then throws "Cannot read properties of undefined (reading 'local')". Detect
+// that and go quiet (stop the heartbeat + observers) until the page is reloaded.
+function extAlive(): boolean {
+  try { return !!chrome.runtime?.id; } catch { return false; }
+}
+let tornDown = false;
+function teardown(): void {
+  if (tornDown) return;
+  tornDown = true;
+  try { clearInterval(beatTimer); } catch { /* ignore */ }
+  try { navObserver.disconnect(); } catch { /* ignore */ }
+  stopShortsObservers();
+  window.removeEventListener('popstate', syncForCurrentPage);
+  window.removeEventListener('yt-navigate-finish', onYtNav);
+  document.removeEventListener('yt-navigate-finish', onYtNav);
+  document.removeEventListener('yt-page-data-updated', onYtNav);
+  console.log('[TubeVault] extension context invalidated — content script stopped; reload the page');
 }
 
 // YouTube is an SPA, but a content script runs in an ISOLATED world: it cannot
@@ -557,7 +579,8 @@ console.log(`[TubeVault] content script loaded v${tvVersion} — watching for na
 // even if every signal above is somehow missed. When buttons are already present
 // this is just a few getElementById checks.
 let tvBeat = 0;
-setInterval(() => {
+const beatTimer = setInterval(() => {
+  if (!extAlive()) { teardown(); return; }
   tvBeat++;
   document.documentElement.dataset.tvBeat = String(tvBeat);
   if (tvBeat % 4 === 0) console.log(`[TubeVault] alive (beat ${tvBeat}) — path ${location.pathname}`);

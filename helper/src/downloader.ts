@@ -135,7 +135,7 @@ function playlistTemplate(root: string): string {
 // the user's naming toggles:
 //   root / %(uploader)s / [<Category>/] / [<NNN> - ]%(title)s[ [%(id)s]]
 // The rank prefix is computed in JS (one URL per call → no %(playlist_index)s).
-function buildBase(root: string, req: DownloadRequest, naming: NamingOptions): string {
+export function buildBase(root: string, req: DownloadRequest, naming: NamingOptions): string {
   const parts = [root, '%(uploader)s'];
   if (naming.categoryFolders && req.category) parts.push(sanitizeFilename(req.category));
 
@@ -162,7 +162,7 @@ function resolvedFolder(templatePath: string): string {
   return real.replace(/[/\\]+$/, '');
 }
 
-function videoFormatFlag(quality: VideoQuality): string {
+export function videoFormatFlag(quality: VideoQuality): string {
   if (quality === 'best') return 'bv*+ba/b';
   return `bv*[height<=${quality}]+ba/b[height<=${quality}]`;
 }
@@ -171,7 +171,7 @@ function videoFormatFlag(quality: VideoQuality): string {
 // The download size depends on WHAT you grab. Pick the yt-dlp format selector for
 // the heaviest selected media so filesize_approx reflects reality (audio-only is
 // far smaller than video; thumbnail/metadata-only is negligible).
-function mediaFormatFlag(c?: DownloadComponents): string | null {
+export function mediaFormatFlag(c?: DownloadComponents): string | null {
   if (c?.video) return videoFormatFlag(c.video.quality);
   if (c?.audio) return 'ba/b';
   return null; // only thumbnail/metadata → no media stream
@@ -185,7 +185,7 @@ function sidecarBytes(c?: DownloadComponents): number {
 }
 // Total approx size for one video given the selected components. `approx` is the
 // filesize_approx yt-dlp reported for the chosen format (0 if none/unknown).
-function sizeForComponents(approx: number, c?: DownloadComponents): number {
+export function sizeForComponents(approx: number, c?: DownloadComponents): number {
   if (!c) return approx;                    // legacy callers: full approx
   if (mediaFormatFlag(c)) return approx + sidecarBytes(c);
   return sidecarBytes(c);                    // thumbnail/metadata only
@@ -213,7 +213,7 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (t: T) => Promise<R
 async function flatList(channelUrl: string, limit?: number): Promise<{ id: string; title: string }[]> {
   const args = ['--flat-playlist', '--print', '%(id)s\t%(title)s'];
   if (limit && limit > 0) args.push('--playlist-end', String(limit));
-  args.push(channelUrl);
+  args.push('--', channelUrl);
   const { out, code } = await run('yt-dlp', args);
   if (code !== 0) return [];
   return out.split('\n')
@@ -233,7 +233,7 @@ async function fetchVideoMeta(id: string, components?: DownloadComponents): Prom
   const fmt = components ? mediaFormatFlag(components) : null;
   const args = ['--no-warnings', '--skip-download'];
   if (fmt) args.push('-f', fmt);
-  args.push('--print', '%(view_count)s\t%(filesize_approx)s\t%(title)s', `https://www.youtube.com/watch?v=${id}`);
+  args.push('--print', '%(view_count)s\t%(filesize_approx)s\t%(title)s', '--', `https://www.youtube.com/watch?v=${id}`);
   const { out, code } = await run('yt-dlp', args);
   if (code !== 0) return { views: -1, bytes: 0, title: '' };
   const parts = out.trim().split('\t');
@@ -258,7 +258,7 @@ function videoIdOf(u: string): string | null {
 // The playlist/mix name (e.g. "Radical Optimism Tour Setlist", "Mix - Dua Lipa").
 // One fast call (first entry only). Empty string if not a named playlist.
 async function fetchPlaylistTitle(url: string): Promise<string> {
-  const { out, code } = await run('yt-dlp', ['--no-warnings', '--flat-playlist', '--playlist-end', '1', '--print', '%(playlist_title)s', url]);
+  const { out, code } = await run('yt-dlp', ['--no-warnings', '--flat-playlist', '--playlist-end', '1', '--print', '%(playlist_title)s', '--', url]);
   if (code !== 0) return '';
   const t = out.split('\n').map((s) => s.trim()).find((s) => s && s !== 'NA');
   return t ?? '';
@@ -324,7 +324,7 @@ export async function probeVideo(url: string, components?: DownloadComponents): 
   const fmt = components ? mediaFormatFlag(components) : null;
   const args = ['--no-warnings', '--skip-download'];
   if (fmt) args.push('-f', fmt);
-  args.push('--print', '%(title)s\t%(filesize_approx)s\t%(duration)s', url);
+  args.push('--print', '%(title)s\t%(filesize_approx)s\t%(duration)s', '--', url);
   const { out, code } = await run('yt-dlp', args);
   if (code !== 0) return { title: '', bytes: null, duration: null };
   const parts = out.trim().split('\t');
@@ -417,7 +417,7 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
           }
         }
 
-        args.push(...limitFlag, ...noPlaylistFlag, ...targets);
+        args.push(...limitFlag, ...noPlaylistFlag, '--', ...targets);
         jobs.push(run('yt-dlp', args));
       }
 
@@ -428,7 +428,7 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
           '-x', '--audio-format', comp.audio!.format,
           '-o', `${customBase}/${fileName('audio')}.%(ext)s`,
           '--print', `after_move:${CAPTURE}`,
-          ...limitFlag, ...noPlaylistFlag, ...targets,
+          ...limitFlag, ...noPlaylistFlag, '--', ...targets,
         ];
         jobs.push(run('yt-dlp', args));
       }
@@ -478,7 +478,7 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
         '--merge-output-format', 'mp4',
         '-o', `${base}/video.%(ext)s`,
         '--no-playlist',
-        req.url,
+        '--', req.url,
       ]);
       return result(code, base, err);
     }
@@ -489,7 +489,7 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
         '-x', '--audio-format', 'm4a',
         '-o', `${base}/audio.%(ext)s`,
         '--no-playlist',
-        req.url,
+        '--', req.url,
       ]);
       return result(code, base, err);
     }
@@ -502,7 +502,7 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
         '--convert-thumbnails', 'jpg',
         '-o', `${thumbRoot}/%(upload_date>%Y-%m-%d)s - %(title)s [%(id)s].%(ext)s`,
         '--no-playlist',
-        req.url,
+        '--', req.url,
       ]);
       return result(code, thumbRoot, err);
     }
@@ -515,7 +515,7 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
         '--skip-download',
         '-o', `${metaRoot}/%(upload_date>%Y-%m-%d)s - %(title)s [%(id)s].%(ext)s`,
         '--no-playlist',
-        req.url,
+        '--', req.url,
       ]);
       return result(code, metaRoot, err);
     }
@@ -536,7 +536,7 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
         '-o', `infojson:${base}/metadata.%(ext)s`,
         '-o', `link:${base}/source.%(ext)s`,
         '--no-playlist',
-        req.url,
+        '--', req.url,
       ]);
       return result(code, base, err);
     }
@@ -562,14 +562,14 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
   }
 }
 
-interface CaptureMeta { title: string; uploader: string; uploadDate: string; views: string; duration: string; id: string; }
+export interface CaptureMeta { title: string; uploader: string; uploadDate: string; views: string; duration: string; id: string; }
 
 // Pull the per-video folder + metadata out of the download runs' output.
 // Capture line (`--print`): `filepath\ttitle\tuploader\tupload_date\tviews\tduration\tid`.
 // On a media download `filepath` is real; on thumbnail/metadata-only (--skip-download)
 // it's `NA`, so we still take the metadata from that line and recover the folder from
 // yt-dlp's own "Writing … to:" / "Destination:" lines (which name the sidecar files).
-function parseCapture(results: { out: string; err: string }[]): { folder: string; mediaPath: string; meta: CaptureMeta } {
+export function parseCapture(results: { out: string; err: string }[]): { folder: string; mediaPath: string; meta: CaptureMeta } {
   let folder = '';
   let mediaPath = '';
   let meta: CaptureMeta = { title: '', uploader: '', uploadDate: '', views: '', duration: '', id: '' };

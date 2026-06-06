@@ -36,9 +36,28 @@ function formatBytes(b?: number): string {
 }
 
 // ── App shell with tabs ───────────────────────────────────────────────────────
+const TAB_IDS: Tab[] = ['downloads', 'settings', 'status', 'setup'];
+
 function App() {
   const [tab, setTab] = useState<Tab>('downloads');
   const version = chrome.runtime.getManifest().version;
+
+  // Deep-link from the popup: it writes `tvOpenTab` before opening this page, so
+  // honour it on mount and whenever it changes (page may already be open).
+  useEffect(() => {
+    const apply = (t?: unknown) => {
+      if (typeof t === 'string' && TAB_IDS.includes(t as Tab)) {
+        setTab(t as Tab);
+        chrome.storage.local.remove('tvOpenTab');
+      }
+    };
+    chrome.storage.local.get({ tvOpenTab: null }, (s) => apply(s.tvOpenTab));
+    const onChg = (c: Record<string, chrome.storage.StorageChange>, area: string) => {
+      if (area === 'local' && c.tvOpenTab) apply(c.tvOpenTab.newValue);
+    };
+    chrome.storage.onChanged.addListener(onChg);
+    return () => chrome.storage.onChanged.removeListener(onChg);
+  }, []);
 
   const tabs: { id: Tab; label: string }[] = [
     { id: 'downloads', label: 'Downloads' },
@@ -51,7 +70,8 @@ function App() {
     <div style={page}>
       <div style={shell}>
         <div style={sidebar}>
-          <div style={{ ...header }}>
+          <div style={{ ...header, display: 'flex', alignItems: 'center', gap: 10 }}>
+            <img src="icons/icon32.png" width={26} height={26} style={{ borderRadius: 6, flexShrink: 0 }} alt="" />
             <span style={logo}>TubeVault</span>
           </div>
           {tabs.map((t) => (

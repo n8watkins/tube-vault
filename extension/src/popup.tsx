@@ -1,7 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { FiSettings, FiClock, FiFolder } from 'react-icons/fi';
 
 const DEFAULT_OUTPUT_ROOT = 'C:\\Users\\natha\\Videos\\Youtube Downloads';
+
+// Open the options page on a specific tab (popup → options deep-link via storage).
+function openOptions(tab: 'downloads' | 'settings' | 'status' | 'setup') {
+  chrome.storage.local.set({ tvOpenTab: tab }, () => chrome.runtime.openOptionsPage());
+}
 
 type JobStatus = 'queued' | 'probing' | 'running' | 'done' | 'failed' | 'cancelled';
 interface Job {
@@ -57,9 +63,14 @@ function App() {
   const cancel = (id: string) => { chrome.runtime.sendMessage({ type: 'TUBE_VAULT_CANCEL', jobId: id }); setConfirmId(null); };
   const cancelBatch = (batchId: string) => { chrome.runtime.sendMessage({ type: 'TUBE_VAULT_CANCEL_BATCH', batchId }); setConfirmId(null); };
   const toggle = (id: string) => setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const openFolder = (folder?: string) => { if (folder) chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: { action: 'open_folder', windowsPath: folder } }); };
 
   const active = jobs.filter((j) => j.status === 'running' || j.status === 'probing');
   const queued = jobs.filter((j) => j.status === 'queued');
+  const recent = jobs
+    .filter((j) => j.status === 'done' || j.status === 'failed' || j.status === 'cancelled')
+    .sort((a, b) => (b.finishedAt ?? 0) - (a.finishedAt ?? 0))
+    .slice(0, 3);
 
   // Cancel button: 2-step inline confirm shared by jobs and batches.
   const cancelBtn = (key: string, onStop: () => void) =>
@@ -120,18 +131,22 @@ function App() {
   return (
     <div style={panel}>
       <div style={header}>
-        <span style={{ fontWeight: 700, fontSize: 17 }}>TubeVault</span>
+        <span style={{ display: 'flex', alignItems: 'center', gap: 9 }}>
+          <img src="icons/icon32.png" width={22} height={22} style={{ borderRadius: 5 }} alt="" />
+          <span style={{ fontWeight: 700, fontSize: 17 }}>TubeVault</span>
+        </span>
         <span style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={statusPill}>
             <span style={{ width: 8, height: 8, borderRadius: '50%', background: helper === 'ok' ? '#5dde6e' : helper === 'error' ? '#ff6b6b' : '#ccc' }} />
             {helper === 'ok' ? 'Connected' : helper === 'error' ? 'Disconnected' : 'Checking…'}
           </span>
-          <span style={versionPill}>v{version}</span>
+          <button style={hdrIconBtn} title="History" onClick={() => openOptions('downloads')}><FiClock size={16} /></button>
+          <button style={hdrIconBtn} title="Settings" onClick={() => openOptions('settings')}><FiSettings size={16} /></button>
         </span>
       </div>
 
       <div style={body}>
-        {active.length === 0 && queued.length === 0 && (
+        {active.length === 0 && queued.length === 0 && recent.length === 0 && (
           <div style={empty}>Nothing downloading.<br />Use the Download button on YouTube.</div>
         )}
 
@@ -144,11 +159,33 @@ function App() {
           <div style={sectionLabel}>Up next ({queued.length})</div>
           {renderQueued()}
         </>}
+
+        {recent.length > 0 && <>
+          <div style={sectionLabel}>Recent</div>
+          {recent.map((j) => {
+            const m = STATUS_META[j.status];
+            return (
+              <div key={j.id} style={jobRow}>
+                <span style={{ ...dot, background: m.dot }} />
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={jobLabel}>{j.label}</div>
+                  <div style={{ ...jobStatus, color: m.text }}>
+                    {m.label}{j.finishedAt ? ` · ${new Date(j.finishedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : ''}
+                  </div>
+                </div>
+                {j.status === 'done' && j.folder && (
+                  <button style={cancelX} title="Open folder" onClick={() => openFolder(j.folder)}><FiFolder size={14} /></button>
+                )}
+              </div>
+            );
+          })}
+          <button style={{ ...settingsBtn, padding: '6px 16px 2px' }} onClick={() => openOptions('downloads')}>View all history →</button>
+        </>}
       </div>
 
       <div style={footer}>
-        <div style={{ fontSize: 10, color: '#666', wordBreak: 'break-all' }}>{outputRoot}</div>
-        <button style={settingsBtn} onClick={() => chrome.runtime.openOptionsPage()}>History &amp; settings →</button>
+        <div style={{ fontSize: 10, color: '#666', wordBreak: 'break-all', flex: 1, minWidth: 0 }}>{outputRoot}</div>
+        <span style={versionPill}>v{version}</span>
       </div>
     </div>
   );
@@ -161,6 +198,7 @@ const panel: React.CSSProperties = { width: 380, background: '#181818', color: '
 const header: React.CSSProperties = { background: '#cc0000', padding: '13px 16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' };
 const statusPill: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 6, fontSize: 12, fontWeight: 600, background: 'rgba(0,0,0,0.32)', borderRadius: 12, padding: '4px 10px' };
 const versionPill: React.CSSProperties = { fontSize: 11, background: 'rgba(0,0,0,0.3)', borderRadius: 10, padding: '2px 8px' };
+const hdrIconBtn: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 28, height: 28, borderRadius: 8, border: 'none', background: 'rgba(0,0,0,0.28)', color: '#fff', cursor: 'pointer', padding: 0 };
 const body: React.CSSProperties = { maxHeight: 440, overflowY: 'auto', padding: '8px 0' };
 const empty: React.CSSProperties = { padding: '36px 18px', textAlign: 'center', color: '#888', fontSize: 14, lineHeight: 1.7 };
 const sectionLabel: React.CSSProperties = { fontSize: 11, fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: '0.07em', padding: '12px 16px 6px' };

@@ -130,7 +130,9 @@ export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, play
       {/* Component toggles */}
       <Card on={state.video} onToggle={() => onChange({ video: !state.video })} icon={<FiVideo size={17} />} label="Video">
         <div style={selGroup} onClick={(e) => e.stopPropagation()}>
-          <select disabled={!state.video} value={state.videoQuality}
+          <select value={state.videoQuality}
+            title={state.video ? undefined : 'Click to enable Video'}
+            onMouseDown={state.video ? undefined : (e) => { e.preventDefault(); e.stopPropagation(); onChange({ video: true }); }}
             onChange={(e) => onChange({ videoQuality: e.target.value as VideoQuality })} style={inlineSelect(state.video)}>
             <option value="best">Best</option>
             <option value="1080">1080p</option>
@@ -138,7 +140,9 @@ export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, play
             <option value="480">480p</option>
             <option value="360">360p</option>
           </select>
-          <select disabled={!state.video} value={state.videoFormat}
+          <select value={state.videoFormat}
+            title={state.video ? undefined : 'Click to enable Video'}
+            onMouseDown={state.video ? undefined : (e) => { e.preventDefault(); e.stopPropagation(); onChange({ video: true }); }}
             onChange={(e) => onChange({ videoFormat: e.target.value as VideoFormat })} style={inlineSelect(state.video)}>
             <option value="mp4">MP4</option>
             <option value="webm">WebM</option>
@@ -149,7 +153,9 @@ export function ArchiveMenu({ menuRef, anchorRect, dropUp, state, onChange, play
 
       <Card on={state.audio} onToggle={() => onChange({ audio: !state.audio })} icon={<FiHeadphones size={17} />} label="Audio">
         <div style={selGroup} onClick={(e) => e.stopPropagation()}>
-          <select disabled={!state.audio} value={state.audioFormat}
+          <select value={state.audioFormat}
+            title={state.audio ? undefined : 'Click to enable Audio'}
+            onMouseDown={state.audio ? undefined : (e) => { e.preventDefault(); e.stopPropagation(); onChange({ audio: true }); }}
             onChange={(e) => onChange({ audioFormat: e.target.value as AudioFormat })} style={inlineSelect(state.audio)}>
             <option value="m4a">M4A</option>
             <option value="mp3">MP3</option>
@@ -336,8 +342,9 @@ const inlineSelect = (enabled: boolean): React.CSSProperties => ({
   fontSize: 12.5,
   fontWeight: 500,
   padding: '4px 7px',
-  cursor: enabled ? 'pointer' : 'not-allowed',
-  opacity: enabled ? 1 : 0.35,
+  // Off but still clickable — a click enables the component (handled in onMouseDown).
+  cursor: 'pointer',
+  opacity: enabled ? 1 : 0.5,
   transition: 'opacity 0.15s',
 });
 

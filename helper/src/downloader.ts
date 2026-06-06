@@ -58,6 +58,8 @@ export interface DownloadRequest {
   options?: {
     outputRoot?: string;
     naming?: NamingOptions;
+    sponsorblock?: 'off' | 'mark' | 'remove';
+    fasterDownloads?: boolean;
   };
 }
 
@@ -380,6 +382,12 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
 
       const naming = req.options?.naming ?? DEFAULT_NAMING;
       const customBase = buildBase(root, req, naming);
+      // Optional media flags: SponsorBlock (mark = lossless chapters, remove = cut
+      // segments + re-encode) and concurrent fragments for faster single-file pulls.
+      const sb = req.options?.sponsorblock ?? 'off';
+      const sbFlags = sb === 'mark' ? ['--sponsorblock-mark', 'all']
+        : sb === 'remove' ? ['--sponsorblock-remove', 'sponsor,selfpromo,interaction'] : [];
+      const fastFlags = req.options?.fasterDownloads ? ['-N', '4'] : [];
       // File basename per component: by title (distinct extensions avoid collisions)
       // or the legacy generic name.
       const fileName = (generic: string) => (naming.titleFiles ? '%(title)s' : generic);
@@ -399,6 +407,7 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
           args.push('--merge-output-format', comp.video!.format);
           args.push('-o', `${customBase}/${fileName('video')}.%(ext)s`);
           args.push('--print', `after_move:${CAPTURE}`);
+          args.push(...sbFlags, ...fastFlags);
         } else {
           // metadata or thumbnail only — skip the media but still write the sidecars.
           // CRITICAL: a plain --print implies --simulate (writes nothing) AND --quiet
@@ -439,6 +448,7 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
           '-x', '--audio-format', comp.audio!.format,
           '-o', `${customBase}/${fileName('audio')}.%(ext)s`,
           '--print', `after_move:${CAPTURE}`,
+          ...sbFlags, ...fastFlags,
           ...limitFlag, ...noPlaylistFlag, '--', ...targets,
         ];
         jobs.push(run('yt-dlp', args));

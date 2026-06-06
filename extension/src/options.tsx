@@ -190,14 +190,10 @@ function HistorySection() {
 }
 
 // ── Settings ──────────────────────────────────────────────────────────────────
-function parseCounts(text: string): number[] {
-  const nums = text.split(',').map((t) => parseInt(t.trim(), 10)).filter((n) => Number.isFinite(n) && n > 0);
-  return [...new Set(nums)].sort((a, b) => a - b);
-}
-
 function SettingsSection() {
   const [outputRoot, setOutputRoot] = useState('');
-  const [countsText, setCountsText] = useState(DEFAULT_CHANNEL_COUNTS.join(', '));
+  const [counts, setCounts] = useState<number[]>(DEFAULT_CHANNEL_COUNTS);
+  const [countDraft, setCountDraft] = useState('');
   const [defaultCount, setDefaultCount] = useState(DEFAULT_CHANNEL_COUNT);
   const [naming, setNaming] = useState<NamingOptions>(defaultNaming);
   const [prefs, setPrefs] = useState<MenuState>(defaultMenuState);
@@ -214,7 +210,7 @@ function SettingsSection() {
     chrome.storage.local.get(
       { outputRoot: DEFAULT_OUTPUT_ROOT, channelCounts: DEFAULT_CHANNEL_COUNTS, channelDefaultCount: DEFAULT_CHANNEL_COUNT, menuDefaults: defaultMenuState, collectHistory: true, historyRetentionDays: 0, notifyOnDone: true, autoOpenFolder: false, ...namingDefaults },
       (s) => {
-        setOutputRoot(s.outputRoot); setCountsText((s.channelCounts as number[]).join(', ')); setDefaultCount(s.channelDefaultCount);
+        setOutputRoot(s.outputRoot); setCounts(s.channelCounts as number[]); setDefaultCount(s.channelDefaultCount);
         setPrefs({ ...defaultMenuState, ...(s.menuDefaults || {}) });
         setCollectHistory(s.collectHistory !== false);
         setRetention(Number(s.historyRetentionDays) || 0);
@@ -227,19 +223,25 @@ function SettingsSection() {
     );
   }, []);
 
-  const parsedCounts = parseCounts(countsText);
   const setNameFlag = (k: keyof NamingOptions, v: boolean) => setNaming((n) => ({ ...n, [k]: v }));
   const setPref = (patch: Partial<MenuState>) => setPrefs((p) => ({ ...p, ...patch }));
+  const addCount = () => {
+    const n = parseInt(countDraft, 10);
+    setCountDraft('');
+    if (!Number.isFinite(n) || n <= 0) return;
+    setCounts((c) => [...new Set([...c, n])].sort((a, b) => a - b));
+  };
+  const removeCount = (n: number) => setCounts((c) => c.filter((x) => x !== n));
 
   function save() {
     const root = outputRoot.trim() || DEFAULT_OUTPUT_ROOT;
-    const counts = parsedCounts.length ? parsedCounts : DEFAULT_CHANNEL_COUNTS;
-    const def = counts.includes(defaultCount) ? defaultCount : counts[counts.length - 1];
+    const finalCounts = counts.length ? counts : DEFAULT_CHANNEL_COUNTS;
+    const def = finalCounts.includes(defaultCount) ? defaultCount : finalCounts[finalCounts.length - 1];
     const namingFlat = Object.fromEntries(
       (Object.keys(NAMING_KEYS) as (keyof NamingOptions)[]).map((k) => [NAMING_KEYS[k], naming[k]])
     );
-    chrome.storage.local.set({ outputRoot: root, channelCounts: counts, channelDefaultCount: def, menuDefaults: prefs, collectHistory, historyRetentionDays: retention, notifyOnDone, autoOpenFolder, ...namingFlat }, () => {
-      setOutputRoot(root); setCountsText(counts.join(', ')); setDefaultCount(def);
+    chrome.storage.local.set({ outputRoot: root, channelCounts: finalCounts, channelDefaultCount: def, menuDefaults: prefs, collectHistory, historyRetentionDays: retention, notifyOnDone, autoOpenFolder, ...namingFlat }, () => {
+      setOutputRoot(root); setCounts(finalCounts); setDefaultCount(def);
       setStatus('saved'); setTimeout(() => setStatus('idle'), 2000);
     });
   }
@@ -294,15 +296,30 @@ function SettingsSection() {
           <div style={divider} />
 
           <Field label="Channel Download Counts">
-            <p style={hint}>Preset amounts offered when downloading a channel's popular/latest videos.</p>
-            <input style={input} value={countsText} onChange={(e) => setCountsText(e.target.value)} placeholder="1, 5, 10, 30" spellCheck={false} />
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10 }}>
+            <p style={hint}>Preset amounts offered when downloading a channel's popular/latest videos. Add or remove presets:</p>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+              {counts.map((n) => (
+                <span key={n} style={countChip}>
+                  {n}
+                  <button onClick={() => removeCount(n)} style={chipX} title={`Remove ${n}`}>✕</button>
+                </span>
+              ))}
+              <input
+                type="number" min={1} step={1} inputMode="numeric" value={countDraft}
+                onChange={(e) => setCountDraft(e.target.value.replace(/[^0-9]/g, ''))}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addCount(); } }}
+                onBlur={addCount}
+                placeholder="+ add"
+                style={{ ...input, width: 72, padding: '7px 9px', fontFamily: 'inherit' }}
+              />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 12 }}>
               <span style={{ fontSize: 13, color: '#aaa' }}>Default:</span>
-              <select value={parsedCounts.includes(defaultCount) ? defaultCount : ''} onChange={(e) => setDefaultCount(Number(e.target.value))} style={{ ...input, width: 'auto', padding: '6px 8px', fontFamily: 'inherit' }}>
-                {parsedCounts.map((n) => <option key={n} value={n}>{n}</option>)}
+              <select value={counts.includes(defaultCount) ? defaultCount : ''} onChange={(e) => setDefaultCount(Number(e.target.value))} style={{ ...input, width: 'auto', padding: '6px 8px', fontFamily: 'inherit' }}>
+                {counts.map((n) => <option key={n} value={n}>{n}</option>)}
               </select>
             </div>
-            <p style={muted}>Preview: {parsedCounts.length ? parsedCounts.join(' · ') : '(none — will fall back to 1 · 5 · 10 · 30)'}</p>
+            <p style={muted}>{counts.length ? counts.join(' · ') : '(none — will fall back to 1 · 5 · 10 · 30)'}</p>
           </Field>
 
           <div style={divider} />
@@ -509,6 +526,8 @@ const histTitle: React.CSSProperties = { fontSize: 14, fontWeight: 500, whiteSpa
 const histMeta: React.CSSProperties = { fontSize: 12, color: '#888', marginTop: 2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' };
 const badgeStyle: React.CSSProperties = { fontSize: 11, fontWeight: 600, padding: '3px 9px', borderRadius: 20, flexShrink: 0 };
 const iconBtn: React.CSSProperties = { background: '#2a2a2a', border: '1px solid #3a3a3a', color: '#bbb', cursor: 'pointer', borderRadius: 7, width: 30, height: 30, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 };
+const countChip: React.CSSProperties = { display: 'inline-flex', alignItems: 'center', gap: 7, background: '#2a2a2a', border: '1px solid #3a3a3a', borderRadius: 18, padding: '6px 7px 6px 13px', fontSize: 14, fontWeight: 600, color: '#eee' };
+const chipX: React.CSSProperties = { background: '#3a3a3a', border: 'none', color: '#ccc', cursor: 'pointer', borderRadius: '50%', width: 18, height: 18, fontSize: 9, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontFamily: 'inherit', lineHeight: 1, padding: 0 };
 const filterChip: React.CSSProperties = { background: 'none', border: '1px solid #333', color: '#999', fontSize: 12, padding: '4px 11px', borderRadius: 20, cursor: 'pointer', fontFamily: 'inherit' };
 const filterChipActive: React.CSSProperties = { background: '#cc0000', borderColor: '#cc0000', color: '#fff' };
 const textBtn: React.CSSProperties = { background: 'none', border: 'none', color: '#888', fontSize: 12, cursor: 'pointer', fontFamily: 'inherit' };

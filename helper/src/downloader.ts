@@ -701,9 +701,12 @@ function writeSummary(folder: string, mediaPath: string, req: DownloadRequest, m
       ? path.basename(mediaPath, path.extname(mediaPath))
       : (firstFile ? path.basename(firstFile, path.extname(firstFile)) : (sanitizeFilename(meta.title) || 'download'));
     // Drop any leading component tag ("[VID] ", "[AUD] "…) so the summary reads as the
-    // title, then label it [INFO] so it sorts/scans alongside the tagged component files.
+    // title. With title-tagging on, label it [INFO] so it sorts/scans alongside the
+    // tagged component files; with it off, keep the plain name to match the generic
+    // component files (video.txt, etc.).
     const titleBase = rawBase.replace(/^\[[A-Z]+\]\s+/, '');
-    const txtName = `[INFO] ${titleBase}.txt`;
+    const titleFiles = (req.options?.naming ?? DEFAULT_NAMING).titleFiles;
+    const txtName = titleFiles ? `[INFO] ${titleBase}.txt` : `${titleBase}.txt`;
     saved = saved.filter((f) => f !== txtName);
     const collection = req.category
       ? `${req.category}${req.index && req.total ? ` — #${req.index} of ${req.total}` : ''}`

@@ -2,10 +2,7 @@ import { spawn, execFileSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import { wslToWindowsPath, windowsToWslPath, sanitizeFilename } from './sanitize';
-
-// Running under WSL? (Windows kernel string + the distro env var Chrome's launcher keeps.)
-const IS_WSL = os.release().toLowerCase().includes('microsoft') || !!process.env.WSL_DISTRO_NAME;
+import { wslToWindowsPath, windowsToWslPath, sanitizeFilename, IS_WSL } from './sanitize';
 
 // Discover the Windows user profile (e.g. C:\Users\natha) from inside WSL, cached.
 // The native host runs with a stripped PATH, so cmd.exe is called by absolute path.

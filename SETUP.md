@@ -61,11 +61,12 @@ registry from **PowerShell**:
 .\scripts\install.ps1 -ExtensionId <your-extension-id>
 ```
 
-This patches `native-messaging/com.tube_vault.helper.json` (launcher path +
-extension ID) and writes the Chrome `NativeMessagingHosts` registry key. The
-Windows launcher is `scripts/run-helper.bat`, which bridges into WSL via
-`wsl.exe`. No usernames are hardcoded — everything is derived from the repo's
-own location.
+This fills the `native-messaging/com.tube_vault.helper.json` template (launcher
+path + extension ID), writes the result to `%LOCALAPPDATA%\TubeVault\` (so the
+tracked template stays clean), and points the Chrome `NativeMessagingHosts`
+registry key at it. The Windows launcher is `scripts/run-helper.bat`, which
+bridges into WSL via `wsl.exe`. No usernames are hardcoded — everything is
+derived from the repo's own location.
 
 ### macOS / Linux (native Chrome)
 

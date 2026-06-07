@@ -9,17 +9,21 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 helper="$here/../helper/dist/index.js"
 
 # Prefer a node already on PATH; otherwise probe the usual spots (nvm, homebrew,
-# fnm, system) so a GUI-launched Chrome still finds it.
+# fnm, system) so a GUI-launched Chrome still finds it. Versioned installs
+# (nvm/fnm) are sorted newest-first so we don't pick a stale major (e.g. v10
+# before v20 — plain glob order is lexicographic, not by version).
 node_bin="$(command -v node || true)"
 if [ -z "$node_bin" ]; then
-  for cand in \
-    "$HOME/.nvm/versions/node/"*/bin/node \
-    "$HOME/.local/share/fnm/"*/bin/node \
-    /opt/homebrew/bin/node \
-    /usr/local/bin/node \
-    /usr/bin/node; do
+  versioned="$(ls -d "$HOME/.nvm/versions/node/"*/bin/node \
+                     "$HOME/.local/share/fnm/"*/bin/node 2>/dev/null | sort -Vr || true)"
+  for cand in $versioned /opt/homebrew/bin/node /usr/local/bin/node /usr/bin/node; do
     if [ -x "$cand" ]; then node_bin="$cand"; break; fi
   done
+fi
+
+if [ -z "$node_bin" ]; then
+  echo "TubeVault: no 'node' executable found. Install Node.js or add it to your login PATH." >&2
+  exit 1
 fi
 
 exec "$node_bin" "$helper"

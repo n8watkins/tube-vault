@@ -1,3 +1,8 @@
+import os from 'os';
+
+// Running under WSL? (Windows kernel string + the distro env var Chrome's launcher keeps.)
+export const IS_WSL = os.release().toLowerCase().includes('microsoft') || !!process.env.WSL_DISTRO_NAME;
+
 const ALLOWED_HOSTS = ['www.youtube.com', 'youtube.com', 'youtu.be'];
 
 export function isValidYouTubeUrl(url: string): boolean {

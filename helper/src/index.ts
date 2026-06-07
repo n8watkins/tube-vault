@@ -1,6 +1,6 @@
 import { readMessages, writeMessage } from './protocol';
 import { handle, killActive, probeVideo, listVideos, writeBatchSummary, defaultOutputRoot, type DownloadRequest, type Action, type DownloadComponents, type BatchSummaryItem } from './downloader';
-import { isValidYouTubeUrl, windowsToWslPath, wslToWindowsPath } from './sanitize';
+import { isValidYouTubeUrl, windowsToWslPath, wslToWindowsPath, IS_WSL } from './sanitize';
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -42,9 +42,6 @@ function clearPid(jobId: string): void {
 // When cancelled, kill our yt-dlp children and exit. The pending sendNativeMessage
 // in the service worker then resolves with a closed port → treated as cancelled.
 process.on('SIGTERM', () => { killActive(); process.exit(0); });
-
-// Running under WSL? (Windows kernel string + the distro env var Chrome's launcher keeps.)
-const IS_WSL = os.release().toLowerCase().includes('microsoft') || !!process.env.WSL_DISTRO_NAME;
 
 // Open a folder in the OS file manager. Under WSL we hand a Windows path to Explorer
 // via its ABSOLUTE path — the native-messaging host is launched with a stripped PATH

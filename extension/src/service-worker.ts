@@ -237,13 +237,20 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         sendResponse({ ok: false, error: chrome.runtime.lastError?.message });
         return;
       }
-      // Seed the OS-resolved save folder the first time we reach the helper, so a
-      // fresh install on any platform shows a real default instead of a blank.
-      if (response.defaultRoot && !cachedSettings.outputRoot) {
-        cachedSettings.outputRoot = response.defaultRoot;
-        chrome.storage.local.set({ outputRoot: response.defaultRoot });
-      }
-      sendResponse({ ok: true, version: response.version, platform: response.platform, defaultRoot: response.defaultRoot });
+      const finish = () => sendResponse({ ok: true, version: response.version, platform: response.platform, defaultRoot: response.defaultRoot });
+      if (!response.defaultRoot) { finish(); return; }
+      // Seed the OS-resolved save folder exactly once, the first time we ever reach
+      // the helper, so a fresh install shows a real default instead of a blank. Gate
+      // on storage (authoritative — the in-memory cache may not be loaded yet on a
+      // cold start, which could otherwise clobber a saved path) plus a one-time flag
+      // so we never re-fill a folder the user has intentionally left blank.
+      chrome.storage.local.get(['outputRoot', 'outputRootSeeded'], (s) => {
+        if (!s.outputRoot && !s.outputRootSeeded) {
+          cachedSettings.outputRoot = response.defaultRoot;
+          chrome.storage.local.set({ outputRoot: response.defaultRoot, outputRootSeeded: true });
+        }
+        finish();
+      });
     });
     return true;
   }

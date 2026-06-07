@@ -14,13 +14,18 @@ $ErrorActionPreference = "Stop"
 
 # repo root = parent of the scripts/ folder this file lives in
 $repoRoot     = Split-Path -Parent $PSScriptRoot
-$manifestDir  = Join-Path $repoRoot "native-messaging"
-$manifestFile = Join-Path $manifestDir "com.tube_vault.helper.json"
+$templateFile = Join-Path $repoRoot "native-messaging\com.tube_vault.helper.json"
 $launcher     = Join-Path $repoRoot "scripts\run-helper.bat"
 $regPath      = "HKCU:\Software\Google\Chrome\NativeMessagingHosts\com.tube_vault.helper"
 
-# Patch the launcher path + extension ID into the manifest
-$manifest = Get-Content $manifestFile -Raw | ConvertFrom-Json
+# Generated manifest lives outside the repo (under %LOCALAPPDATA%) so the tracked
+# template keeps its REPLACE_WITH_* placeholders and the repo never goes dirty.
+$outDir       = Join-Path $env:LOCALAPPDATA "TubeVault"
+$manifestFile = Join-Path $outDir "com.tube_vault.helper.json"
+New-Item -ItemType Directory -Path $outDir -Force | Out-Null
+
+# Fill the template (launcher path + extension ID) and write the generated manifest.
+$manifest = Get-Content $templateFile -Raw | ConvertFrom-Json
 $manifest.path = $launcher
 $manifest.allowed_origins = @("chrome-extension://$ExtensionId/")
 $manifest | ConvertTo-Json -Depth 10 | Set-Content $manifestFile -Encoding UTF8

@@ -1,0 +1,23 @@
+{
+  "name": "tube-vault",
+  "version": "0.0.0",
+  "private": true,
+  "scripts": {
+    "build": "npm run build --prefix extension && npm run build --prefix helper",
+    "typecheck": "npm run typecheck --prefix extension && npm run typecheck --prefix helper",
+    "lint": "eslint .",
+    "test": "npm test --prefix extension && npm test --prefix helper",
+    "test:e2e": "npm run build && playwright test",
+    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "sync:windows": "node scripts/sync-windows.mjs",
+    "release:patch": "node scripts/release-patch.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.31.0",
+    "@playwright/test": "^1.54.1",
+    "eslint": "^9.31.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^16.3.0",
+    "typescript-eslint": "^8.38.0"
+  }
+}

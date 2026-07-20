@@ -10,7 +10,11 @@ const extensionRoot = join(repoRoot, 'extension');
 const screenshotDir = join(repoRoot, 'docs', 'screenshots');
 const manifest = JSON.parse(readFileSync(join(extensionRoot, 'manifest.json'), 'utf8'));
 
-const windowsUser = process.env.TUBEVAULT_WINDOWS_USER || 'natha';
+const windowsUser = process.env.TUBEVAULT_WINDOWS_USER || execFileSync(
+  'cmd.exe',
+  ['/d', '/s', '/c', 'echo %USERNAME%'],
+  { encoding: 'utf8' },
+).trim();
 const windowsTempRoot = `/mnt/c/Users/${windowsUser}/AppData/Local/Temp`;
 const windowsTemp = `C:/Users/${windowsUser}/AppData/Local/Temp`;
 const windowsPuppeteerDir = `${windowsTemp}/tubevault-puppeteer-core`;
@@ -29,7 +33,6 @@ const cropFilters = {
   'tubevault-options-settings.png': 'crop=880:1205:150:20',
   'tubevault-options-status.png': 'crop=880:400:150:20',
   'tubevault-options-setup.png': 'crop=880:510:150:20',
-  'tubevault-options-support.png': 'crop=880:420:150:20',
 };
 
 const sampleJobs = [
@@ -39,7 +42,7 @@ const sampleJobs = [
     status: 'running',
     estBytes: 1460000000,
     createdAt: Date.now() - 90_000,
-    folder: 'C:\\Users\\natha\\Videos\\Youtube Downloads\\Building a Local YouTube Archive',
+    folder: 'C:\\Users\\Example\\Videos\\YouTube Downloads\\Building a Local YouTube Archive',
   },
   {
     id: 'job-queued-1',
@@ -68,7 +71,7 @@ const sampleJobs = [
     estBytes: 880000000,
     createdAt: Date.now() - 86_000_000,
     finishedAt: Date.now() - 85_000_000,
-    folder: 'C:\\Users\\natha\\Videos\\Youtube Downloads\\Local-first downloader walkthrough',
+    folder: 'C:\\Users\\Example\\Videos\\YouTube Downloads\\Local-first downloader walkthrough',
   },
   {
     id: 'history-batch-1',
@@ -80,7 +83,7 @@ const sampleJobs = [
     estBytes: 640000000,
     createdAt: Date.now() - 172_000_000,
     finishedAt: Date.now() - 171_000_000,
-    folder: 'C:\\Users\\natha\\Videos\\Youtube Downloads\\Archive Techniques\\Most Popular\\001 - Best archive workflow',
+    folder: 'C:\\Users\\Example\\Videos\\YouTube Downloads\\Archive Techniques\\Most Popular\\001 - Best archive workflow',
   },
   {
     id: 'history-batch-2',
@@ -109,7 +112,7 @@ const chromeShim = `
 (() => {
   const jobs = ${JSON.stringify(sampleJobs)};
   const settings = {
-    outputRoot: 'C:\\\\Users\\\\natha\\\\Videos\\\\Youtube Downloads',
+    outputRoot: 'C:\\\\Users\\\\Example\\\\Videos\\\\YouTube Downloads',
     tvJobs: jobs,
     autoOpenFolder: true,
     collectHistory: true,
@@ -269,10 +272,9 @@ const browserUrl = 'http://127.0.0.1:${chromeDebugPort}';
 
 const optionTabs = [
   { id: 'downloads', label: 'Downloads', waitFor: 'Download history' },
-  { id: 'settings', label: 'Settings', waitFor: 'Default download preferences' },
+  { id: 'settings', label: 'Settings', waitFor: 'Default quality & formats' },
   { id: 'status', label: 'Status', waitFor: 'Native helper' },
   { id: 'setup', label: 'Setup', waitFor: 'Installation guide' },
-  { id: 'support', label: 'Support', waitFor: 'About TubeVault' },
 ];
 
 async function clickTab(page, label) {
@@ -352,7 +354,6 @@ function copyScreenshots() {
     'tubevault-options-settings.png',
     'tubevault-options-status.png',
     'tubevault-options-setup.png',
-    'tubevault-options-support.png',
     'tubevault-popup.png',
   ];
 

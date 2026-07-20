@@ -1,106 +1,110 @@
 # TubeVault Setup
 
-TubeVault runs in two parts: the Chrome extension (the UI) and a small Node
-"native messaging" helper (it shells out to `yt-dlp`/`ffmpeg` to do the work).
-Setup differs slightly per platform — pick your case below.
+TubeVault has two runtime parts: a Chrome extension and a local Node.js native messaging helper.
+The helper launches `yt-dlp` and `ffmpeg` on Windows through WSL or directly on macOS and Linux.
 
-## Prerequisites (all platforms)
+## Prerequisites
 
-- Google Chrome (or another Chromium-family browser).
-- Node.js + npm.
+- Google Chrome or another Chromium-family browser.
+- Node.js 20 or newer with npm.
 - `yt-dlp` and `ffmpeg` available to the helper runtime.
 
-Install the download tools:
+Install the download tools with the package manager appropriate for the helper environment.
 
 ```bash
-# macOS (Homebrew)
+# macOS with Homebrew
 brew install yt-dlp ffmpeg
 
-# Debian/Ubuntu (incl. WSL)
-sudo apt update && sudo apt install -y ffmpeg
+# Debian, Ubuntu, or WSL
+sudo apt update
+sudo apt install -y ffmpeg
 sudo curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
 sudo chmod a+rx /usr/local/bin/yt-dlp
 ```
 
-## Install dependencies & build
+## Install Dependencies and Build
 
-From the repo root:
+Run these commands from the repository root:
 
 ```bash
-npm install --prefix extension
-npm install --prefix helper
-npm run build --prefix helper
-npm run build --prefix extension
+npm ci
+npm ci --prefix extension
+npm ci --prefix helper
+npm run build
 ```
 
-`npm run build --prefix helper` compiles the helper to `helper/dist`.
-`npm run build --prefix extension` bundles the extension. (On the WSL+Windows
-setup it also copies the build to the Windows Projects path.)
+The build writes the extension bundles to `extension/dist` and helper JavaScript to `helper/dist`.
+It does not version, commit, copy, or deploy files.
 
-## Load the extension in Chrome
+## Load the Extension
 
-1. Open `chrome://extensions`, enable **Developer mode**.
-2. Click **Load unpacked** and select the `extension/` folder.
-   - On the WSL+Windows setup, select the Windows copy
-     (`C:\Users\<you>\Projects\Tools\tube-vault\extension`).
-3. Copy the extension's **ID** shown on its card — you need it to register the
-   helper.
-4. After every rebuild, click **Reload** on the card.
+1. Open `chrome://extensions` and enable **Developer mode**.
+2. Click **Load unpacked** and select the built `extension/` directory.
+3. Copy the extension ID shown on its card.
+4. Reload the extension card after every build or sync.
 
-## Register the native messaging host
+For Windows Chrome with development inside WSL, first copy the runtime files into an existing Windows checkout:
 
-This is the only step that differs by OS. It tells Chrome how to launch the
-helper. Run it once (and again whenever the extension ID changes).
+```bash
+npm run sync:windows -- --target /mnt/c/Users/<you>/Projects/tube-vault
+```
 
-### Windows + WSL
+Select that checkout's `extension` directory in Chrome.
+The target can also be supplied through `TUBE_VAULT_WINDOWS_REPO`.
 
-The extension runs in Windows Chrome; the helper runs in WSL. Register via the
-registry from **PowerShell**:
+## Register the Native Messaging Host
+
+Registration tells Chrome how to launch the local helper.
+Run it once and repeat it if the extension ID or repository location changes.
+
+### Windows with WSL
+
+Run this command from Windows PowerShell:
 
 ```powershell
 .\scripts\install.ps1 -ExtensionId <your-extension-id>
 ```
 
-This fills the `native-messaging/com.tube_vault.helper.json` template (launcher
-path + extension ID), writes the result to `%LOCALAPPDATA%\TubeVault\` (so the
-tracked template stays clean), and points the Chrome `NativeMessagingHosts`
-registry key at it. The Windows launcher is `scripts/run-helper.bat`, which
-bridges into WSL via `wsl.exe`. No usernames are hardcoded — everything is
-derived from the repo's own location.
+The installer creates a user-specific host manifest under `%LOCALAPPDATA%\TubeVault` and registers it in the current user's Chrome native messaging registry key.
+The tracked manifest template stays unchanged.
+The generated launcher path is derived from the repository location and contains no hardcoded username.
 
-### macOS / Linux (native Chrome)
+### macOS or Linux
 
 ```bash
 ./scripts/install.sh <your-extension-id>
 ```
 
-This drops `com.tube_vault.helper.json` into the `NativeMessagingHosts`
-directory of each Chromium-family browser it finds (Chrome, Chromium, Brave,
-Edge), pointing at `scripts/run-helper.sh`, which runs the Node helper directly.
+The installer registers `com.tube_vault.helper.json` for the supported Chromium-family browsers it finds.
+The host points to `scripts/run-helper.sh`, which launches the local Node.js helper.
 
-## Default save folder
+## Default Save Folder
 
-You don't need to configure a path. On first connect the helper reports an
-OS-appropriate default, which the extension fills in:
+The helper reports an operating-system-specific default on the first successful connection.
+The extension seeds that path only when no saved choice exists and never overwrites a user setting.
 
-- **Windows / WSL** → `C:\Users\<you>\Videos\YouTube Downloads`
-  (discovered from `%USERPROFILE%` — files land on the Windows side, not the
-  Linux rootfs).
-- **macOS / Linux** → `~/Videos/YouTube Downloads`.
+- Windows with WSL defaults to `C:\Users\<you>\Videos\YouTube Downloads`.
+- macOS and Linux default to `~/Videos/YouTube Downloads`.
 
-Override it anytime in **Settings → Download Folder**.
+Change the path at any time under **Settings > Download folder**.
 
-## Check status
+## Verify the Installation
 
-Open the extension's options page → **Status**. It verifies helper
-connectivity, `yt-dlp`/`ffmpeg` availability, and the resolved output folder.
+Open the extension options and select **Status**.
+The page checks native helper connectivity, `yt-dlp`, `ffmpeg`, and the resolved output folder.
 
-## Common fixes
+Run the repository checks during development:
 
-- **Helper offline** — rebuild the helper and re-run the install script for your
-  OS, then reload the extension.
-- **Downloads fail immediately** — confirm `yt-dlp` and `ffmpeg` are on the
-  helper's PATH.
-- **macOS/Linux: "node not found"** — `run-helper.sh` probes nvm/fnm/Homebrew/
-  system locations; if your node is elsewhere, ensure it's on your login PATH.
-- **Stale UI** — reload the unpacked extension at `chrome://extensions`.
+```bash
+npm run check
+npx playwright install chromium
+npm run test:e2e
+```
+
+## Troubleshooting
+
+- If the helper is offline, rebuild it, rerun the platform installer, and reload the extension.
+- If downloads fail immediately, confirm that `yt-dlp` and `ffmpeg` are on the helper process PATH.
+- If macOS or Linux reports that Node.js is missing, ensure Node is available from the login environment used by `scripts/run-helper.sh`.
+- If the UI is stale, reload the unpacked extension at `chrome://extensions` and refresh the YouTube tab.
+- If Chromium smoke tests cannot start on Linux, run `npx playwright install --with-deps chromium`.

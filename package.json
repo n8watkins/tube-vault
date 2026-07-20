@@ -6,7 +6,7 @@
     "build": "npm run build --prefix extension && npm run build --prefix helper",
     "typecheck": "npm run typecheck --prefix extension && npm run typecheck --prefix helper",
     "lint": "eslint .",
-    "test": "npm test --prefix extension && npm test --prefix helper",
+    "test": "node --test scripts/*.test.mjs && npm test --prefix extension && npm test --prefix helper",
     "test:e2e": "npm run build && playwright test",
     "check": "npm run lint && npm run typecheck && npm test && npm run build",
     "sync:windows": "node scripts/sync-windows.mjs",

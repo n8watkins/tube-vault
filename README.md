@@ -95,7 +95,7 @@ npm run sync:windows -- --target /mnt/c/Users/<you>/Projects/tube-vault
 
 You can set `TUBE_VAULT_WINDOWS_REPO` instead of passing `--target`.
 The CLI argument takes precedence when both are present.
-The destination must be an absolute existing repository path containing `extension/` and `helper/`.
+The destination must be the absolute root of an existing Git repository with TubeVault extension and helper package identities.
 The command copies only the extension manifest, HTML, icons, bundles, helper bundles, and helper package metadata.
 It never deletes destination files.
 
@@ -110,7 +110,7 @@ npm run release:patch
 ```
 
 The release command requires clean tracked and staged files, while unrelated untracked files are allowed.
-It verifies matching extension and manifest versions, runs the full check, increments the patch version, rebuilds, stages only the two version files, and commits `build(tube-vault): vX.Y.Z`.
+It verifies matching package, manifest, and lockfile versions, runs the full check, increments all three version records, rebuilds, stages those three files, and commits `build(tube-vault): vX.Y.Z`.
 It does not sync to Windows or push.
 
 ## Options Page

@@ -75,6 +75,7 @@ const isActive = (job: Job) => job.status === 'queued' || job.status === 'probin
 
 export class JobCoordinator {
   private pumpPromise: Promise<void> | null = null;
+  private pumpRequested = false;
   private readonly summaryPromises = new Map<string, Promise<void>>();
   private jobsTail = Promise.resolve();
   private summaryTail = Promise.resolve();
@@ -182,11 +183,21 @@ export class JobCoordinator {
   }
 
   private pumpQueue(): Promise<void> {
+    this.pumpRequested = true;
     if (this.pumpPromise) return this.pumpPromise;
-    this.pumpPromise = this.drainQueue().finally(() => {
-      this.pumpPromise = null;
-    });
+    this.pumpPromise = this.drainRequestedQueue();
     return this.pumpPromise;
+  }
+
+  private async drainRequestedQueue(): Promise<void> {
+    try {
+      do {
+        this.pumpRequested = false;
+        await this.drainQueue();
+      } while (this.pumpRequested);
+    } finally {
+      this.pumpPromise = null;
+    }
   }
 
   private async drainQueue(): Promise<void> {

@@ -37,6 +37,7 @@ function harness(options: {
   native?: (payload: Record<string, unknown>) => Promise<NativeResponse | null>;
   values?: Record<string, unknown>;
   beforeGetValues?: () => Promise<void>;
+  afterGetJobs?: (jobs: Job[], readCount: number) => Promise<void>;
 } = {}) {
   let jobs = structuredClone(options.jobs ?? []);
   const values = { ...(options.values ?? {}) };
@@ -47,9 +48,14 @@ function harness(options: {
   const notifications: [string, string][] = [];
   const opened: string[] = [];
   const delays: number[] = [];
+  let jobsReadCount = 0;
   const effects: CoordinatorEffects = {
     storage: {
-      getJobs: async () => structuredClone(jobs),
+      getJobs: async () => {
+        const snapshot = structuredClone(jobs);
+        await options.afterGetJobs?.(snapshot, ++jobsReadCount);
+        return snapshot;
+      },
       setJobs: async (next) => { jobs = structuredClone(next); },
       getValues: async (keys) => {
         await options.beforeGetValues?.();
@@ -123,6 +129,27 @@ describe('JobCoordinator', () => {
     expect(test.jobs.map((item) => item.videoUrl)).toEqual(['one', 'two']);
     download.resolve({ ok: true });
     await test.coordinator.whenIdle();
+  });
+
+  it('rechecks the queue when work arrives as an empty drain exits', async () => {
+    const emptyReadStarted = deferred<void>();
+    const releaseEmptyRead = deferred<void>();
+    const test = harness({
+      afterGetJobs: async (_jobs, readCount) => {
+        if (readCount !== 2) return;
+        emptyReadStarted.resolve();
+        await releaseEmptyRead.promise;
+      },
+    });
+
+    await test.coordinator.initialize();
+    await emptyReadStarted.promise;
+    await test.coordinator.enqueue({ items: [{ url: 'late', bytes: 1 }] });
+    releaseEmptyRead.resolve();
+    await test.coordinator.whenIdle();
+
+    expect(test.jobs).toEqual([expect.objectContaining({ videoUrl: 'late', status: 'done' })]);
+    expect(test.calls).toContainEqual(expect.objectContaining({ action: 'custom', url: 'late' }));
   });
 
   it('probes and downloads strictly serially while applying probe metadata', async () => {

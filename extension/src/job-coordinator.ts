@@ -19,6 +19,7 @@ export interface Job {
   createdAt: number;
   finishedAt?: number;
   summaryWritten?: boolean;
+  summaryExhausted?: boolean;
 }
 
 export interface CoordinatorSettings {
@@ -76,6 +77,7 @@ export class JobCoordinator {
   private pumpPromise: Promise<void> | null = null;
   private readonly summaryPromises = new Map<string, Promise<void>>();
   private summaryTail = Promise.resolve();
+  private summaryStateTail = Promise.resolve();
 
   constructor(private readonly effects: CoordinatorEffects) {}
 
@@ -154,7 +156,7 @@ export class JobCoordinator {
 
   async clearHistory(): Promise<void> {
     const jobs = await this.effects.storage.getJobs();
-    await this.setJobs(jobs.filter(isActive));
+    await this.setJobs(jobs, { clearHistory: true });
   }
 
   async seedOutputRoot(defaultRoot: string): Promise<void> {
@@ -268,28 +270,39 @@ export class JobCoordinator {
     }
   }
 
-  private trim(jobs: Job[]): Job[] {
+  private trim(jobs: Job[], options: { clearHistory?: boolean; finalizedBatchId?: string } = {}): Job[] {
     const settings = this.effects.getSettings();
+    const protectedBatchIds = new Set(jobs.flatMap((job) => (
+      job.batchId && job.batchId !== options.finalizedBatchId
+        && (isActive(job) || (!job.summaryWritten && !job.summaryExhausted))
+        ? [job.batchId]
+        : []
+    )));
+    const isProtected = (job: Job) => !!job.batchId && protectedBatchIds.has(job.batchId);
     let result = jobs;
-    if (!settings.collectHistory) {
-      result = result.filter(isActive);
+    if (options.clearHistory || !settings.collectHistory) {
+      result = result.filter((job) => isActive(job) || isProtected(job));
     } else if (settings.historyRetentionDays > 0) {
       const cutoff = this.effects.now() - settings.historyRetentionDays * 86_400_000;
-      result = result.filter((job) => isActive(job) || (job.finishedAt ?? 0) >= cutoff);
+      result = result.filter((job) => isActive(job) || isProtected(job) || (job.finishedAt ?? 0) >= cutoff);
     }
     const finishedIndexes = result
       .map((job, index) => ({ job, index }))
-      .filter(({ job }) => !isActive(job));
+      .filter(({ job }) => !isActive(job) && !isProtected(job));
     const dropCount = Math.max(0, finishedIndexes.length - MAX_HISTORY);
     if (dropCount === 0) return result;
     const dropped = new Set(finishedIndexes.slice(0, dropCount).map(({ index }) => index));
     return result.filter((_job, index) => !dropped.has(index));
   }
 
-  private async setJobs(jobs: Job[], preserveFinishedBatch = false): Promise<void> {
-    const retainedJobs = preserveFinishedBatch ? jobs : this.trim(jobs);
+  private async setJobs(
+    jobs: Job[],
+    options: boolean | { clearHistory?: boolean; finalizedBatchId?: string } = false,
+  ): Promise<void> {
+    const preserveAllFinished = options === true;
+    const retainedJobs = preserveAllFinished ? jobs : this.trim(jobs, typeof options === 'object' ? options : {});
     await this.effects.storage.setJobs(retainedJobs);
-    if (!preserveFinishedBatch) await this.reconcileSummaryAttempts(retainedJobs);
+    if (!preserveAllFinished) await this.reconcileSummaryAttempts(retainedJobs);
   }
 
   private async maybeWriteBatchSummary(batchId?: string): Promise<void> {
@@ -340,13 +353,17 @@ export class JobCoordinator {
       if (attempts < MAX_SUMMARY_ATTEMPTS) await this.effects.delay(100 * attempts);
     }
 
-    await this.setJobs(await this.effects.storage.getJobs());
+    const exhaustedJobs = await this.effects.storage.getJobs();
+    for (const job of exhaustedJobs) {
+      if (job.batchId === batchId) job.summaryExhausted = true;
+    }
+    await this.setJobs(exhaustedJobs, { finalizedBatchId: batchId });
     if (!(await this.effects.storage.getJobs()).some((job) => job.batchId === batchId)) {
       await this.clearSummaryAttempts(batchId);
     }
   }
 
-  private async getSummaryAttemptState(): Promise<Record<string, number>> {
+  private async readSummaryAttemptState(): Promise<Record<string, number>> {
     const value = (await this.effects.storage.getValues([SUMMARY_ATTEMPTS_KEY]))[SUMMARY_ATTEMPTS_KEY];
     if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
     return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => (
@@ -355,29 +372,41 @@ export class JobCoordinator {
   }
 
   private async getSummaryAttempts(batchId: string): Promise<number> {
-    return (await this.getSummaryAttemptState())[batchId] ?? 0;
+    return this.withSummaryStateLock(async () => (await this.readSummaryAttemptState())[batchId] ?? 0);
   }
 
   private async setSummaryAttempts(batchId: string, attempts: number): Promise<void> {
-    const state = await this.getSummaryAttemptState();
-    state[batchId] = attempts;
-    await this.effects.storage.setValues({ [SUMMARY_ATTEMPTS_KEY]: state });
+    await this.withSummaryStateLock(async () => {
+      const state = await this.readSummaryAttemptState();
+      state[batchId] = attempts;
+      await this.effects.storage.setValues({ [SUMMARY_ATTEMPTS_KEY]: state });
+    });
   }
 
   private async clearSummaryAttempts(batchId: string): Promise<void> {
-    const state = await this.getSummaryAttemptState();
-    if (!(batchId in state)) return;
-    delete state[batchId];
-    await this.effects.storage.setValues({ [SUMMARY_ATTEMPTS_KEY]: state });
+    await this.withSummaryStateLock(async () => {
+      const state = await this.readSummaryAttemptState();
+      if (!(batchId in state)) return;
+      delete state[batchId];
+      await this.effects.storage.setValues({ [SUMMARY_ATTEMPTS_KEY]: state });
+    });
   }
 
   private async reconcileSummaryAttempts(jobs: Job[]): Promise<void> {
-    const retainedBatchIds = new Set(jobs.flatMap((job) => job.batchId ? [job.batchId] : []));
-    const state = await this.getSummaryAttemptState();
-    const retainedState = Object.fromEntries(
-      Object.entries(state).filter(([batchId]) => retainedBatchIds.has(batchId)),
-    );
-    if (Object.keys(retainedState).length === Object.keys(state).length) return;
-    await this.effects.storage.setValues({ [SUMMARY_ATTEMPTS_KEY]: retainedState });
+    await this.withSummaryStateLock(async () => {
+      const retainedBatchIds = new Set(jobs.flatMap((job) => job.batchId ? [job.batchId] : []));
+      const state = await this.readSummaryAttemptState();
+      const retainedState = Object.fromEntries(
+        Object.entries(state).filter(([batchId]) => retainedBatchIds.has(batchId)),
+      );
+      if (Object.keys(retainedState).length === Object.keys(state).length) return;
+      await this.effects.storage.setValues({ [SUMMARY_ATTEMPTS_KEY]: retainedState });
+    });
+  }
+
+  private async withSummaryStateLock<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.summaryStateTail.then(operation, operation);
+    this.summaryStateTail = result.then(() => undefined, () => undefined);
+    return result;
   }
 }

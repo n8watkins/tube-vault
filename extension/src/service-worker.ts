@@ -16,7 +16,7 @@ const settings = {
   historyRetentionDays: 0,
 };
 
-chrome.storage.local.get({
+const settingsReady = new Promise<void>((resolve) => chrome.storage.local.get({
   outputRoot: '',
   autoOpenFolder: false,
   notifyOnDone: true,
@@ -25,7 +25,10 @@ chrome.storage.local.get({
   collectHistory: true,
   historyRetentionDays: 0,
   ...namingStorageDefaults,
-}, applySettings);
+}, (values) => {
+  applySettings(values);
+  resolve();
+}));
 
 function applySettings(values: Record<string, unknown>): void {
   if ('outputRoot' in values) settings.outputRoot = typeof values.outputRoot === 'string' ? values.outputRoot : '';
@@ -72,11 +75,11 @@ const coordinator = new JobCoordinator({
   getSettings: () => settings,
 });
 
-void coordinator.initialize();
+const coordinatorReady = settingsReady.then(() => coordinator.initialize());
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'TUBE_VAULT_PING') {
-    void sendNative({ action: 'ping' }).then(async (response) => {
+    void coordinatorReady.then(() => sendNative({ action: 'ping' })).then(async (response) => {
       if (!response?.ok) {
         sendResponse({ ok: false, error: response?.error });
         return;
@@ -89,24 +92,26 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === 'TUBE_VAULT_CANCEL') {
-    void coordinator.cancelJob(message.jobId).then(() => sendResponse({ ok: true }));
+    void coordinatorReady.then(() => coordinator.cancelJob(message.jobId)).then(() => sendResponse({ ok: true }));
     return true;
   }
   if (message.type === 'TUBE_VAULT_CANCEL_BATCH') {
-    void coordinator.cancelBatch(message.batchId).then(() => sendResponse({ ok: true }));
+    void coordinatorReady.then(() => coordinator.cancelBatch(message.batchId)).then(() => sendResponse({ ok: true }));
     return true;
   }
   if (message.type === 'TUBE_VAULT_CLEAR_HISTORY') {
-    void coordinator.clearHistory().then(() => sendResponse({ ok: true }));
+    void coordinatorReady.then(() => coordinator.clearHistory()).then(() => sendResponse({ ok: true }));
     return true;
   }
   if (message.type === 'TUBE_VAULT_ENQUEUE') {
-    void coordinator.enqueue(message).then(sendResponse);
+    void coordinatorReady.then(() => coordinator.enqueue(message)).then(sendResponse);
     return true;
   }
   if (message.type !== 'TUBE_VAULT_REQUEST') return false;
 
-  const payload = { ...message.payload, options: { outputRoot: settings.outputRoot } };
-  void sendNative(payload).then((response) => sendResponse(response ?? { ok: false, error: 'Native helper failed' }));
+  void coordinatorReady.then(() => {
+    const payload = { ...message.payload, options: { outputRoot: settings.outputRoot } };
+    return sendNative(payload);
+  }).then((response) => sendResponse(response ?? { ok: false, error: 'Native helper failed' }));
   return true;
 });

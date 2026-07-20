@@ -36,6 +36,7 @@ function harness(options: {
   settings?: Partial<CoordinatorSettings>;
   native?: (payload: Record<string, unknown>) => Promise<NativeResponse | null>;
   values?: Record<string, unknown>;
+  beforeGetValues?: () => Promise<void>;
 } = {}) {
   let jobs = structuredClone(options.jobs ?? []);
   const values = { ...(options.values ?? {}) };
@@ -50,7 +51,10 @@ function harness(options: {
     storage: {
       getJobs: async () => structuredClone(jobs),
       setJobs: async (next) => { jobs = structuredClone(next); },
-      getValues: async (keys) => Object.fromEntries(keys.map((key) => [key, values[key]])),
+      getValues: async (keys) => {
+        await options.beforeGetValues?.();
+        return Object.fromEntries(keys.map((key) => [key, values[key]]));
+      },
       setValues: async (next) => { Object.assign(values, next); },
     },
     sendNative: async (payload) => {
@@ -177,7 +181,7 @@ describe('JobCoordinator', () => {
 
   it('drops finished jobs when history is disabled', async () => {
     const download = deferred<NativeResponse>();
-    const test = harness({ jobs: [job('old', 'done')], settings: { collectHistory: false }, native: async () => download.promise });
+    const test = harness({ jobs: [job('old', 'done', { summaryWritten: true })], settings: { collectHistory: false }, native: async () => download.promise });
     await test.coordinator.enqueue({ items: [{ url: 'new', bytes: 1 }] });
     expect(test.jobs.map((item) => item.id)).not.toContain('old');
     download.resolve({ ok: true });
@@ -187,10 +191,11 @@ describe('JobCoordinator', () => {
 
   it('applies age retention and the 100-item finished history cap', async () => {
     const day = 86_400_000;
-    const old = job('expired', 'done', { batchId: 'expired-batch', finishedAt: 1 });
+    const old = job('expired', 'done', { batchId: 'expired-batch', finishedAt: 1, summaryWritten: true });
     const recent = Array.from({ length: 101 }, (_, index) => job(`recent-${index}`, 'done', {
       batchId: `recent-batch-${index}`,
       finishedAt: 20 * day + index,
+      summaryWritten: true,
     }));
     const download = deferred<NativeResponse>();
     const test = harness({
@@ -218,7 +223,7 @@ describe('JobCoordinator', () => {
   it('clears summary attempt state only for batches removed from history', async () => {
     const test = harness({
       jobs: [
-        job('finished', 'done', { batchId: 'finished-batch' }),
+        job('finished', 'done', { batchId: 'finished-batch', summaryWritten: true }),
         job('active', 'queued', { batchId: 'active-batch', estBytes: 1 }),
       ],
       native: async () => deferred<NativeResponse>().promise,
@@ -227,6 +232,45 @@ describe('JobCoordinator', () => {
     await test.coordinator.clearHistory();
     expect(test.jobs.map((item) => item.id)).toEqual(['active']);
     expect(test.values.tvBatchSummaryAttempts).toEqual({ 'active-batch': 1 });
+  });
+
+  it('preserves settled members of an active batch during enqueue and clear history', async () => {
+    const activeDownload = deferred<NativeResponse>();
+    const test = harness({
+      jobs: [
+        job('settled', 'done', { batchId: 'batch', finishedAt: 1 }),
+        job('active', 'running', { batchId: 'batch' }),
+        job('completed', 'done', { batchId: 'completed', summaryWritten: true }),
+      ],
+      settings: { collectHistory: false },
+      native: async (payload) => payload.action === 'custom' ? activeDownload.promise : { ok: true },
+    });
+
+    await test.coordinator.enqueue({ items: [{ url: 'new', bytes: 1 }] });
+    expect(test.jobs.map((item) => item.id)).toEqual(['settled', 'active', 'id-1']);
+    await test.coordinator.clearHistory();
+    expect(test.jobs.map((item) => item.id)).toEqual(['settled', 'active', 'id-1']);
+  });
+
+  it('exempts unfinished batches from age and count trimming', async () => {
+    const day = 86_400_000;
+    const protectedJobs = [
+      job('settled', 'failed', { batchId: 'active-batch', finishedAt: 1 }),
+      job('active', 'running', { batchId: 'active-batch' }),
+    ];
+    const completed = Array.from({ length: 101 }, (_, index) => job(`completed-${index}`, 'done', {
+      batchId: `completed-batch-${index}`,
+      finishedAt: 20 * day + index,
+      summaryWritten: true,
+    }));
+    const test = harness({ jobs: [...protectedJobs, ...completed], settings: { historyRetentionDays: 10 } });
+    test.setNow(25 * day);
+
+    await test.coordinator.enqueue({ items: [{ url: 'new', bytes: 1 }] });
+
+    expect(test.jobs).toHaveLength(103);
+    expect(test.jobs.map((item) => item.id)).toEqual(expect.arrayContaining(['settled', 'active', 'id-1']));
+    expect(test.jobs.some((item) => item.id === 'completed-0')).toBe(false);
   });
 
   it('recovers interrupted work and continues queued jobs after restart', async () => {
@@ -295,6 +339,30 @@ describe('JobCoordinator', () => {
     });
     await test.coordinator.initialize();
     expect(test.calls).toEqual([]);
+    expect(test.values.tvBatchSummaryAttempts).toEqual({ batch: 3 });
+  });
+
+  it('serializes attempt increments with retry-state reconciliation', async () => {
+    const releaseRead = deferred<void>();
+    let blockFirstRead = true;
+    const test = harness({
+      jobs: [job('one', 'done', { batchId: 'batch' })],
+      values: { tvBatchSummaryAttempts: { orphan: 2 } },
+      beforeGetValues: async () => {
+        if (!blockFirstRead) return;
+        blockFirstRead = false;
+        await releaseRead.promise;
+      },
+      native: async (payload) => ({ ok: payload.action !== 'batch_summary' }),
+    });
+
+    const trim = test.coordinator.enqueue({ items: [{ url: 'active', bytes: 1 }] });
+    const initialize = test.coordinator.initialize();
+    releaseRead.resolve();
+    await Promise.all([trim, initialize]);
+    await test.coordinator.whenIdle();
+
+    expect(test.calls.filter((call) => call.action === 'batch_summary')).toHaveLength(3);
     expect(test.values.tvBatchSummaryAttempts).toEqual({ batch: 3 });
   });
 

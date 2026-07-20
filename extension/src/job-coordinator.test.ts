@@ -111,6 +111,20 @@ describe('JobCoordinator', () => {
     ]);
   });
 
+  it('preserves every job across concurrent enqueues', async () => {
+    const download = deferred<NativeResponse>();
+    const test = harness({ native: async (payload) => payload.action === 'custom' ? download.promise : { ok: true } });
+
+    await Promise.all([
+      test.coordinator.enqueue({ items: [{ url: 'one', bytes: 1 }] }),
+      test.coordinator.enqueue({ items: [{ url: 'two', bytes: 1 }] }),
+    ]);
+
+    expect(test.jobs.map((item) => item.videoUrl)).toEqual(['one', 'two']);
+    download.resolve({ ok: true });
+    await test.coordinator.whenIdle();
+  });
+
   it('probes and downloads strictly serially while applying probe metadata', async () => {
     const firstDownload = deferred<NativeResponse>();
     const test = harness({ native: async (payload) => {
@@ -145,6 +159,26 @@ describe('JobCoordinator', () => {
     await test.coordinator.cancelJob('queued');
     expect(test.jobs[0].status).toBe('cancelled');
     expect(test.calls).toEqual([]);
+  });
+
+  it('preserves cancellation when enqueue mutates the same snapshot concurrently', async () => {
+    const download = deferred<NativeResponse>();
+    const test = harness({
+      jobs: [job('queued', 'queued')],
+      native: async (payload) => payload.action === 'custom' ? download.promise : { ok: true },
+    });
+
+    await Promise.all([
+      test.coordinator.cancelJob('queued'),
+      test.coordinator.enqueue({ items: [{ url: 'new', bytes: 1 }] }),
+    ]);
+
+    expect(test.jobs.map(({ id, status }) => ({ id, status }))).toEqual([
+      { id: 'queued', status: 'cancelled' },
+      { id: 'id-1', status: 'running' },
+    ]);
+    download.resolve({ ok: true });
+    await test.coordinator.whenIdle();
   });
 
   it.each(['probing', 'running'] as const)('cancels an in-flight %s job through the native helper', async (status) => {

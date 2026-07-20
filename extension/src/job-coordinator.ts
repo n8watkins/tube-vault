@@ -76,23 +76,25 @@ const isActive = (job: Job) => job.status === 'queued' || job.status === 'probin
 export class JobCoordinator {
   private pumpPromise: Promise<void> | null = null;
   private readonly summaryPromises = new Map<string, Promise<void>>();
+  private jobsTail = Promise.resolve();
   private summaryTail = Promise.resolve();
   private summaryStateTail = Promise.resolve();
 
   constructor(private readonly effects: CoordinatorEffects) {}
 
   async initialize(): Promise<void> {
-    const jobs = await this.effects.storage.getJobs();
-    let changed = false;
-    for (const job of jobs) {
-      if (job.status === 'running' || job.status === 'probing') {
-        job.status = 'failed';
-        job.error = 'Interrupted';
-        job.finishedAt = this.effects.now();
-        changed = true;
+    const jobs = await this.mutateJobs((currentJobs) => {
+      let changed = false;
+      for (const job of currentJobs) {
+        if (job.status === 'running' || job.status === 'probing') {
+          job.status = 'failed';
+          job.error = 'Interrupted';
+          job.finishedAt = this.effects.now();
+          changed = true;
+        }
       }
-    }
-    if (changed) await this.setJobs(jobs, true);
+      return { changed, value: currentJobs };
+    }, true);
     const terminalBatchIds = new Set(jobs
       .filter((job) => job.batchId && !isActive(job))
       .map((job) => job.batchId as string));
@@ -106,57 +108,65 @@ export class JobCoordinator {
 
     const isBatch = valid.length > 1 || !!request.batchLabel;
     const batchId = isBatch ? this.effects.generateId() : undefined;
-    const jobs = await this.effects.storage.getJobs();
-    valid.forEach((item, index) => jobs.push({
-      id: this.effects.generateId(),
-      batchId,
-      batchLabel: request.batchLabel,
-      videoUrl: item.url,
-      label: item.title || item.url,
-      components: request.components ?? {},
-      status: 'queued',
-      estBytes: typeof item.bytes === 'number' && item.bytes > 0 ? item.bytes : undefined,
-      index: isBatch ? index + 1 : undefined,
-      total: isBatch ? valid.length : undefined,
-      category: isBatch ? request.category : undefined,
-      createdAt: this.effects.now(),
-    }));
-    await this.setJobs(jobs);
+    await this.mutateJobs((jobs) => {
+      valid.forEach((item, index) => jobs.push({
+        id: this.effects.generateId(),
+        batchId,
+        batchLabel: request.batchLabel,
+        videoUrl: item.url,
+        label: item.title || item.url,
+        components: request.components ?? {},
+        status: 'queued',
+        estBytes: typeof item.bytes === 'number' && item.bytes > 0 ? item.bytes : undefined,
+        index: isBatch ? index + 1 : undefined,
+        total: isBatch ? valid.length : undefined,
+        category: isBatch ? request.category : undefined,
+        createdAt: this.effects.now(),
+      }));
+      return { changed: true, value: undefined };
+    });
     void this.pumpQueue();
     return { ok: true, batchId, count: valid.length };
   }
 
   async cancelJob(id: string): Promise<void> {
-    const jobs = await this.effects.storage.getJobs();
-    const job = jobs.find((candidate) => candidate.id === id);
-    if (!job || !isActive(job)) return;
-    const wasInFlight = job.status === 'running' || job.status === 'probing';
-    job.status = 'cancelled';
-    job.finishedAt = this.effects.now();
-    await this.setJobs(jobs, !!job.batchId);
-    if (wasInFlight) await this.effects.sendNative({ action: 'cancel', jobId: id });
-    await this.maybeWriteBatchSummary(job.batchId);
+    const cancelled = await this.mutateJobs((jobs) => {
+      const job = jobs.find((candidate) => candidate.id === id);
+      if (!job || !isActive(job)) return { changed: false, value: undefined };
+      const result = {
+        batchId: job.batchId,
+        wasInFlight: job.status === 'running' || job.status === 'probing',
+      };
+      job.status = 'cancelled';
+      job.finishedAt = this.effects.now();
+      return { changed: true, value: result, options: !!job.batchId };
+    });
+    if (!cancelled) return;
+    if (cancelled.wasInFlight) await this.effects.sendNative({ action: 'cancel', jobId: id });
+    await this.maybeWriteBatchSummary(cancelled.batchId);
     void this.pumpQueue();
   }
 
   async cancelBatch(batchId: string): Promise<void> {
-    const jobs = await this.effects.storage.getJobs();
-    const inFlight: string[] = [];
-    for (const job of jobs) {
-      if (job.batchId !== batchId || !isActive(job)) continue;
-      if (job.status === 'running' || job.status === 'probing') inFlight.push(job.id);
-      job.status = 'cancelled';
-      job.finishedAt = this.effects.now();
-    }
-    await this.setJobs(jobs, true);
+    const inFlight = await this.mutateJobs((jobs) => {
+      const ids: string[] = [];
+      let changed = false;
+      for (const job of jobs) {
+        if (job.batchId !== batchId || !isActive(job)) continue;
+        if (job.status === 'running' || job.status === 'probing') ids.push(job.id);
+        job.status = 'cancelled';
+        job.finishedAt = this.effects.now();
+        changed = true;
+      }
+      return { changed, value: ids };
+    }, true);
     await Promise.all(inFlight.map((jobId) => this.effects.sendNative({ action: 'cancel', jobId })));
     await this.maybeWriteBatchSummary(batchId);
     void this.pumpQueue();
   }
 
   async clearHistory(): Promise<void> {
-    const jobs = await this.effects.storage.getJobs();
-    await this.setJobs(jobs, { clearHistory: true });
+    await this.mutateJobs((jobs) => ({ changed: true, value: undefined }), { clearHistory: true });
   }
 
   async seedOutputRoot(defaultRoot: string): Promise<void> {
@@ -192,7 +202,7 @@ export class JobCoordinator {
   private async runJob(originalJob: Job): Promise<void> {
     let job = originalJob;
     if (job.estBytes === undefined) {
-      await this.updateJob(job.id, { status: 'probing' });
+      if (!(await this.updateJob(job.id, { status: 'probing' }))) return;
       const probe = await this.safeNative({ action: 'probe', url: job.videoUrl, components: job.components });
       if (await this.isCancelled(job.id)) return;
       const patch: Partial<Job> = {
@@ -200,10 +210,10 @@ export class JobCoordinator {
         estBytes: probe?.ok && typeof probe.bytes === 'number' ? probe.bytes : 0,
       };
       if (probe?.ok && typeof probe.title === 'string' && probe.title) patch.label = probe.title;
-      await this.updateJob(job.id, patch);
+      if (!(await this.updateJob(job.id, patch))) return;
       job = { ...job, ...patch };
     } else {
-      await this.updateJob(job.id, { status: 'running' });
+      if (!(await this.updateJob(job.id, { status: 'running' }))) return;
     }
 
     const settings = this.effects.getSettings();
@@ -237,12 +247,13 @@ export class JobCoordinator {
       const folder = typeof response.windowsFolderPath === 'string'
         ? response.windowsFolderPath
         : typeof response.folderPath === 'string' ? response.folderPath : '';
-      await this.updateJob(job.id, {
+      const completed = await this.updateJob(job.id, {
         status: 'done',
         folder,
         finishedAt: this.effects.now(),
         ...(typeof response.bytes === 'number' && response.bytes > 0 ? { estBytes: response.bytes } : {}),
       });
+      if (!completed) return;
       if (settings.notifyOnDone) this.effects.notify(job.label, folder);
       if (settings.autoOpenFolder && folder && !job.batchId) await this.effects.openFolder(folder);
     }
@@ -258,16 +269,18 @@ export class JobCoordinator {
   }
 
   private async isCancelled(id: string): Promise<boolean> {
-    return (await this.effects.storage.getJobs()).find((job) => job.id === id)?.status === 'cancelled';
+    return this.withJobsLock(async () => (
+      (await this.effects.storage.getJobs()).find((job) => job.id === id)?.status === 'cancelled'
+    ));
   }
 
-  private async updateJob(id: string, patch: Partial<Job>): Promise<void> {
-    const jobs = await this.effects.storage.getJobs();
-    const index = jobs.findIndex((job) => job.id === id);
-    if (index >= 0) {
+  private async updateJob(id: string, patch: Partial<Job>): Promise<boolean> {
+    return this.mutateJobs((jobs) => {
+      const index = jobs.findIndex((job) => job.id === id);
+      if (index < 0 || jobs[index].status === 'cancelled') return { changed: false, value: false };
       jobs[index] = { ...jobs[index], ...patch };
-      await this.setJobs(jobs, !!jobs[index].batchId);
-    }
+      return { changed: true, value: true, options: !!jobs[index].batchId };
+    });
   }
 
   private trim(jobs: Job[], options: { clearHistory?: boolean; finalizedBatchId?: string } = {}): Job[] {
@@ -295,7 +308,7 @@ export class JobCoordinator {
     return result.filter((_job, index) => !dropped.has(index));
   }
 
-  private async setJobs(
+  private async setJobsLocked(
     jobs: Job[],
     options: boolean | { clearHistory?: boolean; finalizedBatchId?: string } = false,
   ): Promise<void> {
@@ -303,6 +316,23 @@ export class JobCoordinator {
     const retainedJobs = preserveAllFinished ? jobs : this.trim(jobs, typeof options === 'object' ? options : {});
     await this.effects.storage.setJobs(retainedJobs);
     if (!preserveAllFinished) await this.reconcileSummaryAttempts(retainedJobs);
+  }
+
+  private async mutateJobs<T>(
+    mutation: (jobs: Job[]) => {
+      changed: boolean;
+      value: T;
+      options?: boolean | { clearHistory?: boolean; finalizedBatchId?: string };
+    },
+    options: boolean | { clearHistory?: boolean; finalizedBatchId?: string } = false,
+  ): Promise<T> {
+    return this.withJobsLock(async () => {
+      const jobs = await this.effects.storage.getJobs();
+      const result = mutation(jobs);
+      if (result.changed) await this.setJobsLocked(jobs, result.options ?? options);
+      const { value } = result;
+      return value;
+    });
   }
 
   private async maybeWriteBatchSummary(batchId?: string): Promise<void> {
@@ -342,22 +372,30 @@ export class JobCoordinator {
       await this.setSummaryAttempts(batchId, attempts);
       const response = await this.safeNative(payload);
       if (response?.ok) {
-        const latestJobs = await this.effects.storage.getJobs();
-        for (const job of latestJobs) {
-          if (job.batchId === batchId) job.summaryWritten = true;
-        }
-        await this.setJobs(latestJobs);
+        await this.mutateJobs((latestJobs) => {
+          let changed = false;
+          for (const job of latestJobs) {
+            if (job.batchId !== batchId) continue;
+            job.summaryWritten = true;
+            changed = true;
+          }
+          return { changed, value: undefined };
+        });
         await this.clearSummaryAttempts(batchId);
         return;
       }
       if (attempts < MAX_SUMMARY_ATTEMPTS) await this.effects.delay(100 * attempts);
     }
 
-    const exhaustedJobs = await this.effects.storage.getJobs();
-    for (const job of exhaustedJobs) {
-      if (job.batchId === batchId) job.summaryExhausted = true;
-    }
-    await this.setJobs(exhaustedJobs, { finalizedBatchId: batchId });
+    await this.mutateJobs((exhaustedJobs) => {
+      let changed = false;
+      for (const job of exhaustedJobs) {
+        if (job.batchId !== batchId) continue;
+        job.summaryExhausted = true;
+        changed = true;
+      }
+      return { changed, value: undefined };
+    }, { finalizedBatchId: batchId });
     if (!(await this.effects.storage.getJobs()).some((job) => job.batchId === batchId)) {
       await this.clearSummaryAttempts(batchId);
     }
@@ -407,6 +445,12 @@ export class JobCoordinator {
   private async withSummaryStateLock<T>(operation: () => Promise<T>): Promise<T> {
     const result = this.summaryStateTail.then(operation, operation);
     this.summaryStateTail = result.then(() => undefined, () => undefined);
+    return result;
+  }
+
+  private async withJobsLock<T>(operation: () => Promise<T>): Promise<T> {
+    const result = this.jobsTail.then(operation, operation);
+    this.jobsTail = result.then(() => undefined, () => undefined);
     return result;
   }
 }

@@ -113,7 +113,7 @@ readMessages(async (raw) => {
   if (req.action === 'batch_summary') {
     const rawRoot = (req.options as { outputRoot?: string } | undefined)?.outputRoot;
     const items = (req.items as BatchSummaryItem[]) ?? [];
-    writeMessage(createBatchSummary(rawRoot, req.batchLabel as string, req.category as string | undefined, items));
+    writeMessage(createBatchSummary(rawRoot, req.batchId as string, req.batchLabel as string, req.category as string | undefined, items));
     return;
   }
 

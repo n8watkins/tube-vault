@@ -2,6 +2,7 @@ import { spawn, execFileSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import { createHash, randomUUID } from 'crypto';
 import { wslToWindowsPath, windowsToWslPath, sanitizeFilename, IS_WSL } from './sanitize';
 
 // Discover the Windows user profile (e.g. C:\Users\natha) from inside WSL, cached.
@@ -741,14 +742,16 @@ export function resolveBatchSummaryRoot(rawRoot: string | undefined, fallback = 
 
 export function createBatchSummary(
   rawRoot: string | undefined,
+  batchId: string,
   batchLabel: string,
   category: string | undefined,
   items: BatchSummaryItem[],
   fallback?: string,
 ): { ok: boolean; status: string; summaryPath?: string; error?: string } {
   try {
+    if (typeof batchId !== 'string' || !batchId) throw new Error('Batch ID is required');
     const root = resolveBatchSummaryRoot(rawRoot, fallback);
-    return { ok: true, status: 'ok', summaryPath: writeBatchSummary(root, batchLabel, category, items) };
+    return { ok: true, status: 'ok', summaryPath: writeBatchSummary(root, batchId, batchLabel, category, items) };
   } catch (error) {
     return { ok: false, status: 'failed', error: error instanceof Error ? error.message : 'Could not write batch summary' };
   }
@@ -758,17 +761,18 @@ export function createBatchSummary(
 // landed. Written under <root>/TubeVault Summaries/. Returns the Windows path.
 export function writeBatchSummary(
   root: string,
+  batchId: string,
   batchLabel: string,
   category: string | undefined,
   items: BatchSummaryItem[],
 ): string {
   const dir = path.join(root, 'TubeVault Summaries');
   ensureDir(dir);
-  const stamp = new Date();
-  const dateSlug = `${stamp.getFullYear()}-${String(stamp.getMonth() + 1).padStart(2, '0')}-${String(stamp.getDate()).padStart(2, '0')} ${String(stamp.getHours()).padStart(2, '0')}${String(stamp.getMinutes()).padStart(2, '0')}`;
-  const fileBase = sanitizeFilename(batchLabel || 'Download') || 'Download';
-  const file = path.join(dir, `${fileBase} - ${dateSlug}.txt`);
+  const batchSlug = createHash('sha256').update(batchId).digest('hex');
+  const file = path.join(dir, `TubeVault batch - ${batchSlug}.txt`);
+  if (fs.existsSync(file)) return wslToWindowsPath(file);
 
+  const stamp = new Date();
   const done = items.filter((i) => i.status === 'done').length;
   const lines = [
     batchLabel || 'TubeVault download',
@@ -786,7 +790,17 @@ export function writeBatchSummary(
     if (it.folder) lines.push(`        → ${it.folder}`);
   });
   lines.push('');
-  fs.writeFileSync(file, lines.join('\n') + '\n', 'utf8');
+  const temporaryFile = path.join(dir, `.${path.basename(file)}.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    fs.writeFileSync(temporaryFile, lines.join('\n') + '\n', { encoding: 'utf8', flag: 'wx' });
+    try {
+      fs.linkSync(temporaryFile, file);
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
+    }
+  } finally {
+    try { fs.unlinkSync(temporaryFile); } catch { /* ignore */ }
+  }
   return wslToWindowsPath(file);
 }
 

@@ -314,6 +314,7 @@ export class JobCoordinator {
     const first = members[0];
     const payload = {
       action: 'batch_summary',
+      batchId,
       batchLabel: first.batchLabel,
       category: first.category,
       items: members.map((job) => ({ title: job.label, folder: job.folder, status: job.status })),

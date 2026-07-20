@@ -76,7 +76,7 @@ test('resolveBatchSummaryRoot uses the helper fallback when settings are blank',
 test('writeBatchSummary confirms a written file and propagates write failures', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-'));
   try {
-    const response = createBatchSummary('', 'Test batch', 'Playlist', [
+    const response = createBatchSummary('', 'batch-1', 'Test batch', 'Playlist', [
       { title: 'One', folder: '/videos/one', status: 'done' },
     ], dir);
     assert.equal(response.ok, true);
@@ -85,10 +85,31 @@ test('writeBatchSummary confirms a written file and propagates write failures', 
 
     const blockingFile = path.join(dir, 'not-a-directory');
     fs.writeFileSync(blockingFile, 'x');
-    assert.throws(() => writeBatchSummary(blockingFile, 'Failed batch', undefined, []));
-    const failure = createBatchSummary(blockingFile, 'Failed batch', undefined, []);
+    assert.throws(() => writeBatchSummary(blockingFile, 'batch-2', 'Failed batch', undefined, []));
+    const failure = createBatchSummary(blockingFile, 'batch-2', 'Failed batch', undefined, []);
     assert.equal(failure.ok, false);
     assert.equal(failure.status, 'failed');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('createBatchSummary reuses the confirmed file for a repeated batch ID', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-idempotent-'));
+  try {
+    const first = createBatchSummary(dir, 'stable-batch', 'Test batch', 'Playlist', [
+      { title: 'One', folder: '/videos/one', status: 'done' },
+    ]);
+    assert.equal(first.ok, true);
+    assert.equal(typeof first.summaryPath, 'string');
+    const original = fs.readFileSync(first.summaryPath as string, 'utf8');
+
+    const repeated = createBatchSummary(dir, 'stable-batch', 'Changed label', 'Channel', [
+      { title: 'Different item', status: 'failed' },
+    ]);
+    assert.deepEqual(repeated, first);
+    assert.equal(fs.readFileSync(first.summaryPath as string, 'utf8'), original);
+    assert.equal(fs.readdirSync(path.join(dir, 'TubeVault Summaries')).length, 1);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

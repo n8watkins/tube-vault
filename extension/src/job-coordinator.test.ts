@@ -235,9 +235,28 @@ describe('JobCoordinator', () => {
       values: { tvBatchSummaryAttempts: { batch: 1 } },
     });
     await test.coordinator.initialize();
-    expect(test.calls.filter((call) => call.action === 'batch_summary')).toHaveLength(1);
+    expect(test.calls.filter((call) => call.action === 'batch_summary')).toEqual([
+      expect.objectContaining({ batchId: 'batch' }),
+    ]);
     expect(test.jobs.every((item) => item.summaryWritten)).toBe(true);
     expect(test.values.tvBatchSummaryAttempts).toEqual({});
+  });
+
+  it('reuses the stable batch ID after helper success precedes coordinator marking', async () => {
+    const terminalJobs = [job('one', 'done', { batchId: 'batch', batchLabel: 'Restarted batch' })];
+    const beforeCrash = harness({ jobs: terminalJobs });
+    await beforeCrash.coordinator.initialize();
+
+    const afterRestart = harness({ jobs: terminalJobs, values: { tvBatchSummaryAttempts: { batch: 1 } } });
+    await afterRestart.coordinator.initialize();
+
+    expect(beforeCrash.calls.filter((call) => call.action === 'batch_summary')).toEqual([
+      expect.objectContaining({ batchId: 'batch' }),
+    ]);
+    expect(afterRestart.calls.filter((call) => call.action === 'batch_summary')).toEqual([
+      expect.objectContaining({ batchId: 'batch' }),
+    ]);
+    expect(afterRestart.jobs.every((item) => item.summaryWritten)).toBe(true);
   });
 
   it('does not exceed the persisted summary attempt bound after restart', async () => {

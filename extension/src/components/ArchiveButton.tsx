@@ -328,7 +328,7 @@ export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp
     showToast(`Reading ${playlistNoun.toLowerCase()}…`);
     Promise.all([
       getDownloadedMap(),
-      new Promise<any>((res) => chrome.runtime.sendMessage(
+      new Promise<unknown>((res) => chrome.runtime.sendMessage(
         { type: 'TUBE_VAULT_REQUEST', payload: { action: 'channel_plan', mode: 'all', count: 0, urls: [playlistUrl], components } },
         (resp) => res(resp),
       )),
@@ -385,7 +385,7 @@ export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp
 
     Promise.all([
       getDownloadedMap(),
-      new Promise<any>((res) => chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: planPayload }, (resp) => res(resp))),
+      new Promise<unknown>((res) => chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: planPayload }, (resp) => res(resp))),
     ]).then(([dlIds, resp]) => {
       const plan = readPlan(resp, 'Couldn’t analyze channel');
       if (!plan) return;
@@ -416,9 +416,12 @@ export function ArchiveButton({ getUrl, playlist, playlistLabel, compact, dropUp
   }
 
   // Validate a channel_plan response; on failure show the error + reset, return null.
-  function readPlan(resp: any, errPrefix: string): ChannelPlan | null {
-    if (chrome.runtime.lastError || !resp?.ok || !resp.plan || !resp.plan.items?.length) {
-      const err = chrome.runtime.lastError?.message ?? resp?.error ?? 'no videos found';
+  function readPlan(value: unknown, errPrefix: string): ChannelPlan | null {
+    const resp = value && typeof value === 'object'
+      ? value as { ok?: unknown; error?: unknown; plan?: Partial<ChannelPlan> }
+      : null;
+    if (chrome.runtime.lastError || !resp?.ok || !resp.plan || !Array.isArray(resp.plan.items) || !resp.plan.items.length) {
+      const err = chrome.runtime.lastError?.message ?? (typeof resp?.error === 'string' ? resp.error : 'no videos found');
       setBtnState('error');
       showToast(`${errPrefix}: ${err}`, true);
       setTimeout(() => setBtnState('idle'), 3000);

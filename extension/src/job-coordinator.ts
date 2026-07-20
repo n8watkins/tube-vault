@@ -1,0 +1,300 @@
+import { NamingOptions } from './types';
+
+export type JobStatus = 'queued' | 'probing' | 'running' | 'done' | 'failed' | 'cancelled';
+
+export interface Job {
+  id: string;
+  batchId?: string;
+  batchLabel?: string;
+  videoUrl: string;
+  label: string;
+  components: Record<string, unknown>;
+  status: JobStatus;
+  estBytes?: number;
+  index?: number;
+  total?: number;
+  category?: string;
+  folder?: string;
+  error?: string;
+  createdAt: number;
+  finishedAt?: number;
+  summaryWritten?: boolean;
+}
+
+export interface CoordinatorSettings {
+  outputRoot: string;
+  autoOpenFolder: boolean;
+  notifyOnDone: boolean;
+  sponsorblock: 'off' | 'mark' | 'remove';
+  fasterDownloads: boolean;
+  naming: NamingOptions;
+  collectHistory: boolean;
+  historyRetentionDays: number;
+}
+
+export interface JobStorage {
+  getJobs(): Promise<Job[]>;
+  setJobs(jobs: Job[]): Promise<void>;
+  getValues(keys: string[]): Promise<Record<string, unknown>>;
+  setValues(values: Record<string, unknown>): Promise<void>;
+}
+
+export interface NativeResponse {
+  ok?: boolean;
+  bytes?: number;
+  title?: string;
+  error?: string;
+  folderPath?: string;
+  windowsFolderPath?: string;
+  [key: string]: unknown;
+}
+
+export interface CoordinatorEffects {
+  storage: JobStorage;
+  sendNative(payload: Record<string, unknown>): Promise<NativeResponse | null>;
+  now(): number;
+  generateId(): string;
+  notify(label: string, folder: string): void;
+  openFolder(folder: string): Promise<void>;
+  getSettings(): CoordinatorSettings;
+}
+
+export interface EnqueueRequest {
+  items: { url: string; title?: string; bytes?: number | null }[];
+  components?: Record<string, unknown>;
+  batchLabel?: string;
+  category?: string;
+}
+
+const MAX_HISTORY = 100;
+const isActive = (job: Job) => job.status === 'queued' || job.status === 'probing' || job.status === 'running';
+
+export class JobCoordinator {
+  private pumpPromise: Promise<void> | null = null;
+
+  constructor(private readonly effects: CoordinatorEffects) {}
+
+  async initialize(): Promise<void> {
+    const jobs = await this.effects.storage.getJobs();
+    let changed = false;
+    for (const job of jobs) {
+      if (job.status === 'running' || job.status === 'probing') {
+        job.status = 'failed';
+        job.error = 'Interrupted';
+        job.finishedAt = this.effects.now();
+        changed = true;
+      }
+    }
+    if (changed) await this.setJobs(jobs);
+    void this.pumpQueue();
+  }
+
+  async enqueue(request: EnqueueRequest): Promise<{ ok: boolean; batchId?: string; count?: number; error?: string }> {
+    const valid = (request.items ?? []).filter((item) => item && typeof item.url === 'string');
+    if (valid.length === 0) return { ok: false, error: 'No videos to enqueue' };
+
+    const isBatch = valid.length > 1 || !!request.batchLabel;
+    const batchId = isBatch ? this.effects.generateId() : undefined;
+    const jobs = await this.effects.storage.getJobs();
+    valid.forEach((item, index) => jobs.push({
+      id: this.effects.generateId(),
+      batchId,
+      batchLabel: request.batchLabel,
+      videoUrl: item.url,
+      label: item.title || item.url,
+      components: request.components ?? {},
+      status: 'queued',
+      estBytes: typeof item.bytes === 'number' && item.bytes > 0 ? item.bytes : undefined,
+      index: isBatch ? index + 1 : undefined,
+      total: isBatch ? valid.length : undefined,
+      category: isBatch ? request.category : undefined,
+      createdAt: this.effects.now(),
+    }));
+    await this.setJobs(jobs);
+    void this.pumpQueue();
+    return { ok: true, batchId, count: valid.length };
+  }
+
+  async cancelJob(id: string): Promise<void> {
+    const jobs = await this.effects.storage.getJobs();
+    const job = jobs.find((candidate) => candidate.id === id);
+    if (!job || !isActive(job)) return;
+    const wasInFlight = job.status === 'running' || job.status === 'probing';
+    job.status = 'cancelled';
+    job.finishedAt = this.effects.now();
+    await this.setJobs(jobs, !!job.batchId);
+    if (wasInFlight) await this.effects.sendNative({ action: 'cancel', jobId: id });
+    await this.maybeWriteBatchSummary(job.batchId);
+    void this.pumpQueue();
+  }
+
+  async cancelBatch(batchId: string): Promise<void> {
+    const jobs = await this.effects.storage.getJobs();
+    const inFlight: string[] = [];
+    for (const job of jobs) {
+      if (job.batchId !== batchId || !isActive(job)) continue;
+      if (job.status === 'running' || job.status === 'probing') inFlight.push(job.id);
+      job.status = 'cancelled';
+      job.finishedAt = this.effects.now();
+    }
+    await this.setJobs(jobs, true);
+    await Promise.all(inFlight.map((jobId) => this.effects.sendNative({ action: 'cancel', jobId })));
+    await this.maybeWriteBatchSummary(batchId);
+    void this.pumpQueue();
+  }
+
+  async clearHistory(): Promise<void> {
+    const jobs = await this.effects.storage.getJobs();
+    await this.setJobs(jobs.filter(isActive));
+  }
+
+  async seedOutputRoot(defaultRoot: string): Promise<void> {
+    if (!defaultRoot) return;
+    const values = await this.effects.storage.getValues(['outputRoot', 'outputRootSeeded']);
+    if (!values.outputRoot && !values.outputRootSeeded) {
+      await this.effects.storage.setValues({ outputRoot: defaultRoot, outputRootSeeded: true });
+    }
+  }
+
+  async whenIdle(): Promise<void> {
+    await this.pumpPromise;
+  }
+
+  private pumpQueue(): Promise<void> {
+    if (this.pumpPromise) return this.pumpPromise;
+    this.pumpPromise = this.drainQueue().finally(() => {
+      this.pumpPromise = null;
+    });
+    return this.pumpPromise;
+  }
+
+  private async drainQueue(): Promise<void> {
+    while (true) {
+      const jobs = await this.effects.storage.getJobs();
+      if (jobs.some((job) => job.status === 'running' || job.status === 'probing')) return;
+      const next = jobs.find((job) => job.status === 'queued');
+      if (!next) return;
+      await this.runJob(next);
+    }
+  }
+
+  private async runJob(originalJob: Job): Promise<void> {
+    let job = originalJob;
+    if (job.estBytes === undefined) {
+      await this.updateJob(job.id, { status: 'probing' });
+      const probe = await this.safeNative({ action: 'probe', url: job.videoUrl, components: job.components });
+      if (await this.isCancelled(job.id)) return;
+      const patch: Partial<Job> = {
+        status: 'running',
+        estBytes: probe?.ok && typeof probe.bytes === 'number' ? probe.bytes : 0,
+      };
+      if (probe?.ok && typeof probe.title === 'string' && probe.title) patch.label = probe.title;
+      await this.updateJob(job.id, patch);
+      job = { ...job, ...patch };
+    } else {
+      await this.updateJob(job.id, { status: 'running' });
+    }
+
+    const settings = this.effects.getSettings();
+    const response = await this.safeNative({
+      action: 'custom',
+      url: job.videoUrl,
+      components: job.components,
+      jobId: job.id,
+      index: job.index,
+      total: job.total,
+      category: job.category,
+      options: {
+        outputRoot: settings.outputRoot,
+        naming: settings.naming,
+        sponsorblock: settings.sponsorblock,
+        fasterDownloads: settings.fasterDownloads,
+      },
+    });
+    if (await this.isCancelled(job.id)) {
+      await this.maybeWriteBatchSummary(job.batchId);
+      return;
+    }
+
+    if (!response?.ok) {
+      await this.updateJob(job.id, {
+        status: 'failed',
+        error: typeof response?.error === 'string' ? response.error : 'Download failed',
+        finishedAt: this.effects.now(),
+      }, !!job.batchId);
+    } else {
+      const folder = typeof response.windowsFolderPath === 'string'
+        ? response.windowsFolderPath
+        : typeof response.folderPath === 'string' ? response.folderPath : '';
+      await this.updateJob(job.id, {
+        status: 'done',
+        folder,
+        finishedAt: this.effects.now(),
+        ...(typeof response.bytes === 'number' && response.bytes > 0 ? { estBytes: response.bytes } : {}),
+      }, !!job.batchId);
+      if (settings.notifyOnDone) this.effects.notify(job.label, folder);
+      if (settings.autoOpenFolder && folder && !job.batchId) await this.effects.openFolder(folder);
+    }
+    await this.maybeWriteBatchSummary(job.batchId);
+  }
+
+  private async safeNative(payload: Record<string, unknown>): Promise<NativeResponse | null> {
+    try {
+      return await this.effects.sendNative(payload);
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : 'Native helper failed' };
+    }
+  }
+
+  private async isCancelled(id: string): Promise<boolean> {
+    return (await this.effects.storage.getJobs()).find((job) => job.id === id)?.status === 'cancelled';
+  }
+
+  private async updateJob(id: string, patch: Partial<Job>, preserveFinishedBatch = false): Promise<void> {
+    const jobs = await this.effects.storage.getJobs();
+    const index = jobs.findIndex((job) => job.id === id);
+    if (index >= 0) {
+      jobs[index] = { ...jobs[index], ...patch };
+      await this.setJobs(jobs, preserveFinishedBatch);
+    }
+  }
+
+  private trim(jobs: Job[]): Job[] {
+    const settings = this.effects.getSettings();
+    let result = jobs;
+    if (!settings.collectHistory) {
+      result = result.filter(isActive);
+    } else if (settings.historyRetentionDays > 0) {
+      const cutoff = this.effects.now() - settings.historyRetentionDays * 86_400_000;
+      result = result.filter((job) => isActive(job) || (job.finishedAt ?? 0) >= cutoff);
+    }
+    const finishedIndexes = result
+      .map((job, index) => ({ job, index }))
+      .filter(({ job }) => !isActive(job));
+    const dropCount = Math.max(0, finishedIndexes.length - MAX_HISTORY);
+    if (dropCount === 0) return result;
+    const dropped = new Set(finishedIndexes.slice(0, dropCount).map(({ index }) => index));
+    return result.filter((_job, index) => !dropped.has(index));
+  }
+
+  private async setJobs(jobs: Job[], preserveFinishedBatch = false): Promise<void> {
+    await this.effects.storage.setJobs(preserveFinishedBatch ? jobs : this.trim(jobs));
+  }
+
+  private async maybeWriteBatchSummary(batchId?: string): Promise<void> {
+    if (!batchId) return;
+    const jobs = await this.effects.storage.getJobs();
+    const members = jobs.filter((job) => job.batchId === batchId);
+    if (members.length === 0 || members.some(isActive) || members.some((job) => job.summaryWritten)) return;
+    for (const member of members) member.summaryWritten = true;
+    await this.setJobs(jobs);
+    const first = members[0];
+    await this.safeNative({
+      action: 'batch_summary',
+      batchLabel: first.batchLabel,
+      category: first.category,
+      items: members.map((job) => ({ title: job.label, folder: job.folder, status: job.status })),
+      options: { outputRoot: this.effects.getSettings().outputRoot },
+    });
+  }
+}

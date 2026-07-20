@@ -68,7 +68,12 @@ function App() {
 
   const cancel = (id: string) => { chrome.runtime.sendMessage({ type: 'TUBE_VAULT_CANCEL', jobId: id }); setConfirmId(null); };
   const cancelBatch = (batchId: string) => { chrome.runtime.sendMessage({ type: 'TUBE_VAULT_CANCEL_BATCH', batchId }); setConfirmId(null); };
-  const toggle = (id: string) => setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggle = (id: string) => setExpanded((s) => {
+    const next = new Set(s);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
   const openFolder = (folder?: string) => { if (folder) chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: { action: 'open_folder', windowsPath: folder } }); };
 
   const active = jobs.filter((j) => j.status === 'running' || j.status === 'probing');

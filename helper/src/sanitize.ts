@@ -26,8 +26,9 @@ export function isValidYouTubeUrl(url: string): boolean {
 
 // Strip characters unsafe in Windows/Linux file paths
 export function sanitizeFilename(name: string): string {
-  return name
-    .replace(/[<>:"/\\|?*\x00-\x1f]/g, '')
+  return Array.from(name)
+    .filter((character) => character.charCodeAt(0) > 31 && !'<>:"/\\|?*'.includes(character))
+    .join('')
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 200);
@@ -42,7 +43,7 @@ export function wslToWindowsPath(p: string): string {
 
 // C:\Users\... → /mnt/c/Users/...
 export function windowsToWslPath(p: string): string {
-  const m = p.match(/^([A-Za-z]):[\\\/](.*)/);
+  const m = p.replace(/\\/g, '/').match(/^([A-Za-z]):\/(.*)/);
   if (!m) return p;
   return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}`;
 }

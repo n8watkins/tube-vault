@@ -5,6 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   buildBase, parseCapture, videoFormatFlag, mediaFormatFlag, sizeForComponents,
+  createBatchSummary, resolveBatchSummaryRoot, writeBatchSummary,
   type DownloadRequest, type NamingOptions,
 } from './downloader';
 
@@ -64,6 +65,33 @@ test('sizeForComponents adds sidecar bytes only for what was selected', () => {
   assert.equal(sizeForComponents(1000, { video: { quality: 'best', format: 'mp4' }, thumbnail: true, metadata: true }), 1000 + 120_000 + 100_000);
   assert.equal(sizeForComponents(1000, { thumbnail: true }), 120_000);                     // media approx ignored
   assert.equal(sizeForComponents(1000, { metadata: true }), 100_000);
+});
+
+test('resolveBatchSummaryRoot uses the helper fallback when settings are blank', () => {
+  assert.equal(resolveBatchSummaryRoot('', '/default/videos'), '/default/videos');
+  assert.equal(resolveBatchSummaryRoot(undefined, '/default/videos'), '/default/videos');
+  assert.equal(resolveBatchSummaryRoot('/chosen/videos', '/default/videos'), '/chosen/videos');
+});
+
+test('writeBatchSummary confirms a written file and propagates write failures', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-'));
+  try {
+    const response = createBatchSummary('', 'Test batch', 'Playlist', [
+      { title: 'One', folder: '/videos/one', status: 'done' },
+    ], dir);
+    assert.equal(response.ok, true);
+    assert.equal(typeof response.summaryPath, 'string');
+    assert.equal(fs.existsSync(response.summaryPath as string), true);
+
+    const blockingFile = path.join(dir, 'not-a-directory');
+    fs.writeFileSync(blockingFile, 'x');
+    assert.throws(() => writeBatchSummary(blockingFile, 'Failed batch', undefined, []));
+    const failure = createBatchSummary(blockingFile, 'Failed batch', undefined, []);
+    assert.equal(failure.ok, false);
+    assert.equal(failure.status, 'failed');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ── parseCapture ────────────────────────────────────────────────────────────────

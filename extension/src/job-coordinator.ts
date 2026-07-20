@@ -68,12 +68,14 @@ export interface EnqueueRequest {
 }
 
 const MAX_HISTORY = 100;
+const SUMMARY_ATTEMPTS_KEY = 'tvBatchSummaryAttempts';
+const MAX_SUMMARY_ATTEMPTS = 3;
 const isActive = (job: Job) => job.status === 'queued' || job.status === 'probing' || job.status === 'running';
 
 export class JobCoordinator {
   private pumpPromise: Promise<void> | null = null;
   private readonly summaryPromises = new Map<string, Promise<void>>();
-  private readonly exhaustedSummaries = new Set<string>();
+  private summaryTail = Promise.resolve();
 
   constructor(private readonly effects: CoordinatorEffects) {}
 
@@ -88,7 +90,11 @@ export class JobCoordinator {
         changed = true;
       }
     }
-    if (changed) await this.setJobs(jobs);
+    if (changed) await this.setJobs(jobs, true);
+    const terminalBatchIds = new Set(jobs
+      .filter((job) => job.batchId && !isActive(job))
+      .map((job) => job.batchId as string));
+    await Promise.all([...terminalBatchIds].map((batchId) => this.maybeWriteBatchSummary(batchId)));
     void this.pumpQueue();
   }
 
@@ -224,7 +230,7 @@ export class JobCoordinator {
         status: 'failed',
         error: typeof response?.error === 'string' ? response.error : 'Download failed',
         finishedAt: this.effects.now(),
-      }, !!job.batchId);
+      });
     } else {
       const folder = typeof response.windowsFolderPath === 'string'
         ? response.windowsFolderPath
@@ -234,7 +240,7 @@ export class JobCoordinator {
         folder,
         finishedAt: this.effects.now(),
         ...(typeof response.bytes === 'number' && response.bytes > 0 ? { estBytes: response.bytes } : {}),
-      }, !!job.batchId);
+      });
       if (settings.notifyOnDone) this.effects.notify(job.label, folder);
       if (settings.autoOpenFolder && folder && !job.batchId) await this.effects.openFolder(folder);
     }
@@ -253,12 +259,12 @@ export class JobCoordinator {
     return (await this.effects.storage.getJobs()).find((job) => job.id === id)?.status === 'cancelled';
   }
 
-  private async updateJob(id: string, patch: Partial<Job>, preserveFinishedBatch = false): Promise<void> {
+  private async updateJob(id: string, patch: Partial<Job>): Promise<void> {
     const jobs = await this.effects.storage.getJobs();
     const index = jobs.findIndex((job) => job.id === id);
     if (index >= 0) {
       jobs[index] = { ...jobs[index], ...patch };
-      await this.setJobs(jobs, preserveFinishedBatch);
+      await this.setJobs(jobs, !!jobs[index].batchId);
     }
   }
 
@@ -288,11 +294,11 @@ export class JobCoordinator {
     if (!batchId) return;
     const inFlight = this.summaryPromises.get(batchId);
     if (inFlight) return inFlight;
-    if (this.exhaustedSummaries.has(batchId)) return;
 
-    const operation = this.finalizeBatchSummary(batchId).finally(() => {
+    const operation = this.summaryTail.then(() => this.finalizeBatchSummary(batchId)).finally(() => {
       this.summaryPromises.delete(batchId);
     });
+    this.summaryTail = operation.catch(() => undefined);
     this.summaryPromises.set(batchId, operation);
     return operation;
   }
@@ -300,7 +306,11 @@ export class JobCoordinator {
   private async finalizeBatchSummary(batchId: string): Promise<void> {
     const jobs = await this.effects.storage.getJobs();
     const members = jobs.filter((job) => job.batchId === batchId);
-    if (members.length === 0 || members.some(isActive) || members.some((job) => job.summaryWritten)) return;
+    if (members.length === 0 || members.some(isActive)) return;
+    if (members.some((job) => job.summaryWritten)) {
+      await this.clearSummaryAttempts(batchId);
+      return;
+    }
     const first = members[0];
     const payload = {
       action: 'batch_summary',
@@ -310,7 +320,10 @@ export class JobCoordinator {
       options: { outputRoot: this.effects.getSettings().outputRoot },
     };
 
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
+    let attempts = await this.getSummaryAttempts(batchId);
+    while (attempts < MAX_SUMMARY_ATTEMPTS) {
+      attempts += 1;
+      await this.setSummaryAttempts(batchId, attempts);
       const response = await this.safeNative(payload);
       if (response?.ok) {
         const latestJobs = await this.effects.storage.getJobs();
@@ -318,12 +331,40 @@ export class JobCoordinator {
           if (job.batchId === batchId) job.summaryWritten = true;
         }
         await this.setJobs(latestJobs);
+        await this.clearSummaryAttempts(batchId);
         return;
       }
-      if (attempt < 3) await this.effects.delay(100 * attempt);
+      if (attempts < MAX_SUMMARY_ATTEMPTS) await this.effects.delay(100 * attempts);
     }
 
-    this.exhaustedSummaries.add(batchId);
     await this.setJobs(await this.effects.storage.getJobs());
+    if (!(await this.effects.storage.getJobs()).some((job) => job.batchId === batchId)) {
+      await this.clearSummaryAttempts(batchId);
+    }
+  }
+
+  private async getSummaryAttemptState(): Promise<Record<string, number>> {
+    const value = (await this.effects.storage.getValues([SUMMARY_ATTEMPTS_KEY]))[SUMMARY_ATTEMPTS_KEY];
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+    return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => (
+      typeof entry[1] === 'number' && Number.isInteger(entry[1]) && entry[1] >= 0
+    )));
+  }
+
+  private async getSummaryAttempts(batchId: string): Promise<number> {
+    return (await this.getSummaryAttemptState())[batchId] ?? 0;
+  }
+
+  private async setSummaryAttempts(batchId: string, attempts: number): Promise<void> {
+    const state = await this.getSummaryAttemptState();
+    state[batchId] = attempts;
+    await this.effects.storage.setValues({ [SUMMARY_ATTEMPTS_KEY]: state });
+  }
+
+  private async clearSummaryAttempts(batchId: string): Promise<void> {
+    const state = await this.getSummaryAttemptState();
+    if (!(batchId in state)) return;
+    delete state[batchId];
+    await this.effects.storage.setValues({ [SUMMARY_ATTEMPTS_KEY]: state });
   }
 }

@@ -734,6 +734,26 @@ function writeSummary(folder: string, mediaPath: string, req: DownloadRequest, m
 
 export interface BatchSummaryItem { title: string; folder?: string; status: string; }
 
+export function resolveBatchSummaryRoot(rawRoot: string | undefined, fallback = defaultOutputRoot()): string {
+  const root = rawRoot || fallback;
+  return /^[A-Za-z]:/.test(root) ? windowsToWslPath(root) : root;
+}
+
+export function createBatchSummary(
+  rawRoot: string | undefined,
+  batchLabel: string,
+  category: string | undefined,
+  items: BatchSummaryItem[],
+  fallback?: string,
+): { ok: boolean; status: string; summaryPath?: string; error?: string } {
+  try {
+    const root = resolveBatchSummaryRoot(rawRoot, fallback);
+    return { ok: true, status: 'ok', summaryPath: writeBatchSummary(root, batchLabel, category, items) };
+  } catch (error) {
+    return { ok: false, status: 'failed', error: error instanceof Error ? error.message : 'Could not write batch summary' };
+  }
+}
+
 // One overview .txt per playlist/channel download, listing every video + where it
 // landed. Written under <root>/TubeVault Summaries/. Returns the Windows path.
 export function writeBatchSummary(
@@ -766,9 +786,7 @@ export function writeBatchSummary(
     if (it.folder) lines.push(`        → ${it.folder}`);
   });
   lines.push('');
-  try {
-    fs.writeFileSync(file, lines.join('\n') + '\n', 'utf8');
-  } catch { /* best-effort */ }
+  fs.writeFileSync(file, lines.join('\n') + '\n', 'utf8');
   return wslToWindowsPath(file);
 }
 

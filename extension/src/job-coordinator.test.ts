@@ -45,6 +45,7 @@ function harness(options: {
   const calls: Record<string, unknown>[] = [];
   const notifications: [string, string][] = [];
   const opened: string[] = [];
+  const delays: number[] = [];
   const effects: CoordinatorEffects = {
     storage: {
       getJobs: async () => structuredClone(jobs),
@@ -62,6 +63,7 @@ function harness(options: {
     generateId: () => `id-${++id}`,
     notify: (label, folder) => notifications.push([label, folder]),
     openFolder: async (folder) => { opened.push(folder); },
+    delay: async (milliseconds) => { delays.push(milliseconds); },
     getSettings: () => settings,
   };
   const coordinator = new JobCoordinator(effects);
@@ -70,6 +72,7 @@ function harness(options: {
     calls,
     notifications,
     opened,
+    delays,
     values,
     settings,
     get jobs() { return structuredClone(jobs); },
@@ -214,11 +217,59 @@ describe('JobCoordinator', () => {
     expect(test.jobs.every((item) => item.summaryWritten)).toBe(true);
   });
 
+  it('deduplicates concurrent successful batch summary requests', async () => {
+    const summary = deferred<NativeResponse>();
+    const test = harness({
+      jobs: [job('one', 'done', { batchId: 'batch' }), job('two', 'done', { batchId: 'batch' })],
+      native: async (payload) => payload.action === 'batch_summary' ? summary.promise : { ok: true },
+    });
+    const first = test.coordinator.cancelBatch('batch');
+    const second = test.coordinator.cancelBatch('batch');
+    await vi.waitFor(() => expect(test.calls.filter((call) => call.action === 'batch_summary')).toHaveLength(1));
+    summary.resolve({ ok: true });
+    await Promise.all([first, second]);
+    expect(test.jobs.every((item) => item.summaryWritten)).toBe(true);
+  });
+
+  it('retries a failed batch summary up to three times before success', async () => {
+    let attempts = 0;
+    const test = harness({ native: async (payload) => {
+      if (payload.action !== 'batch_summary') return { ok: true };
+      attempts += 1;
+      return { ok: attempts === 3 };
+    } });
+    await test.coordinator.enqueue({ items: [{ url: 'one', bytes: 1 }, { url: 'two', bytes: 1 }], batchLabel: 'Retry batch' });
+    await test.coordinator.whenIdle();
+    expect(attempts).toBe(3);
+    expect(test.delays).toEqual([100, 200]);
+    expect(test.jobs.every((item) => item.summaryWritten)).toBe(true);
+  });
+
+  it('bounds exhausted batch summary retries for the coordinator lifetime', async () => {
+    const test = harness({ native: async (payload) => ({ ok: payload.action !== 'batch_summary' }) });
+    await test.coordinator.enqueue({ items: [{ url: 'one', bytes: 1 }, { url: 'two', bytes: 1 }], batchLabel: 'Failed summary' });
+    await test.coordinator.whenIdle();
+    await test.coordinator.cancelBatch('id-1');
+    expect(test.calls.filter((call) => call.action === 'batch_summary')).toHaveLength(3);
+    expect(test.jobs.every((item) => !item.summaryWritten)).toBe(true);
+  });
+
   it('writes the final batch summary before discarding disabled history', async () => {
     const test = harness({ settings: { collectHistory: false } });
     await test.coordinator.enqueue({ items: [{ url: 'one', bytes: 1 }, { url: 'two', bytes: 1 }], batchLabel: 'Private batch' });
     await test.coordinator.whenIdle();
     expect(test.calls.filter((call) => call.action === 'batch_summary')).toHaveLength(1);
+    expect(test.jobs).toEqual([]);
+  });
+
+  it('discards disabled history after batch summary retries are exhausted', async () => {
+    const test = harness({
+      settings: { collectHistory: false },
+      native: async (payload) => ({ ok: payload.action !== 'batch_summary' }),
+    });
+    await test.coordinator.enqueue({ items: [{ url: 'one', bytes: 1 }, { url: 'two', bytes: 1 }], batchLabel: 'Private failed batch' });
+    await test.coordinator.whenIdle();
+    expect(test.calls.filter((call) => call.action === 'batch_summary')).toHaveLength(3);
     expect(test.jobs).toEqual([]);
   });
 

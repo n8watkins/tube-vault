@@ -16,7 +16,8 @@ It is historical context, not an active implementation plan.
 - The popup shows active work, grouped queued batches, recent results, and inline cancellation.
 - The options Downloads tab contains status filters, grouped history, folder actions, JSON export, and history clearing.
 - History can be disabled, retained for a configured number of days, and is capped at 100 finished jobs.
-- A batch overview is requested exactly once after its final member settles.
+- A batch overview is requested after its final member settles, with successful writes deduplicated and transient failures retried up to three times.
+- Finished private-history batch details are removed after summary success or retry exhaustion.
 - The helper implements probing, video listing, per-video custom downloads, cancellation, and batch summaries.
 - Playlist and channel confirmation dialogs support per-video selection, thumbnails, expected size, duration, views, and duplicate detection.
 - The options page contains the four shipped tabs: Downloads, Settings, Status, and Setup.

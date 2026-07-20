@@ -56,6 +56,7 @@ export interface CoordinatorEffects {
   generateId(): string;
   notify(label: string, folder: string): void;
   openFolder(folder: string): Promise<void>;
+  delay(milliseconds: number): Promise<void>;
   getSettings(): CoordinatorSettings;
 }
 
@@ -71,6 +72,8 @@ const isActive = (job: Job) => job.status === 'queued' || job.status === 'probin
 
 export class JobCoordinator {
   private pumpPromise: Promise<void> | null = null;
+  private readonly summaryPromises = new Map<string, Promise<void>>();
+  private readonly exhaustedSummaries = new Set<string>();
 
   constructor(private readonly effects: CoordinatorEffects) {}
 
@@ -283,18 +286,44 @@ export class JobCoordinator {
 
   private async maybeWriteBatchSummary(batchId?: string): Promise<void> {
     if (!batchId) return;
+    const inFlight = this.summaryPromises.get(batchId);
+    if (inFlight) return inFlight;
+    if (this.exhaustedSummaries.has(batchId)) return;
+
+    const operation = this.finalizeBatchSummary(batchId).finally(() => {
+      this.summaryPromises.delete(batchId);
+    });
+    this.summaryPromises.set(batchId, operation);
+    return operation;
+  }
+
+  private async finalizeBatchSummary(batchId: string): Promise<void> {
     const jobs = await this.effects.storage.getJobs();
     const members = jobs.filter((job) => job.batchId === batchId);
     if (members.length === 0 || members.some(isActive) || members.some((job) => job.summaryWritten)) return;
-    for (const member of members) member.summaryWritten = true;
-    await this.setJobs(jobs);
     const first = members[0];
-    await this.safeNative({
+    const payload = {
       action: 'batch_summary',
       batchLabel: first.batchLabel,
       category: first.category,
       items: members.map((job) => ({ title: job.label, folder: job.folder, status: job.status })),
       options: { outputRoot: this.effects.getSettings().outputRoot },
-    });
+    };
+
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      const response = await this.safeNative(payload);
+      if (response?.ok) {
+        const latestJobs = await this.effects.storage.getJobs();
+        for (const job of latestJobs) {
+          if (job.batchId === batchId) job.summaryWritten = true;
+        }
+        await this.setJobs(latestJobs);
+        return;
+      }
+      if (attempt < 3) await this.effects.delay(100 * attempt);
+    }
+
+    this.exhaustedSummaries.add(batchId);
+    await this.setJobs(await this.effects.storage.getJobs());
   }
 }

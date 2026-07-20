@@ -68,6 +68,7 @@ const coordinator = new JobCoordinator({
     message: folder ? `${label}\nSaved to ${folder}` : label,
   }),
   openFolder: async (folder) => { await sendNative({ action: 'open_folder', windowsPath: folder }); },
+  delay: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
   getSettings: () => settings,
 });
 

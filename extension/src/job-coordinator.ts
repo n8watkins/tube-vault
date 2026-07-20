@@ -287,7 +287,9 @@ export class JobCoordinator {
   }
 
   private async setJobs(jobs: Job[], preserveFinishedBatch = false): Promise<void> {
-    await this.effects.storage.setJobs(preserveFinishedBatch ? jobs : this.trim(jobs));
+    const retainedJobs = preserveFinishedBatch ? jobs : this.trim(jobs);
+    await this.effects.storage.setJobs(retainedJobs);
+    if (!preserveFinishedBatch) await this.reconcileSummaryAttempts(retainedJobs);
   }
 
   private async maybeWriteBatchSummary(batchId?: string): Promise<void> {
@@ -367,5 +369,15 @@ export class JobCoordinator {
     if (!(batchId in state)) return;
     delete state[batchId];
     await this.effects.storage.setValues({ [SUMMARY_ATTEMPTS_KEY]: state });
+  }
+
+  private async reconcileSummaryAttempts(jobs: Job[]): Promise<void> {
+    const retainedBatchIds = new Set(jobs.flatMap((job) => job.batchId ? [job.batchId] : []));
+    const state = await this.getSummaryAttemptState();
+    const retainedState = Object.fromEntries(
+      Object.entries(state).filter(([batchId]) => retainedBatchIds.has(batchId)),
+    );
+    if (Object.keys(retainedState).length === Object.keys(state).length) return;
+    await this.effects.storage.setValues({ [SUMMARY_ATTEMPTS_KEY]: retainedState });
   }
 }

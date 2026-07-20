@@ -187,17 +187,46 @@ describe('JobCoordinator', () => {
 
   it('applies age retention and the 100-item finished history cap', async () => {
     const day = 86_400_000;
-    const old = job('expired', 'done', { finishedAt: 1 });
-    const recent = Array.from({ length: 101 }, (_, index) => job(`recent-${index}`, 'done', { finishedAt: 20 * day + index }));
+    const old = job('expired', 'done', { batchId: 'expired-batch', finishedAt: 1 });
+    const recent = Array.from({ length: 101 }, (_, index) => job(`recent-${index}`, 'done', {
+      batchId: `recent-batch-${index}`,
+      finishedAt: 20 * day + index,
+    }));
     const download = deferred<NativeResponse>();
-    const test = harness({ jobs: [old, ...recent], settings: { historyRetentionDays: 10 }, native: async () => download.promise });
+    const test = harness({
+      jobs: [old, ...recent],
+      settings: { historyRetentionDays: 10 },
+      native: async () => download.promise,
+      values: {
+        tvBatchSummaryAttempts: {
+          'expired-batch': 3,
+          'recent-batch-0': 3,
+          'recent-batch-1': 3,
+        },
+      },
+    });
     test.setNow(25 * day);
     await test.coordinator.enqueue({ items: [{ url: 'active', bytes: 1 }] });
     expect(test.jobs).toHaveLength(101);
     expect(test.jobs.some((item) => item.id === 'expired')).toBe(false);
     expect(test.jobs.some((item) => item.id === 'recent-0')).toBe(false);
+    expect(test.values.tvBatchSummaryAttempts).toEqual({ 'recent-batch-1': 3 });
     download.resolve({ ok: true });
     await test.coordinator.whenIdle();
+  });
+
+  it('clears summary attempt state only for batches removed from history', async () => {
+    const test = harness({
+      jobs: [
+        job('finished', 'done', { batchId: 'finished-batch' }),
+        job('active', 'queued', { batchId: 'active-batch', estBytes: 1 }),
+      ],
+      native: async () => deferred<NativeResponse>().promise,
+      values: { tvBatchSummaryAttempts: { 'finished-batch': 3, 'active-batch': 1 } },
+    });
+    await test.coordinator.clearHistory();
+    expect(test.jobs.map((item) => item.id)).toEqual(['active']);
+    expect(test.values.tvBatchSummaryAttempts).toEqual({ 'active-batch': 1 });
   });
 
   it('recovers interrupted work and continues queued jobs after restart', async () => {

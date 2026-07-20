@@ -99,8 +99,10 @@ export class JobCoordinator {
     const terminalBatchIds = new Set(jobs
       .filter((job) => job.batchId && !isActive(job))
       .map((job) => job.batchId as string));
-    await Promise.all([...terminalBatchIds].map((batchId) => this.maybeWriteBatchSummary(batchId)));
     void this.pumpQueue();
+    for (const batchId of terminalBatchIds) {
+      void this.maybeWriteBatchSummary(batchId).catch(() => undefined);
+    }
   }
 
   async enqueue(request: EnqueueRequest): Promise<{ ok: boolean; batchId?: string; count?: number; error?: string }> {

@@ -342,6 +342,25 @@ describe('JobCoordinator', () => {
     expect(test.jobs[1].status).toBe('done');
   });
 
+  it('does not block startup or queued recovery on historical summaries', async () => {
+    const summary = deferred<NativeResponse>();
+    const test = harness({
+      jobs: [
+        job('historical', 'done', { batchId: 'historical-batch' }),
+        job('queued', 'queued', { estBytes: 1 }),
+      ],
+      native: async (payload) => payload.action === 'batch_summary' ? summary.promise : { ok: true },
+    });
+
+    await test.coordinator.initialize();
+    await vi.waitFor(() => expect(test.calls).toContainEqual(expect.objectContaining({ action: 'batch_summary' })));
+    await test.coordinator.whenIdle();
+
+    expect(test.jobs.find((item) => item.id === 'queued')?.status).toBe('done');
+    summary.resolve({ ok: true });
+    await vi.waitFor(() => expect(test.jobs.find((item) => item.id === 'historical')?.summaryWritten).toBe(true));
+  });
+
   it('retains an interrupted batch member until queued siblings and summary finish', async () => {
     const test = harness({
       jobs: [
@@ -369,20 +388,24 @@ describe('JobCoordinator', () => {
       values: { tvBatchSummaryAttempts: { batch: 1 } },
     });
     await test.coordinator.initialize();
-    expect(test.calls.filter((call) => call.action === 'batch_summary')).toEqual([
-      expect.objectContaining({ batchId: 'batch' }),
-    ]);
-    expect(test.jobs.every((item) => item.summaryWritten)).toBe(true);
-    expect(test.values.tvBatchSummaryAttempts).toEqual({});
+    await vi.waitFor(() => {
+      expect(test.calls.filter((call) => call.action === 'batch_summary')).toEqual([
+        expect.objectContaining({ batchId: 'batch' }),
+      ]);
+      expect(test.jobs.every((item) => item.summaryWritten)).toBe(true);
+      expect(test.values.tvBatchSummaryAttempts).toEqual({});
+    });
   });
 
   it('reuses the stable batch ID after helper success precedes coordinator marking', async () => {
     const terminalJobs = [job('one', 'done', { batchId: 'batch', batchLabel: 'Restarted batch' })];
     const beforeCrash = harness({ jobs: terminalJobs });
     await beforeCrash.coordinator.initialize();
+    await vi.waitFor(() => expect(beforeCrash.calls.some((call) => call.action === 'batch_summary')).toBe(true));
 
     const afterRestart = harness({ jobs: terminalJobs, values: { tvBatchSummaryAttempts: { batch: 1 } } });
     await afterRestart.coordinator.initialize();
+    await vi.waitFor(() => expect(afterRestart.jobs.every((item) => item.summaryWritten)).toBe(true));
 
     expect(beforeCrash.calls.filter((call) => call.action === 'batch_summary')).toEqual([
       expect.objectContaining({ batchId: 'batch' }),
@@ -423,8 +446,10 @@ describe('JobCoordinator', () => {
     await Promise.all([trim, initialize]);
     await test.coordinator.whenIdle();
 
-    expect(test.calls.filter((call) => call.action === 'batch_summary')).toHaveLength(3);
-    expect(test.values.tvBatchSummaryAttempts).toEqual({ batch: 3 });
+    await vi.waitFor(() => {
+      expect(test.calls.filter((call) => call.action === 'batch_summary')).toHaveLength(3);
+      expect(test.values.tvBatchSummaryAttempts).toEqual({ batch: 3 });
+    });
   });
 
   it('requests a batch summary exactly once after the final member settles', async () => {

@@ -8,6 +8,10 @@
 
 - Trim cleaned cancellation history.
 
+### Documentation
+
+- Refresh generated changelog.
+
 ## v0.3.102
 
 ### Fixed

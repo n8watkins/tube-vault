@@ -110,7 +110,7 @@ npm run release:patch
 ```
 
 The release command requires clean tracked and staged files, while unrelated untracked files are allowed.
-It verifies matching package, manifest, and lockfile versions, runs the full check, increments all three version records, rebuilds, stages those three files, and commits `build(tube-vault): vX.Y.Z`.
+It verifies matching package, manifest, and lockfile versions, runs the full check, increments all four version records across those three files, rebuilds, stages those files, and commits `build(tube-vault): vX.Y.Z`.
 It does not sync to Windows or push.
 
 ## Options Page

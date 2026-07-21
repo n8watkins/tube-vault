@@ -200,9 +200,8 @@ describe('JobCoordinator', () => {
   });
 
   it('starts a fresh pump when work arrives as the final retry is exhausted', async () => {
-    let test!: ReturnType<typeof harness>;
     let lateEnqueue: Promise<unknown> | undefined;
-    test = harness({
+    const test = harness({
       beforeGetJobs: async (readCount) => {
         if (readCount < 2 || readCount > 5) return;
         if (readCount === 5) {
@@ -612,8 +611,7 @@ describe('JobCoordinator', () => {
   });
 
   it('removes a receipt only after durably marking summary success', async () => {
-    let test!: ReturnType<typeof harness>;
-    test = harness({
+    const test = harness({
       jobs: [job('one', 'done', { batchId: 'batch' })],
       native: async (payload) => {
         if (payload.action === 'batch_summary_finalize') {

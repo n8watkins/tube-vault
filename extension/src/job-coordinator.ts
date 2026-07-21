@@ -188,7 +188,7 @@ export class JobCoordinator {
   }
 
   async clearHistory(): Promise<void> {
-    await this.mutateJobs((jobs) => ({ changed: true, value: undefined }), { clearHistory: true });
+    await this.mutateJobs(() => ({ changed: true, value: undefined }), { clearHistory: true });
   }
 
   async seedOutputRoot(defaultRoot: string): Promise<void> {

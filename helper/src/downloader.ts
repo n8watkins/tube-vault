@@ -813,16 +813,35 @@ function hasValidSummaryIntegrity(file: string): boolean {
   }
 }
 
+function publicationOwnerIsAlive(lockFile: string): boolean | undefined {
+  try {
+    const owner = JSON.parse(fs.readFileSync(lockFile, 'utf8')) as { pid?: unknown };
+    if (typeof owner.pid !== 'number' || !Number.isInteger(owner.pid) || owner.pid <= 0) return undefined;
+    if (owner.pid === process.pid) return true;
+    try {
+      process.kill(owner.pid, 0);
+      return true;
+    } catch (error) {
+      return errorCode(error) === 'EPERM' ? true : false;
+    }
+  } catch {
+    return undefined;
+  }
+}
+
 function recoverInterruptedPublication(file: string, lockFile: string): boolean {
-  if (!fs.existsSync(lockFile)) return fs.existsSync(file);
   if (fs.existsSync(file) && hasValidSummaryIntegrity(file)) {
     const published = fs.openSync(file, 'r');
     try { fs.fsyncSync(published); } finally { fs.closeSync(published); }
-    try { fs.unlinkSync(lockFile); } catch {}
     return true;
   }
+  if (!fs.existsSync(lockFile)) return false;
+  const ownerIsAlive = publicationOwnerIsAlive(lockFile);
+  if (ownerIsAlive === true) throw new Error('Batch summary publication is already in progress');
   const age = Date.now() - fs.statSync(lockFile).mtimeMs;
-  if (age < PUBLICATION_LOCK_STALE_MS) throw new Error('Batch summary publication is already in progress');
+  if (ownerIsAlive === undefined && age < PUBLICATION_LOCK_STALE_MS) {
+    throw new Error('Batch summary publication is already in progress');
+  }
   try { fs.unlinkSync(file); } catch (error) {
     if (errorCode(error) !== 'ENOENT') throw error;
   }
@@ -844,11 +863,15 @@ function publishWithoutHardLinks(temporaryFile: string, file: string, lockFile: 
     }
     let releaseLock = false;
     try {
+      fs.writeFileSync(lock, JSON.stringify({ pid: process.pid }), 'utf8');
+      fs.fsyncSync(lock);
       fs.closeSync(lock);
       if (fs.existsSync(file)) {
-        if (!hasValidSummaryIntegrity(file)) throw new Error('Batch summary publication was incomplete');
-        releaseLock = true;
-        return;
+        if (hasValidSummaryIntegrity(file)) {
+          releaseLock = true;
+          return;
+        }
+        fs.unlinkSync(file);
       }
       try {
         fs.copyFileSync(temporaryFile, file, fs.constants.COPYFILE_EXCL);
@@ -993,7 +1016,11 @@ export function writeBatchSummary(
       fs.linkSync(temporaryFile, file);
     } catch (error) {
       const code = errorCode(error);
-      if (code === 'EEXIST') return wslToWindowsPath(file);
+      if (code === 'EEXIST') {
+        if (hasValidSummaryIntegrity(file)) return wslToWindowsPath(file);
+        publishWithoutHardLinks(temporaryFile, file, lockFile);
+        return wslToWindowsPath(file);
+      }
       if (!code || !HARD_LINK_UNAVAILABLE_CODES.has(code)) throw error;
       publishWithoutHardLinks(temporaryFile, file, lockFile);
     }

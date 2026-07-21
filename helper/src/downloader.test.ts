@@ -208,6 +208,53 @@ test('writeBatchSummary cleans an interrupted fallback before retrying', (contex
   }
 });
 
+test('writeBatchSummary repairs an unlocked partial file under exclusive ownership', (context) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-unlocked-partial-'));
+  try {
+    const batchId = 'unlocked-partial-batch';
+    const created = writeBatchSummary(dir, batchId, 'Unlocked partial', undefined, []);
+    fs.writeFileSync(created, 'incomplete');
+    context.mock.method(fs, 'linkSync', () => {
+      const error = new Error('Destination exists') as NodeJS.ErrnoException;
+      error.code = 'EEXIST';
+      throw error;
+    });
+
+    const recovered = writeBatchSummary(dir, batchId, 'Unlocked partial', undefined, []);
+
+    assert.equal(recovered, created);
+    assert.match(fs.readFileSync(recovered, 'utf8'), /\nIntegrity: SHA-256 [a-f0-9]{64}\n$/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('writeBatchSummary immediately recovers a fresh lock owned by a dead process', (context) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-dead-owner-'));
+  const summaries = path.join(dir, 'TubeVault Summaries');
+  try {
+    const batchId = 'dead-owner-batch';
+    const created = writeBatchSummary(dir, batchId, 'Dead owner', undefined, []);
+    const stableId = path.basename(created).match(/[a-f0-9]{16}(?=\.txt$)/)?.[0] as string;
+    const lockFile = path.join(summaries, `.tv-${stableId}.lock`);
+    fs.writeFileSync(created, 'incomplete');
+    fs.writeFileSync(lockFile, JSON.stringify({ pid: 2_147_483_647 }));
+    context.mock.method(fs, 'linkSync', () => {
+      const error = new Error('Hard links unavailable') as NodeJS.ErrnoException;
+      error.code = 'EXDEV';
+      throw error;
+    });
+
+    const recovered = writeBatchSummary(dir, batchId, 'Dead owner', undefined, []);
+
+    assert.equal(recovered, created);
+    assert.match(fs.readFileSync(recovered, 'utf8'), /\nIntegrity: SHA-256 [a-f0-9]{64}\n$/);
+    assert.equal(fs.existsSync(lockFile), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('createBatchSummary reuses an existing opaque summary during receipt recovery', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-legacy-'));
   const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-receipts-'));

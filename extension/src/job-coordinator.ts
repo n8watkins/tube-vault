@@ -73,6 +73,7 @@ const MAX_HISTORY = 100;
 const SUMMARY_ATTEMPTS_KEY = 'tvBatchSummaryAttempts';
 const MAX_SUMMARY_ATTEMPTS = 3;
 const MAX_QUEUE_PUMP_RETRIES = 3;
+const QUEUE_WRITE_RETRY_DELAY_MS = 100;
 const isActive = (job: Job) => job.status === 'queued' || job.status === 'probing' || job.status === 'running';
 
 interface BatchSummaryRetry {
@@ -363,7 +364,17 @@ export class JobCoordinator {
   ): Promise<void> {
     const preserveAllFinished = options === true;
     const retainedJobs = preserveAllFinished ? jobs : this.trim(jobs, typeof options === 'object' ? options : {});
-    await this.effects.storage.setJobs(retainedJobs);
+    let failures = 0;
+    while (true) {
+      try {
+        await this.effects.storage.setJobs(retainedJobs);
+        break;
+      } catch (error) {
+        if (failures >= MAX_QUEUE_PUMP_RETRIES) throw error;
+        failures += 1;
+        await this.effects.delay(QUEUE_WRITE_RETRY_DELAY_MS * failures);
+      }
+    }
     if (!preserveAllFinished) await this.reconcileSummaryAttempts(retainedJobs).catch(() => undefined);
   }
 

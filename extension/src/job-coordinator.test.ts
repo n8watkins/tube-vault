@@ -38,7 +38,7 @@ function harness(options: {
   values?: Record<string, unknown>;
   beforeGetValues?: () => Promise<void>;
   beforeSetValues?: (values: Record<string, unknown>) => Promise<void>;
-  beforeSetJobs?: () => Promise<void>;
+  beforeSetJobs?: (jobs: Job[]) => Promise<void>;
   beforeGetJobs?: (readCount: number) => Promise<void>;
   afterGetJobs?: (jobs: Job[], readCount: number) => Promise<void>;
 } = {}) {
@@ -62,7 +62,7 @@ function harness(options: {
         return snapshot;
       },
       setJobs: async (next) => {
-        await options.beforeSetJobs?.();
+        await options.beforeSetJobs?.(structuredClone(next));
         jobs = structuredClone(next);
       },
       getValues: async (keys) => {
@@ -196,6 +196,25 @@ describe('JobCoordinator', () => {
     await test.coordinator.whenIdle();
 
     expect(test.jobs).toEqual([expect.objectContaining({ videoUrl: 'queued', status: 'done' })]);
+    expect(test.delays).toEqual([100]);
+  });
+
+  it('retries a failed terminal transition without repeating the download', async () => {
+    let failedTerminalWrite = false;
+    const test = harness({
+      beforeSetJobs: async (jobs) => {
+        if (failedTerminalWrite || jobs[0]?.status !== 'done') return;
+        failedTerminalWrite = true;
+        throw new Error('Transient terminal write failure');
+      },
+    });
+
+    await test.coordinator.enqueue({ items: [{ url: 'one', bytes: 1 }] });
+    await test.coordinator.whenIdle();
+
+    expect(test.jobs[0]).toMatchObject({ status: 'done', folder: '/videos/item' });
+    expect(test.calls.filter((call) => call.action === 'custom')).toHaveLength(1);
+    expect(test.notifications).toEqual([['one', '/videos/item']]);
     expect(test.delays).toEqual([100]);
   });
 

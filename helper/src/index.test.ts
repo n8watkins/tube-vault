@@ -82,7 +82,7 @@ test('native cancellation durably prevents a job that has not registered yet', a
   assert.deepEqual(probe, { ok: false, status: 'failed', error: 'Job cancelled' });
 });
 
-test('native cancellation rejects a reused PID and preserves its owner record', async () => {
+test('native cancellation safely clears a stale owner without signaling a reused PID', async () => {
   const victim = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
   const jobId = `stale-${process.pid}`;
   const file = ownerFile(jobId);
@@ -91,14 +91,25 @@ test('native cancellation rejects a reused PID and preserves its owner record', 
     fs.chmodSync(jobsDirectory, 0o700);
     fs.writeFileSync(file, JSON.stringify({ pid: victim.pid, processIdentity: 'wrong-incarnation' }), { mode: 0o600 });
     const response = await nativeRequest({ action: 'cancel', jobId });
-    assert.deepEqual(response, { ok: false, status: 'failed', error: 'Job cancellation failed' });
+    assert.deepEqual(response, { ok: true, status: 'cancelled' });
     assert.equal(isAlive(victim.pid as number), true);
-    assert.equal(fs.existsSync(file), true);
+    assert.equal(fs.existsSync(file), false);
+    assert.equal(fs.existsSync(cancellationFile(jobId)), true);
   } finally {
     victim.kill('SIGKILL');
     fs.rmSync(file, { force: true });
     fs.rmSync(cancellationFile(jobId), { force: true });
   }
+});
+
+test('native cancellation cleanup removes a persisted tombstone idempotently', async () => {
+  const jobId = `finalized-${process.pid}`;
+  assert.deepEqual(await nativeRequest({ action: 'cancel', jobId }), { ok: true, status: 'cancellation_pending' });
+  assert.equal(fs.existsSync(cancellationFile(jobId)), true);
+
+  assert.deepEqual(await nativeRequest({ action: 'cancel_finalize', jobId }), { ok: true, status: 'ok' });
+  assert.equal(fs.existsSync(cancellationFile(jobId)), false);
+  assert.deepEqual(await nativeRequest({ action: 'cancel_finalize', jobId }), { ok: true, status: 'ok' });
 });
 
 test('native cancellation terminates only the matching process incarnation', async (context) => {

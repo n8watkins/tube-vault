@@ -644,11 +644,42 @@ test('createBatchSummary reuses a matching v0.3.80 date-named summary', () => {
       '',
     ].join('\n') + '\n');
 
-    const recovered = createBatchSummary(dir, 'new-batch-id', 'Legacy playlist', 'Playlist', items, undefined, receipts);
+    const recovered = createBatchSummary(dir, 'new-batch-id', 'Legacy playlist', 'Playlist', items, undefined, receipts, true);
 
     assert.equal(recovered.ok, true);
     assert.equal(recovered.summaryPath, legacyFile);
     assert.deepEqual(fs.readdirSync(summaries), [path.basename(legacyFile)]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(receipts, { recursive: true, force: true });
+  }
+});
+
+test('createBatchSummary does not reuse a matching date-named summary for a current batch', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-date-current-'));
+  const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-current-receipts-'));
+  const summaries = path.join(dir, 'TubeVault Summaries');
+  const legacyFile = path.join(summaries, 'Repeated playlist - 2026-07-20 1200.txt');
+  const items = [{ title: 'Same video', status: 'done' }];
+  try {
+    fs.mkdirSync(summaries);
+    fs.writeFileSync(legacyFile, [
+      'Repeated playlist',
+      '═'.repeat(48),
+      'Type:        Playlist',
+      'Downloaded:  7/20/2026, 12:00:00 PM',
+      'Videos:      1 of 1 completed',
+      '',
+      'Items:',
+      '  001 ✓ Same video',
+      '',
+    ].join('\n') + '\n');
+
+    const created = createBatchSummary(dir, 'current-batch', 'Repeated playlist', 'Playlist', items, undefined, receipts);
+
+    assert.equal(created.ok, true);
+    assert.notEqual(created.summaryPath, legacyFile);
+    assert.equal(fs.readdirSync(summaries).length, 2);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(receipts, { recursive: true, force: true });

@@ -96,6 +96,15 @@ function cancellationRequested(jobId: string): boolean {
     throw error;
   }
 }
+function clearCancellation(jobId: string): void {
+  ensureJobsDirectory();
+  try {
+    assertPrivatePath(cancellationFile(jobId), 'file');
+    fs.unlinkSync(cancellationFile(jobId));
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT') throw error;
+  }
+}
 function clearPid(jobId: string, expectedContents: string): void {
   try {
     ensureJobsDirectory();
@@ -180,7 +189,11 @@ readMessages(async (raw) => {
     try {
       recordCancellation(jobId);
       const { owner, contents } = readJobOwner(jobId);
-      if (readProcessIdentity(owner.pid) !== owner.processIdentity) throw new Error('Job owner changed');
+      if (readProcessIdentity(owner.pid) !== owner.processIdentity) {
+        clearPid(jobId, contents);
+        writeMessage({ ok: true, status: 'cancelled' });
+        return;
+      }
       process.kill(owner.pid, 'SIGTERM');
       if (!(await waitForOwnerExit(owner))) throw new Error('Job owner did not exit');
       clearPid(jobId, contents);
@@ -191,6 +204,20 @@ readMessages(async (raw) => {
       } else {
         writeMessage({ ok: false, status: 'failed', error: 'Job cancellation failed' });
       }
+    }
+    return;
+  }
+
+  if (req.action === 'cancel_finalize') {
+    if (!isValidJobId(req.jobId)) {
+      writeMessage({ ok: false, status: 'failed', error: 'Invalid job ID' });
+      return;
+    }
+    try {
+      clearCancellation(req.jobId);
+      writeMessage({ ok: true, status: 'ok' });
+    } catch {
+      writeMessage({ ok: false, status: 'failed', error: 'Cancellation cleanup failed' });
     }
     return;
   }
@@ -229,7 +256,16 @@ readMessages(async (raw) => {
   if (req.action === 'batch_summary') {
     const rawRoot = (req.options as { outputRoot?: string } | undefined)?.outputRoot;
     const items = (req.items as BatchSummaryItem[]) ?? [];
-    writeMessage(createBatchSummary(rawRoot, req.batchId as string, req.batchLabel as string, req.category as string | undefined, items));
+    writeMessage(createBatchSummary(
+      rawRoot,
+      req.batchId as string,
+      req.batchLabel as string,
+      req.category as string | undefined,
+      items,
+      undefined,
+      undefined,
+      req.allowDateNamedLegacySummary === true,
+    ));
     return;
   }
 

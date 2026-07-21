@@ -21,6 +21,8 @@ export interface Job {
   summaryWritten?: boolean;
   summaryExhausted?: boolean;
   summaryReceiptCleaned?: boolean;
+  nativeCancellationCleaned?: boolean;
+  allowDateNamedLegacySummary?: boolean;
 }
 
 export interface CoordinatorSettings {
@@ -109,6 +111,7 @@ export class JobCoordinator {
 
   async initialize(): Promise<void> {
     await this.migrateLegacyTerminalBatches();
+    const cleanupIds = new Set<string>();
     const jobs = await this.withJobsLock(async () => {
       const currentJobs = await this.effects.storage.getJobs();
       const interruptedJobs = currentJobs.filter(isInFlight);
@@ -118,6 +121,12 @@ export class JobCoordinator {
       if (cancellations.some((response) => !cancellationAcknowledged(response))) {
         throw new Error('Could not cancel interrupted native jobs');
       }
+      currentJobs
+        .filter((job) => !isInFlight(job) && job.nativeCancellationCleaned === false)
+        .forEach((job) => cleanupIds.add(job.id));
+      cancellations.forEach((response, index) => {
+        if (response?.status === 'cancelled') cleanupIds.add(interruptedJobs[index].id);
+      });
       let changed = false;
       for (const job of currentJobs) {
         if (isInFlight(job)) {
@@ -125,12 +134,14 @@ export class JobCoordinator {
           job.status = wasCancelling ? 'cancelled' : 'failed';
           job.error = wasCancelling ? undefined : 'Interrupted';
           job.finishedAt = this.effects.now();
+          job.nativeCancellationCleaned = false;
           changed = true;
         }
       }
       if (changed) await this.setJobsLocked(currentJobs, true);
       return currentJobs;
     });
+    await this.cleanupNativeCancellations([...cleanupIds]);
     const terminalBatchIds = new Set(jobs
       .filter((job) => job.batchId && !isActive(job))
       .map((job) => job.batchId as string));
@@ -188,6 +199,7 @@ export class JobCoordinator {
       const response = await this.safeNative({ action: 'cancel', jobId: id });
       if (!cancellationAcknowledged(response)) throw new Error('Could not cancel native job');
       await this.finalizeCancellations([id]);
+      if (response?.status === 'cancelled') await this.cleanupNativeCancellations([id]);
     }
     try {
       await this.maybeWriteBatchSummary(cancellation.batchId).catch(() => undefined);
@@ -218,7 +230,9 @@ export class JobCoordinator {
       response: await this.safeNative({ action: 'cancel', jobId }),
     })));
     const acknowledged = outcomes.filter(({ response }) => cancellationAcknowledged(response)).map(({ jobId }) => jobId);
+    const settled = outcomes.filter(({ response }) => response?.status === 'cancelled').map(({ jobId }) => jobId);
     await this.finalizeCancellations(acknowledged);
+    await this.cleanupNativeCancellations(settled);
     if (acknowledged.length !== inFlight.length) throw new Error('Could not cancel every native job');
     try {
       await this.maybeWriteBatchSummary(batchId).catch(() => undefined);
@@ -236,6 +250,25 @@ export class JobCoordinator {
         if (!acknowledged.has(job.id) || job.status !== 'cancelling') continue;
         job.status = 'cancelled';
         job.finishedAt = this.effects.now();
+        job.nativeCancellationCleaned = false;
+        changed = true;
+      }
+      return { changed, value: undefined, options: true };
+    });
+  }
+
+  private async cleanupNativeCancellations(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    const cleaned = new Set((await Promise.all(ids.map(async (jobId) => ({
+      jobId,
+      response: await this.safeNative({ action: 'cancel_finalize', jobId }),
+    })))).filter(({ response }) => response?.ok === true).map(({ jobId }) => jobId));
+    if (cleaned.size === 0) return;
+    await this.mutateJobs((jobs) => {
+      let changed = false;
+      for (const job of jobs) {
+        if (!cleaned.has(job.id) || job.nativeCancellationCleaned !== false) continue;
+        job.nativeCancellationCleaned = true;
         changed = true;
       }
       return { changed, value: undefined, options: true };
@@ -336,7 +369,10 @@ export class JobCoordinator {
         estBytes: probe?.ok && typeof probe.bytes === 'number' ? probe.bytes : 0,
       };
       if (probe?.ok && typeof probe.title === 'string' && probe.title) patch.label = probe.title;
-      if (!(await this.persistCompletedTransition(job.id, patch))) return;
+      if (!(await this.persistCompletedTransition(job.id, patch))) {
+        await this.cleanupNativeCancellations([job.id]);
+        return;
+      }
       job = { ...job, ...patch };
     } else {
       if (!(await this.updateJob(job.id, { status: 'running' }))) return;
@@ -372,6 +408,7 @@ export class JobCoordinator {
     };
     const completed = await this.persistCompletedTransition(job.id, terminalPatch);
     if (!completed) {
+      await this.cleanupNativeCancellations([job.id]);
       await this.maybeWriteBatchSummary(job.batchId).catch(() => undefined);
       return;
     }
@@ -426,7 +463,8 @@ export class JobCoordinator {
         ? [job.batchId]
         : []
     )));
-    const isProtected = (job: Job) => !!job.batchId && protectedBatchIds.has(job.batchId);
+    const isProtected = (job: Job) => job.nativeCancellationCleaned === false
+      || (!!job.batchId && protectedBatchIds.has(job.batchId));
     let result = jobs;
     if (options.discardBatchId) {
       result = result.filter((job) => job.batchId !== options.discardBatchId || isActive(job));
@@ -553,6 +591,7 @@ export class JobCoordinator {
       category: first.category,
       items: members.map((job) => ({ title: job.label, folder: job.folder, status: job.status })),
       options: { outputRoot },
+      allowDateNamedLegacySummary: members.some((job) => job.allowDateNamedLegacySummary === true),
     };
 
     let attempts = retry.attempts;
@@ -642,6 +681,16 @@ export class JobCoordinator {
   private async migrateLegacyTerminalBatches(): Promise<void> {
     const values = await this.effects.storage.getValues([SUMMARY_SCHEMA_VERSION_KEY]);
     if (values[SUMMARY_SCHEMA_VERSION_KEY] === SUMMARY_SCHEMA_VERSION) return;
+    await this.withJobsLock(async () => {
+      const jobs = await this.effects.storage.getJobs();
+      let changed = false;
+      for (const job of jobs) {
+        if (!job.batchId || job.summaryWritten || job.summaryExhausted) continue;
+        job.allowDateNamedLegacySummary = true;
+        changed = true;
+      }
+      if (changed) await this.setJobsLocked(jobs, true);
+    });
     await this.effects.storage.setValues({ [SUMMARY_SCHEMA_VERSION_KEY]: SUMMARY_SCHEMA_VERSION });
   }
 

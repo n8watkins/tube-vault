@@ -1456,11 +1456,24 @@ export function createBatchSummary(
   items: BatchSummaryItem[],
   fallback?: string,
   receiptDir = batchSummaryReceiptDir(),
+  allowDateNamedLegacySummary = false,
 ): { ok: boolean; status: string; summaryPath?: string; error?: string } {
   try {
     if (typeof batchId !== 'string' || !batchId) throw new Error('Batch ID is required');
     const receipt = reserveBatchSummaryReceipt(batchId, resolveBatchSummaryRoot(rawRoot, fallback), batchLabel, receiptDir);
-    return { ok: true, status: 'ok', summaryPath: writeBatchSummary(receipt.root, batchId, batchLabel, category, items, receipt.summaryName) };
+    return {
+      ok: true,
+      status: 'ok',
+      summaryPath: writeBatchSummary(
+        receipt.root,
+        batchId,
+        batchLabel,
+        category,
+        items,
+        receipt.summaryName,
+        allowDateNamedLegacySummary,
+      ),
+    };
   } catch (error) {
     return { ok: false, status: 'failed', error: error instanceof Error ? error.message : 'Could not write batch summary' };
   }
@@ -1496,6 +1509,7 @@ export function writeBatchSummary(
   category: string | undefined,
   items: BatchSummaryItem[],
   reservedName?: string,
+  allowDateNamedLegacySummary = false,
 ): string {
   const dir = path.join(root, 'TubeVault Summaries');
   ensureDir(dir);
@@ -1505,7 +1519,9 @@ export function writeBatchSummary(
     syncPublishedFile(legacyFile);
     return wslToWindowsPath(legacyFile);
   }
-  const dateNamedLegacyFile = findMatchingDateNamedLegacySummary(dir, batchLabel, category, items);
+  const dateNamedLegacyFile = allowDateNamedLegacySummary
+    ? findMatchingDateNamedLegacySummary(dir, batchLabel, category, items)
+    : undefined;
   if (dateNamedLegacyFile) {
     syncPublishedFile(dateNamedLegacyFile);
     return wslToWindowsPath(dateNamedLegacyFile);

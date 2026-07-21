@@ -435,6 +435,17 @@ describe('JobCoordinator', () => {
     await test.coordinator.cancelJob('active');
     expect(test.jobs[0].status).toBe('cancelled');
     expect(test.calls).toContainEqual({ action: 'cancel', jobId: 'active' });
+    expect(test.calls).toContainEqual({ action: 'cancel_finalize', jobId: 'active' });
+    expect(test.jobs[0].nativeCancellationCleaned).toBe(true);
+  });
+
+  it('retries tombstone cleanup on restart after cancellation was persisted', async () => {
+    const test = harness({ jobs: [job('cancelled', 'cancelled', { nativeCancellationCleaned: false })] });
+
+    await test.coordinator.initialize();
+
+    expect(test.calls).toContainEqual({ action: 'cancel_finalize', jobId: 'cancelled' });
+    expect(test.jobs[0].nativeCancellationCleaned).toBe(true);
   });
 
   it('does not finalize an in-flight cancellation without native acknowledgement', async () => {
@@ -456,6 +467,8 @@ describe('JobCoordinator', () => {
 
     await test.coordinator.cancelJob('active');
     expect(test.jobs[0].status).toBe('cancelled');
+    expect(test.calls).not.toContainEqual({ action: 'cancel_finalize', jobId: 'active' });
+    expect(test.jobs[0].nativeCancellationCleaned).toBe(false);
   });
 
   it('cancels every active member of a batch', async () => {
@@ -673,7 +686,7 @@ describe('JobCoordinator', () => {
 
     expect(test.jobs.find((item) => item.id === 'queued')?.status).toBe('done');
     expect(test.calls.filter((call) => call.action === 'batch_summary')).toEqual([
-      expect.objectContaining({ batchId: 'historical-batch' }),
+      expect.objectContaining({ batchId: 'historical-batch', allowDateNamedLegacySummary: true }),
     ]);
     expect(test.values.tvBatchSummarySchemaVersion).toBe(1);
   });

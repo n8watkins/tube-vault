@@ -4,6 +4,8 @@ import { NamingOptions, defaultNaming, NAMING_KEYS } from './types';
 const NATIVE_HOST = 'com.tube_vault.helper';
 const JOBS_KEY = 'tvJobs';
 const QUEUE_WAKE_ALARM = 'tube-vault-queue-wake';
+const INITIALIZATION_RETRY_MIN_MS = 1_000;
+const INITIALIZATION_RETRY_MAX_MS = 30_000;
 const namingKeyList = Object.keys(NAMING_KEYS) as (keyof NamingOptions)[];
 const namingStorageDefaults = Object.fromEntries(namingKeyList.map((key) => [NAMING_KEYS[key], defaultNaming[key]]));
 const settings = {
@@ -114,12 +116,17 @@ chrome.alarms?.onAlarm.addListener((alarm) => {
 });
 
 let coordinatorReady: Promise<void> | null = null;
+let initializationRetryMs = INITIALIZATION_RETRY_MIN_MS;
 
 function ensureCoordinatorReady(): Promise<void> {
   if (coordinatorReady) return coordinatorReady;
-  const initializing = loadSettings().then(() => coordinator.initialize());
+  const initializing = loadSettings().then(() => coordinator.initialize()).then(() => {
+    initializationRetryMs = INITIALIZATION_RETRY_MIN_MS;
+  });
   const ready = initializing.catch((error) => {
     if (coordinatorReady === ready) coordinatorReady = null;
+    chrome.alarms?.create(QUEUE_WAKE_ALARM, { when: Date.now() + initializationRetryMs });
+    initializationRetryMs = Math.min(initializationRetryMs * 2, INITIALIZATION_RETRY_MAX_MS);
     throw error;
   });
   coordinatorReady = ready;

@@ -589,15 +589,27 @@ test('createBatchSummary reuses an existing opaque summary during receipt recove
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-legacy-'));
   const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-receipts-'));
   try {
-    const first = createBatchSummary(dir, 'legacy-batch', 'Readable label', undefined, [], undefined, receipts);
+    const batchId = 'legacy-batch';
+    const first = createBatchSummary(dir, batchId, 'Readable label', undefined, [], undefined, receipts);
     assert.equal(first.ok, true);
-
-    const readableFile = first.summaryPath as string;
-    const digest = path.basename(fs.readdirSync(receipts)[0], '.json');
+    fs.unlinkSync(first.summaryPath as string);
+    const digest = createHash('sha256').update(batchId).digest('hex');
     const opaqueFile = path.join(dir, 'TubeVault Summaries', `TubeVault batch - ${digest}.txt`);
-    fs.renameSync(readableFile, opaqueFile);
+    fs.writeFileSync(opaqueFile, [
+      'Readable label',
+      '═'.repeat(48),
+      'Type:        Playlist',
+      'Downloaded:  7/20/2026, 12:00:00 PM',
+      'Videos:      1 of 2 completed',
+      '',
+      'Items:',
+      '  001 ✓ Complete video',
+      '        → C:\\Videos\\Complete video',
+      '  002 ✗ Failed video',
+      '',
+    ].join('\n') + '\n', 'utf8');
 
-    const recovered = createBatchSummary(dir, 'legacy-batch', 'Readable label', undefined, [], undefined, receipts);
+    const recovered = createBatchSummary(dir, batchId, 'Readable label', undefined, [], undefined, receipts);
     assert.equal(recovered.summaryPath, opaqueFile);
     assert.equal(fs.readdirSync(path.dirname(opaqueFile)).length, 1);
   } finally {

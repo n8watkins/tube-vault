@@ -295,6 +295,73 @@ describe('service worker startup', () => {
     expect(runtime.sendNativeMessage).toHaveBeenCalledTimes(1);
   });
 
+  it('uses a durable alarm to retry cold-start initialization without user activity', async () => {
+    let alarmListener: ((alarm: { name: string }) => void) | undefined;
+    let settingsReads = 0;
+    let storageAvailable = false;
+    const nativeCalls: Record<string, unknown>[] = [];
+    let jobs = [{
+      id: 'queued',
+      videoUrl: 'https://youtube.test/queued',
+      label: 'Queued',
+      components: {},
+      status: 'queued',
+      createdAt: 1,
+    }];
+    const runtime = {
+      sendNativeMessage: vi.fn((_host: string, payload: Record<string, unknown>, callback: (response: unknown) => void) => {
+        nativeCalls.push(payload);
+        callback({ ok: true });
+      }),
+      onMessage: { addListener: vi.fn() },
+      lastError: undefined as { message?: string } | undefined,
+    };
+    const alarms = {
+      create: vi.fn(),
+      onAlarm: { addListener: vi.fn((listener) => { alarmListener = listener; }) },
+    };
+    const chromeStub = {
+      storage: {
+        local: {
+          get: vi.fn((defaults: Record<string, unknown> | string[], callback: (values: Record<string, unknown>) => void) => {
+            if (!Array.isArray(defaults) && 'collectHistory' in defaults) {
+              settingsReads += 1;
+              if (!storageAvailable) runtime.lastError = { message: 'Storage unavailable' };
+              callback(defaults);
+              runtime.lastError = undefined;
+              return;
+            }
+            callback(Array.isArray(defaults) ? {} : { tvJobs: structuredClone(jobs) });
+          }),
+          set: vi.fn((values: Record<string, unknown>, callback: () => void) => {
+            if (Array.isArray(values.tvJobs)) jobs = structuredClone(values.tvJobs) as typeof jobs;
+            callback();
+          }),
+        },
+        onChanged: { addListener: vi.fn() },
+      },
+      runtime,
+      alarms,
+      notifications: { create: vi.fn() },
+    };
+    vi.stubGlobal('chrome', chromeStub);
+
+    await import('./service-worker');
+    await vi.waitFor(() => expect(alarms.create).toHaveBeenCalledWith(
+      'tube-vault-queue-wake',
+      expect.objectContaining({ when: expect.any(Number) }),
+    ));
+    expect(settingsReads).toBe(1);
+    expect(nativeCalls).toEqual([]);
+
+    storageAvailable = true;
+    alarmListener?.({ name: 'tube-vault-queue-wake' });
+
+    await vi.waitFor(() => expect(nativeCalls).toContainEqual(expect.objectContaining({ action: 'custom' })));
+    expect(settingsReads).toBe(2);
+    expect(nativeCalls.filter((call) => call.action === 'custom')).toHaveLength(1);
+  });
+
   it('reports output-root storage failures to ping callers', async () => {
     let messageListener: ((message: Record<string, unknown>, sender: unknown, sendResponse: (response: unknown) => void) => boolean) | undefined;
     const runtime = {

@@ -815,6 +815,36 @@ function hasValidSummaryIntegrity(file: string): boolean {
   }
 }
 
+function hasValidLegacyBatchSummary(file: string): boolean {
+  let content: string;
+  try {
+    content = fs.readFileSync(file, 'utf8');
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return false;
+    throw error;
+  }
+  if (!content.endsWith('\n')) return false;
+  const lines = content.slice(0, -1).split('\n');
+  if (!lines[0]
+    || lines[1] !== '═'.repeat(48)
+    || !/^Type:\s+\S.*$/.test(lines[2] || '')
+    || !/^Downloaded:\s+\S.*$/.test(lines[3] || '')) return false;
+  const totals = /^Videos:\s+(\d+) of (\d+) completed$/.exec(lines[4] || '');
+  if (!totals || lines[5] !== '' || lines[6] !== 'Items:' || lines[lines.length - 1] !== '') return false;
+  const completed = Number(totals[1]);
+  const total = Number(totals[2]);
+  let itemCount = 0;
+  let completedCount = 0;
+  for (let index = 7; index < lines.length - 1; index += 1) {
+    const item = /^\s{2}\d+ ([✓✗⊘·]) \S.*$/.exec(lines[index]);
+    if (!item) return false;
+    itemCount += 1;
+    if (item[1] === '✓') completedCount += 1;
+    if (/^\s{8}→ \S.*$/.test(lines[index + 1] || '')) index += 1;
+  }
+  return itemCount === total && completedCount === completed && completed <= total;
+}
+
 class InvalidBatchSummaryReceiptError extends Error {}
 
 function canRecoverReceiptRead(error: unknown): boolean {
@@ -1353,7 +1383,9 @@ export function writeBatchSummary(
   ensureDir(dir);
   const batchSlug = batchSummaryId(batchId);
   const legacyFile = path.join(dir, `TubeVault batch - ${batchSlug}.txt`);
-  if (hasValidSummaryIntegrity(legacyFile)) return wslToWindowsPath(legacyFile);
+  if (hasValidSummaryIntegrity(legacyFile) || hasValidLegacyBatchSummary(legacyFile)) {
+    return wslToWindowsPath(legacyFile);
+  }
 
   const existingName = fs.readdirSync(dir).sort().find((name) => isBatchSummaryName(batchId, name));
   const summaryName = existingName || reservedName || batchSummaryName(batchId, batchLabel);

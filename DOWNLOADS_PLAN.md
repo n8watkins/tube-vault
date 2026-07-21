@@ -10,7 +10,7 @@ It is historical context, not an active implementation plan.
 - Every selected video becomes an individual job with its own ID, status, expected size, folder, error, and timestamps.
 - Playlist and channel jobs share a batch ID, label, category, sequential index, and selected total.
 - Unknown titles and sizes are probed immediately before each download.
-- Probes and downloads run through one strictly serial queue.
+- Downloads and queue-time probes run through one strictly serial queue, while planning and visible-row probes use bounded concurrency.
 - Individual jobs and complete batches can be cancelled.
 - Interrupted probing or running jobs become failed with an `Interrupted` error after a service-worker restart.
 - The popup shows active work, grouped queued batches, recent results, and inline cancellation.

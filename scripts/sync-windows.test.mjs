@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -301,6 +301,61 @@ test('elects one winner when lock intents are published concurrently', async () 
   assert.equal(results.filter((result) => result === 'acquired').length, 1);
   assert.equal(results.filter((result) => result instanceof Error && /Another sync is already running/.test(result.message)).length, 1);
   assert.deepEqual((await readdir(target)).filter((name) => name.includes('.intent-')), []);
+});
+
+test('revalidates lower lock intents published after election', async () => {
+  const source = await mkdtemp(join(tmpdir(), 'tube-vault-sync-source-'));
+  const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));
+  const relativePath = 'extension/manifest.json';
+  const lowerIntent = join(target, '.tube-vault-sync.lock.intent-lower');
+  await mkdir(join(source, 'extension'), { recursive: true });
+  await mkdir(join(target, 'extension'), { recursive: true });
+  await writeFile(join(source, relativePath), 'new\n');
+  await writeFile(join(target, relativePath), 'old\n');
+
+  await assert.rejects(syncArtifacts(source, target, [relativePath], {
+    afterLockElection: async () => {
+      await writeFile(lowerIntent, JSON.stringify({
+        pid: process.pid,
+        hostname: hostname(),
+        token: '00000000-0000-0000-0000-000000000000',
+        processIdentity: await readProcessIdentity(process.pid),
+      }));
+    },
+  }), /Another sync is already running/);
+
+  assert.equal((await readdir(target)).includes('.tube-vault-sync.lock'), false);
+  assert.equal(await readFile(join(target, relativePath), 'utf8'), 'old\n');
+  await rm(lowerIntent);
+});
+
+test('anchors mutations when the target path is replaced concurrently', async () => {
+  const testRoot = await mkdtemp(join(tmpdir(), 'tube-vault-sync-anchor-test-'));
+  const source = join(testRoot, 'source');
+  const target = join(testRoot, 'target');
+  const displacedTarget = join(testRoot, 'displaced-target');
+  const outside = join(testRoot, 'outside');
+  const relativePath = 'extension/manifest.json';
+  await mkdir(join(source, 'extension'), { recursive: true });
+  await mkdir(join(target, 'extension'), { recursive: true });
+  await mkdir(outside);
+  await writeFile(join(source, relativePath), 'new\n');
+  await writeFile(join(target, relativePath), 'old\n');
+  await writeFile(join(outside, 'marker.txt'), 'preserved\n');
+
+  try {
+    await assert.rejects(syncArtifacts(source, target, [relativePath], {
+      afterLockIntent: async () => {
+        await rename(target, displacedTarget);
+        await symlink(outside, target, 'dir');
+      },
+    }), /changed concurrently|symbolic link/);
+    assert.deepEqual(await readdir(outside), ['marker.txt']);
+    assert.equal(await readFile(join(outside, 'marker.txt'), 'utf8'), 'preserved\n');
+  } finally {
+    await unlink(target).catch(() => undefined);
+    await rename(displacedTarget, target).catch(() => undefined);
+  }
 });
 
 test('recovers an incomplete abandoned lock intent', async () => {

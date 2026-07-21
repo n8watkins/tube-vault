@@ -1,3 +1,5 @@
+import { constants } from 'node:fs';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { cp, link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, unlink } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -11,9 +13,12 @@ const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const TRANSACTION_PREFIX = '.tube-vault-sync-';
 const LOCK_NAME = '.tube-vault-sync.lock';
+const LOCK_READY_NAME = `${LOCK_NAME}.ready`;
 const LOCK_INTENT_PREFIX = `${LOCK_NAME}.intent-`;
 const LOCK_RECLAIMER_PREFIX = `${LOCK_NAME}.reclaimer-`;
 const DIRECTORY_SYNC_UNAVAILABLE_CODES = new Set(['EACCES', 'EPERM', 'EINVAL', 'EBADF', 'EISDIR', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
+const DIRECTORY_OPEN_FLAGS = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
+const mutationRootStorage = new AsyncLocalStorage();
 
 export const SYNC_FILES = [
   'extension/manifest.json',
@@ -116,28 +121,30 @@ async function requireSafeArtifactPaths(target, entries) {
 }
 
 async function syncDirectory(path) {
-  let handle;
+  const directory = await openStableDirectory(path);
   try {
-    handle = await open(path, 'r');
-  } catch (error) {
-    if (error?.code && DIRECTORY_SYNC_UNAVAILABLE_CODES.has(error.code)) return;
-    throw error;
-  }
-  try {
-    await handle.sync();
+    await directory.handle.sync();
   } catch (error) {
     if (!error?.code || !DIRECTORY_SYNC_UNAVAILABLE_CODES.has(error.code)) throw error;
   } finally {
-    await handle.close();
+    await directory.handle.close();
   }
 }
 
 async function syncFile(path) {
-  const handle = await open(path, 'r');
+  const directory = await openStableDirectory(dirname(path));
   try {
-    await handle.sync();
+    const handle = await open(
+      join('/proc/self/fd', String(directory.handle.fd), basename(path)),
+      constants.O_RDONLY | constants.O_NOFOLLOW,
+    );
+    try {
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
   } finally {
-    await handle.close();
+    await directory.handle.close();
   }
 }
 
@@ -162,16 +169,39 @@ function sameFile(left, right) {
 }
 
 async function openStableDirectory(path) {
-  const before = await lstat(path);
-  if (!before.isDirectory() || before.isSymbolicLink()) throw new Error(`Sync mutation parent is unsafe: ${path}`);
-  const handle = await open(path, 'r');
-  const opened = await handle.stat();
-  const after = await lstat(path);
-  if (!after.isDirectory() || after.isSymbolicLink() || !sameFile(before, opened) || !sameFile(opened, after)) {
-    await handle.close();
-    throw new Error(`Sync mutation parent changed concurrently: ${path}`);
+  const absolutePath = resolve(path);
+  const mutationRoot = mutationRootStorage.getStore();
+  if (mutationRoot && !isWithinRoot(mutationRoot.path, absolutePath)) {
+    throw new Error(`Sync mutation escapes its anchored root: ${path}`);
   }
-  return { handle, identity: opened, path };
+
+  let handle;
+  try {
+    if (mutationRoot) {
+      await requireStableDirectory(mutationRoot);
+      handle = await open(
+        join('/proc/self/fd', String(mutationRoot.handle.fd)),
+        constants.O_RDONLY | constants.O_DIRECTORY,
+      );
+    } else {
+      handle = await open('/', DIRECTORY_OPEN_FLAGS);
+    }
+    const pathFromRoot = mutationRoot ? relative(mutationRoot.path, absolutePath) : relative('/', absolutePath);
+    for (const segment of pathFromRoot.split(sep).filter(Boolean)) {
+      const next = await open(join('/proc/self/fd', String(handle.fd), segment), DIRECTORY_OPEN_FLAGS);
+      await handle.close();
+      handle = next;
+    }
+    const opened = await handle.stat();
+    const current = await lstat(absolutePath);
+    if (!current.isDirectory() || current.isSymbolicLink() || !sameFile(opened, current)) {
+      throw new Error(`Sync mutation parent changed concurrently: ${path}`);
+    }
+    return { handle, identity: opened, path: absolutePath };
+  } catch (error) {
+    if (handle) await handle.close();
+    throw error;
+  }
 }
 
 async function requireStableDirectory(directory) {
@@ -191,14 +221,45 @@ async function mutateDurably(paths, mutation) {
       const directory = directories.find((entry) => entry.path === dirname(path));
       return join('/proc/self/fd', String(directory.handle.fd), basename(path));
     });
-    await mutation(anchoredPaths);
+    const result = await mutation(anchoredPaths);
     for (const directory of directories) await requireStableDirectory(directory);
     for (const directory of directories) await directory.handle.sync().catch((error) => {
       if (!error?.code || !DIRECTORY_SYNC_UNAVAILABLE_CODES.has(error.code)) throw error;
     });
+    return result;
   } finally {
     await Promise.all(directories.map(({ handle }) => handle.close()));
   }
+}
+
+async function withMutationRoot(path, mutation) {
+  const directory = await openStableDirectory(path);
+  try {
+    return await mutationRootStorage.run(directory, mutation);
+  } finally {
+    await directory.handle.close();
+  }
+}
+
+async function createTemporaryDirectoryDurably(prefix) {
+  const anchoredPath = await mutateDurably([prefix], ([anchoredPrefix]) => mkdtemp(anchoredPrefix));
+  return join(dirname(prefix), basename(anchoredPath));
+}
+
+async function writeFileExclusivelyDurably(path, contents) {
+  return mutateDurably([path], async ([anchoredPath]) => {
+    const handle = await open(anchoredPath, 'wx');
+    try {
+      await handle.writeFile(contents);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+  });
+}
+
+async function copyFileDurably(source, destination) {
+  await mutateDurably([destination], ([anchoredDestination]) => cp(source, anchoredDestination));
 }
 
 async function removeDurably(path, options = {}) {
@@ -225,16 +286,10 @@ async function unlinkDurably(path) {
 async function writeJournalDurably(transactionRoot, entries, state = 'pending') {
   const journalPath = join(transactionRoot, 'journal.json');
   const temporaryPath = join(transactionRoot, 'journal.json.tmp');
-  let handle;
   try {
-    handle = await open(temporaryPath, 'wx');
-    await handle.writeFile(`${JSON.stringify({ state, entries }, null, 2)}\n`);
-    await handle.sync();
-    await handle.close();
-    handle = undefined;
+    await writeFileExclusivelyDurably(temporaryPath, `${JSON.stringify({ state, entries }, null, 2)}\n`);
     await renameDurably(temporaryPath, journalPath);
   } finally {
-    if (handle) await handle.close();
     await removeDurably(temporaryPath, { force: true });
   }
 }
@@ -395,6 +450,7 @@ async function claimReclaimerIntent(target, reclaimerPath, owner) {
 
 async function acquireSyncLock(target, hooks = {}) {
   const lockPath = join(target, LOCK_NAME);
+  const readyPath = join(target, LOCK_READY_NAME);
   const token = randomUUID();
   const owner = {
     pid: process.pid,
@@ -404,27 +460,32 @@ async function acquireSyncLock(target, hooks = {}) {
   };
   const ownerPath = join(target, `${LOCK_INTENT_PREFIX}${token}`);
   const temporaryOwnerPath = join(target, `${LOCK_NAME}.tmp-intent-${token}`);
-  let ownerHandle;
   let acquired = false;
   try {
-    ownerHandle = await open(temporaryOwnerPath, 'wx');
-    await ownerHandle.writeFile(`${JSON.stringify(owner)}\n`);
-    await ownerHandle.sync();
-    await ownerHandle.close();
-    ownerHandle = undefined;
+    await writeFileExclusivelyDurably(temporaryOwnerPath, `${JSON.stringify(owner)}\n`);
     await linkDurably(temporaryOwnerPath, ownerPath);
     await unlinkDurably(temporaryOwnerPath);
     await hooks.afterLockIntent?.(owner);
     await claimLockIntent(target, ownerPath, owner);
+    await hooks.afterLockElection?.(owner);
 
     while (true) {
       try {
         await linkDurably(ownerPath, lockPath);
+        await removeDurably(readyPath, { force: true });
+        try {
+          await claimLockIntent(target, ownerPath, owner);
+        } catch (error) {
+          await unlinkDurably(lockPath);
+          throw error;
+        }
+        await linkDurably(ownerPath, readyPath);
         acquired = true;
         return async () => {
           try {
             const currentOwner = await readLockOwner(lockPath).catch(() => null);
             if (currentOwner?.token === token) {
+              await removeDurably(readyPath, { force: true });
               await unlinkDurably(lockPath);
             }
           } finally {
@@ -435,7 +496,17 @@ async function acquireSyncLock(target, hooks = {}) {
         if (error?.code !== 'EEXIST') throw error;
         const existingOwner = await readLockOwner(lockPath);
         if (await ownerIsAlive(existingOwner, owner)) {
-          throw new Error(`Another sync is already running for target: ${target}`);
+          const readyOwner = await readLockOwner(readyPath).catch(() => null);
+          if (readyOwner?.token === existingOwner.token) {
+            throw new Error(`Another sync is already running for target: ${target}`);
+          }
+          const existingIntentPath = join(target, `${LOCK_INTENT_PREFIX}${existingOwner.token}`);
+          const existingIntent = await readLockOwner(existingIntentPath).catch(() => null);
+          if (existingIntent?.token !== existingOwner.token) {
+            throw new Error(`Another sync is already running for target: ${target}`);
+          }
+          await new Promise((resolveRetry) => setTimeout(resolveRetry, 10));
+          continue;
         }
         const reclaimerPath = join(target, `${LOCK_RECLAIMER_PREFIX}${token}`);
         await linkDurably(ownerPath, reclaimerPath);
@@ -457,6 +528,10 @@ async function acquireSyncLock(target, hooks = {}) {
             await restoreClaimedLock(claimPath, lockPath);
             continue;
           }
+          const readyOwner = await readLockOwner(readyPath).catch(() => null);
+          if (readyOwner?.token === existingOwner.token) {
+            await removeDurably(readyPath, { force: true });
+          }
           await unlinkDurably(claimPath);
         } finally {
           await removeDurably(reclaimerPath, { force: true });
@@ -464,7 +539,6 @@ async function acquireSyncLock(target, hooks = {}) {
       }
     }
   } finally {
-    if (ownerHandle) await ownerHandle.close();
     await removeDurably(temporaryOwnerPath, { force: true });
     if (!acquired) await removeDurably(ownerPath, { force: true });
   }
@@ -492,6 +566,9 @@ async function restoreTransaction(target, transactionRoot, entries) {
 }
 
 export async function recoverSyncTransactions(target) {
+  if (!mutationRootStorage.getStore()) {
+    return withMutationRoot(target, () => recoverSyncTransactions(target));
+  }
   const names = await readdir(target);
   for (const name of names.filter((entry) => entry.startsWith(TRANSACTION_PREFIX))) {
     const transactionRoot = join(target, name);
@@ -517,64 +594,66 @@ export async function syncArtifacts(sourceRoot, target, files = SYNC_FILES, hook
     files.map((relativePath) => ({ relativePath, existed: false })),
     'requested artifact list',
   );
-  await requireSafeArtifactPaths(target, requestedEntries);
-  const releaseLock = await acquireSyncLock(target, hooks);
-  try {
-    await recoverSyncTransactions(target);
+  return withMutationRoot(target, async () => {
     await requireSafeArtifactPaths(target, requestedEntries);
-    const transactionRoot = await mkdtemp(join(target, TRANSACTION_PREFIX));
-    await syncDirectory(target);
-    const entries = [];
-    let removeTransaction = false;
+    const releaseLock = await acquireSyncLock(target, hooks);
     try {
-      for (const { relativePath } of requestedEntries) {
-        const staged = join(transactionRoot, 'files', relativePath);
-        await mkdirDurably(resolve(staged, '..'));
-        await cp(join(sourceRoot, relativePath), staged);
-        await syncFile(staged);
-        await syncDirectory(dirname(staged));
-        entries.push({ relativePath, existed: await pathExists(join(target, relativePath)) });
-      }
-      await writeJournalDurably(transactionRoot, entries);
-
+      await recoverSyncTransactions(target);
+      await requireSafeArtifactPaths(target, requestedEntries);
+      const transactionRoot = await createTemporaryDirectoryDurably(join(target, TRANSACTION_PREFIX));
+      await syncDirectory(target);
+      const entries = [];
+      let removeTransaction = false;
       try {
-        for (const [index, entry] of entries.entries()) {
-          await hooks.beforeInstall?.(entry.relativePath, index);
-          await requireSafeTargetPath(target, entry.relativePath);
-          const destination = join(target, entry.relativePath);
-          const staged = join(transactionRoot, 'files', entry.relativePath);
-          await requireSafeTransactionPath(transactionRoot, `files/${entry.relativePath}`);
-          if (entry.existed) {
-            const backup = join(transactionRoot, 'backups', entry.relativePath);
-            await mkdirDurably(resolve(backup, '..'));
-            await requireSafeTargetPath(target, entry.relativePath);
-            await requireSafeTransactionPath(transactionRoot, `backups/${entry.relativePath}`);
-            await syncFile(destination);
-            await renameDurably(destination, backup);
-          } else {
-            await mkdirDurably(resolve(destination, '..'));
-          }
-          await requireSafeTargetPath(target, entry.relativePath);
-          await requireSafeTransactionPath(transactionRoot, `files/${entry.relativePath}`);
-          await renameDurably(staged, destination);
+        for (const { relativePath } of requestedEntries) {
+          const staged = join(transactionRoot, 'files', relativePath);
+          await mkdirDurably(resolve(staged, '..'));
+          await copyFileDurably(join(sourceRoot, relativePath), staged);
+          await syncFile(staged);
+          await syncDirectory(dirname(staged));
+          entries.push({ relativePath, existed: await pathExists(join(target, relativePath)) });
         }
-      } catch (error) {
+        await writeJournalDurably(transactionRoot, entries);
+
         try {
-          await restoreTransaction(target, transactionRoot, entries);
-          removeTransaction = true;
-        } catch (rollbackError) {
-          throw new AggregateError([error, rollbackError], 'Artifact sync and rollback both failed', { cause: error });
+          for (const [index, entry] of entries.entries()) {
+            await hooks.beforeInstall?.(entry.relativePath, index);
+            await requireSafeTargetPath(target, entry.relativePath);
+            const destination = join(target, entry.relativePath);
+            const staged = join(transactionRoot, 'files', entry.relativePath);
+            await requireSafeTransactionPath(transactionRoot, `files/${entry.relativePath}`);
+            if (entry.existed) {
+              const backup = join(transactionRoot, 'backups', entry.relativePath);
+              await mkdirDurably(resolve(backup, '..'));
+              await requireSafeTargetPath(target, entry.relativePath);
+              await requireSafeTransactionPath(transactionRoot, `backups/${entry.relativePath}`);
+              await syncFile(destination);
+              await renameDurably(destination, backup);
+            } else {
+              await mkdirDurably(resolve(destination, '..'));
+            }
+            await requireSafeTargetPath(target, entry.relativePath);
+            await requireSafeTransactionPath(transactionRoot, `files/${entry.relativePath}`);
+            await renameDurably(staged, destination);
+          }
+        } catch (error) {
+          try {
+            await restoreTransaction(target, transactionRoot, entries);
+            removeTransaction = true;
+          } catch (rollbackError) {
+            throw new AggregateError([error, rollbackError], 'Artifact sync and rollback both failed', { cause: error });
+          }
+          throw error;
         }
-        throw error;
+        await writeJournalDurably(transactionRoot, entries, 'committed');
+        removeTransaction = true;
+      } finally {
+        if (removeTransaction) await removeDurably(transactionRoot, { recursive: true, force: true });
       }
-      await writeJournalDurably(transactionRoot, entries, 'committed');
-      removeTransaction = true;
     } finally {
-      if (removeTransaction) await removeDurably(transactionRoot, { recursive: true, force: true });
+      await releaseLock();
     }
-  } finally {
-    await releaseLock();
-  }
+  });
 }
 
 function run(command, args, options = {}) {

@@ -7,6 +7,7 @@ import * as path from 'path';
 import {
   buildBase, parseCapture, videoFormatFlag, mediaFormatFlag, sizeForComponents,
   createBatchSummary, readProcessIdentity, removeBatchSummaryReceipt, resolveBatchSummaryRoot, writeBatchSummary,
+  writeTextFileDurably,
   type DownloadRequest, type NamingOptions,
 } from './downloader';
 
@@ -783,12 +784,43 @@ test('removeBatchSummaryReceipt deletes a receipt idempotently after finalizatio
     assert.equal(created.ok, true);
     assert.equal(fs.readdirSync(receipts).length, 1);
 
-    assert.deepEqual(removeBatchSummaryReceipt('cleanup-batch', receipts), { ok: true, status: 'ok' });
+    let synchronizedFile: string | undefined;
+    assert.deepEqual(removeBatchSummaryReceipt('cleanup-batch', receipts, (file) => {
+      synchronizedFile = file;
+      assert.equal(fs.existsSync(file), false);
+    }), { ok: true, status: 'ok' });
+    assert.equal(path.dirname(synchronizedFile as string), receipts);
     assert.deepEqual(removeBatchSummaryReceipt('cleanup-batch', receipts), { ok: true, status: 'ok' });
     assert.deepEqual(fs.readdirSync(receipts), []);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(receipts, { recursive: true, force: true });
+  }
+});
+
+test('writeTextFileDurably atomically replaces content and cleans temporary files', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-durable-text-'));
+  const file = path.join(dir, 'summary.txt');
+  try {
+    fs.writeFileSync(file, 'old\n');
+    writeTextFileDurably(file, 'new\n');
+    assert.equal(fs.readFileSync(file, 'utf8'), 'new\n');
+    assert.deepEqual(fs.readdirSync(dir), ['summary.txt']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('writeTextFileDurably preserves the destination when publication fails', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-durable-text-failure-'));
+  const destination = path.join(dir, 'summary.txt');
+  try {
+    fs.mkdirSync(destination);
+    assert.throws(() => writeTextFileDurably(destination, 'new\n'));
+    assert.equal(fs.statSync(destination).isDirectory(), true);
+    assert.deepEqual(fs.readdirSync(dir), ['summary.txt']);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 

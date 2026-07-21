@@ -690,6 +690,23 @@ function fmtDuration(d: string): string {
   return h ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}` : `${m}:${String(sec).padStart(2, '0')}`;
 }
 
+export function writeTextFileDurably(file: string, contents: string): void {
+  const temporaryFile = path.join(path.dirname(file), `.tv-summary-${randomUUID()}.tmp`);
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(temporaryFile, 'wx');
+    fs.writeFileSync(descriptor, contents, 'utf8');
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    fs.renameSync(temporaryFile, file);
+    syncParentDirectory(file);
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    try { fs.unlinkSync(temporaryFile); } catch { /* already published or cleaned */ }
+  }
+}
+
 // Write the human-readable <Title>.txt summary beside the saved files. Best-effort.
 function writeSummary(folder: string, mediaPath: string, req: DownloadRequest, meta: CaptureMeta): void {
   try {
@@ -729,7 +746,7 @@ function writeSummary(folder: string, mediaPath: string, req: DownloadRequest, m
       '',
       `Folder: ${wslToWindowsPath(folder)}`,
     ];
-    fs.writeFileSync(path.join(folder, txtName), lines.join('\n') + '\n', 'utf8');
+    writeTextFileDurably(path.join(folder, txtName), lines.join('\n') + '\n');
   } catch { /* best-effort — never fail the download over the summary */ }
 }
 
@@ -1387,9 +1404,12 @@ export function createBatchSummary(
 export function removeBatchSummaryReceipt(
   batchId: string,
   receiptDir = batchSummaryReceiptDir(),
+  syncDirectory = syncParentDirectory,
 ): { ok: boolean; status: string; error?: string } {
   try {
-    fs.unlinkSync(batchSummaryReceiptFile(batchId, receiptDir));
+    const receiptFile = batchSummaryReceiptFile(batchId, receiptDir);
+    fs.unlinkSync(receiptFile);
+    syncDirectory(receiptFile);
     return { ok: true, status: 'ok' };
   } catch (error) {
     if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {

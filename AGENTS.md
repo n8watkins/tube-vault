@@ -60,8 +60,7 @@ npm run sync:windows -- --target /mnt/c/Users/<you>/Projects/tube-vault
 
 `TUBE_VAULT_WINDOWS_REPO` is also supported, and `--target` takes precedence.
 The target must be the absolute root of an existing Git repository with TubeVault extension and helper package identities.
-The sync is transactional, rolls back failed publication, and recovers interrupted transactions on the next run.
-It changes only the documented artifact allowlist.
+See [README.md](README.md) for the sync publication and allowlist guarantees.
 Reload the unpacked extension at `chrome://extensions` after syncing.
 
 ## Patch Release
@@ -72,9 +71,7 @@ Create a checked local patch release with:
 npm run release:patch
 ```
 
-The command validates the repository, increments `extension/package.json`, `extension/manifest.json`, and both root version records in `extension/package-lock.json`, rebuilds, stages those three files, and creates `build(tube-vault): vX.Y.Z`.
-Failures after versioning restore the original version files and Git index.
-It does not sync or push.
+See [README.md](README.md) for the release validation, rollback, commit, and publication contract.
 
 ## Key Files
 

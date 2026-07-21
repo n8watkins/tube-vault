@@ -72,6 +72,7 @@ export interface EnqueueRequest {
 const MAX_HISTORY = 100;
 const SUMMARY_ATTEMPTS_KEY = 'tvBatchSummaryAttempts';
 const MAX_SUMMARY_ATTEMPTS = 3;
+const MAX_QUEUE_PUMP_RETRIES = 3;
 const isActive = (job: Job) => job.status === 'queued' || job.status === 'probing' || job.status === 'running';
 
 interface BatchSummaryRetry {
@@ -156,9 +157,12 @@ export class JobCoordinator {
       return { changed: true, value: result, options: !!job.batchId };
     });
     if (!cancelled) return;
-    if (cancelled.wasInFlight) await this.effects.sendNative({ action: 'cancel', jobId: id });
-    await this.maybeWriteBatchSummary(cancelled.batchId);
-    void this.pumpQueue();
+    try {
+      if (cancelled.wasInFlight) await this.effects.sendNative({ action: 'cancel', jobId: id });
+      await this.maybeWriteBatchSummary(cancelled.batchId).catch(() => undefined);
+    } finally {
+      void this.pumpQueue();
+    }
   }
 
   async cancelBatch(batchId: string): Promise<void> {
@@ -174,9 +178,12 @@ export class JobCoordinator {
       }
       return { changed, value: ids };
     }, true);
-    await Promise.all(inFlight.map((jobId) => this.effects.sendNative({ action: 'cancel', jobId })));
-    await this.maybeWriteBatchSummary(batchId);
-    void this.pumpQueue();
+    try {
+      await Promise.all(inFlight.map((jobId) => this.effects.sendNative({ action: 'cancel', jobId })));
+      await this.maybeWriteBatchSummary(batchId).catch(() => undefined);
+    } finally {
+      void this.pumpQueue();
+    }
   }
 
   async clearHistory(): Promise<void> {
@@ -203,10 +210,18 @@ export class JobCoordinator {
   }
 
   private async drainRequestedQueue(): Promise<void> {
+    let retries = 0;
     try {
       do {
         this.pumpRequested = false;
-        await this.drainQueue();
+        try {
+          await this.drainQueue();
+        } catch {
+          if (retries >= MAX_QUEUE_PUMP_RETRIES) return;
+          retries += 1;
+          await this.effects.delay(100 * retries);
+          this.pumpRequested = true;
+        }
       } while (this.pumpRequested);
     } finally {
       this.pumpPromise = null;

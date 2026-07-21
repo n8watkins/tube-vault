@@ -39,6 +39,7 @@ function harness(options: {
   beforeGetValues?: () => Promise<void>;
   beforeSetValues?: (values: Record<string, unknown>) => Promise<void>;
   beforeSetJobs?: () => Promise<void>;
+  beforeGetJobs?: (readCount: number) => Promise<void>;
   afterGetJobs?: (jobs: Job[], readCount: number) => Promise<void>;
 } = {}) {
   let jobs = structuredClone(options.jobs ?? []);
@@ -54,8 +55,10 @@ function harness(options: {
   const effects: CoordinatorEffects = {
     storage: {
       getJobs: async () => {
+        jobsReadCount += 1;
+        await options.beforeGetJobs?.(jobsReadCount);
         const snapshot = structuredClone(jobs);
-        await options.afterGetJobs?.(snapshot, ++jobsReadCount);
+        await options.afterGetJobs?.(snapshot, jobsReadCount);
         return snapshot;
       },
       setJobs: async (next) => {
@@ -179,6 +182,23 @@ describe('JobCoordinator', () => {
     expect(test.calls).toContainEqual(expect.objectContaining({ action: 'custom', url: 'late' }));
   });
 
+  it('retries the queue pump after a transient storage read failure', async () => {
+    let failed = false;
+    const test = harness({
+      beforeGetJobs: async (readCount) => {
+        if (readCount !== 2 || failed) return;
+        failed = true;
+        throw new Error('Transient storage failure');
+      },
+    });
+
+    await expect(test.coordinator.enqueue({ items: [{ url: 'queued', bytes: 1 }] })).resolves.toMatchObject({ ok: true });
+    await test.coordinator.whenIdle();
+
+    expect(test.jobs).toEqual([expect.objectContaining({ videoUrl: 'queued', status: 'done' })]);
+    expect(test.delays).toEqual([100]);
+  });
+
   it('probes and downloads strictly serially while applying probe metadata', async () => {
     const firstDownload = deferred<NativeResponse>();
     const test = harness({ native: async (payload) => {
@@ -232,6 +252,27 @@ describe('JobCoordinator', () => {
     await test.coordinator.cancelJob('queued');
     expect(test.jobs[0].status).toBe('cancelled');
     expect(test.calls).toEqual([]);
+  });
+
+  it.each(['job', 'batch'] as const)('keeps pumping after %s cancellation summary persistence fails', async (mode) => {
+    const test = harness({
+      jobs: [
+        job('cancelled', 'queued', { batchId: 'batch', estBytes: 1 }),
+        job('next', 'queued', { estBytes: 1 }),
+      ],
+      beforeSetValues: async () => { throw new Error('Retry-state storage failed'); },
+    });
+
+    const cancellation = mode === 'job'
+      ? test.coordinator.cancelJob('cancelled')
+      : test.coordinator.cancelBatch('batch');
+    await expect(cancellation).resolves.toBeUndefined();
+    await test.coordinator.whenIdle();
+
+    expect(test.jobs.map(({ id, status }) => ({ id, status }))).toEqual([
+      { id: 'cancelled', status: 'cancelled' },
+      { id: 'next', status: 'done' },
+    ]);
   });
 
   it('preserves cancellation when enqueue mutates the same snapshot concurrently', async () => {

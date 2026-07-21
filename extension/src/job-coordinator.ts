@@ -333,7 +333,7 @@ export class JobCoordinator {
     const preserveAllFinished = options === true;
     const retainedJobs = preserveAllFinished ? jobs : this.trim(jobs, typeof options === 'object' ? options : {});
     await this.effects.storage.setJobs(retainedJobs);
-    if (!preserveAllFinished) await this.reconcileSummaryAttempts(retainedJobs);
+    if (!preserveAllFinished) await this.reconcileSummaryAttempts(retainedJobs).catch(() => undefined);
   }
 
   private async mutateJobs<T>(

@@ -735,6 +735,47 @@ function writeSummary(folder: string, mediaPath: string, req: DownloadRequest, m
 
 export interface BatchSummaryItem { title: string; folder?: string; status: string; }
 
+interface BatchSummaryReceipt { root: string; }
+
+function batchSummaryReceiptDir(): string {
+  const localAppData = process.env.LOCALAPPDATA;
+  if (process.platform === 'win32' && localAppData && path.isAbsolute(localAppData)) {
+    return path.join(localAppData, 'TubeVault', 'batch-summary-receipts');
+  }
+  const stateHome = process.env.XDG_STATE_HOME;
+  const base = stateHome && path.isAbsolute(stateHome) ? stateHome : path.join(os.homedir(), '.local', 'state');
+  return path.join(base, 'tube-vault', 'batch-summary-receipts');
+}
+
+function reserveBatchSummaryRoot(batchId: string, root: string, receiptDir: string): string {
+  ensureDir(receiptDir);
+  const batchSlug = createHash('sha256').update(batchId).digest('hex');
+  const receiptFile = path.join(receiptDir, `${batchSlug}.json`);
+  const readReceipt = (): BatchSummaryReceipt => {
+    const receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8')) as Partial<BatchSummaryReceipt>;
+    if (typeof receipt.root !== 'string' || !receipt.root) throw new Error('Invalid batch summary receipt');
+    return { root: receipt.root };
+  };
+  try {
+    return readReceipt().root;
+  } catch (error) {
+    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
+  }
+
+  const temporaryFile = path.join(receiptDir, `.${batchSlug}.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    fs.writeFileSync(temporaryFile, JSON.stringify({ root }), { encoding: 'utf8', flag: 'wx' });
+    try {
+      fs.linkSync(temporaryFile, receiptFile);
+    } catch (error) {
+      if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
+    }
+  } finally {
+    try { fs.unlinkSync(temporaryFile); } catch { /* ignore */ }
+  }
+  return readReceipt().root;
+}
+
 export function resolveBatchSummaryRoot(rawRoot: string | undefined, fallback = defaultOutputRoot()): string {
   const root = rawRoot || fallback;
   return /^[A-Za-z]:/.test(root) ? windowsToWslPath(root) : root;
@@ -747,10 +788,11 @@ export function createBatchSummary(
   category: string | undefined,
   items: BatchSummaryItem[],
   fallback?: string,
+  receiptDir = batchSummaryReceiptDir(),
 ): { ok: boolean; status: string; summaryPath?: string; error?: string } {
   try {
     if (typeof batchId !== 'string' || !batchId) throw new Error('Batch ID is required');
-    const root = resolveBatchSummaryRoot(rawRoot, fallback);
+    const root = reserveBatchSummaryRoot(batchId, resolveBatchSummaryRoot(rawRoot, fallback), receiptDir);
     return { ok: true, status: 'ok', summaryPath: writeBatchSummary(root, batchId, batchLabel, category, items) };
   } catch (error) {
     return { ok: false, status: 'failed', error: error instanceof Error ? error.message : 'Could not write batch summary' };

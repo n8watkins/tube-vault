@@ -37,6 +37,7 @@ function harness(options: {
   native?: (payload: Record<string, unknown>) => Promise<NativeResponse | null>;
   values?: Record<string, unknown>;
   beforeGetValues?: () => Promise<void>;
+  beforeSetValues?: (values: Record<string, unknown>) => Promise<void>;
   beforeSetJobs?: () => Promise<void>;
   afterGetJobs?: (jobs: Job[], readCount: number) => Promise<void>;
 } = {}) {
@@ -65,7 +66,10 @@ function harness(options: {
         await options.beforeGetValues?.();
         return Object.fromEntries(keys.map((key) => [key, values[key]]));
       },
-      setValues: async (next) => { Object.assign(values, next); },
+      setValues: async (next) => {
+        await options.beforeSetValues?.(next);
+        Object.assign(values, next);
+      },
     },
     sendNative: async (payload) => {
       calls.push(payload);
@@ -133,6 +137,25 @@ describe('JobCoordinator', () => {
     expect(test.jobs.map((item) => item.videoUrl)).toEqual(['one', 'two']);
     download.resolve({ ok: true });
     await test.coordinator.whenIdle();
+  });
+
+  it('processes a committed enqueue when retry-state cleanup fails', async () => {
+    let failCleanup = true;
+    const test = harness({
+      values: { tvBatchSummaryAttempts: { orphan: 1 } },
+      beforeSetValues: async () => {
+        if (!failCleanup) return;
+        failCleanup = false;
+        throw new Error('Retry-state storage failed');
+      },
+    });
+
+    await expect(test.coordinator.enqueue({ items: [{ url: 'one', bytes: 1 }] })).resolves.toMatchObject({ ok: true });
+    await test.coordinator.whenIdle();
+
+    expect(test.jobs).toHaveLength(1);
+    expect(test.jobs[0].status).toBe('done');
+    expect(test.calls).toContainEqual(expect.objectContaining({ action: 'custom', url: 'one' }));
   });
 
   it('rechecks the queue when work arrives as an empty drain exits', async () => {

@@ -75,10 +75,11 @@ test('resolveBatchSummaryRoot uses the helper fallback when settings are blank',
 
 test('writeBatchSummary confirms a written file and propagates write failures', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-'));
+  const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-receipts-'));
   try {
     const response = createBatchSummary('', 'batch-1', 'Test batch', 'Playlist', [
       { title: 'One', folder: '/videos/one', status: 'done' },
-    ], dir);
+    ], dir, receipts);
     assert.equal(response.ok, true);
     assert.equal(typeof response.summaryPath, 'string');
     assert.equal(fs.existsSync(response.summaryPath as string), true);
@@ -86,32 +87,57 @@ test('writeBatchSummary confirms a written file and propagates write failures', 
     const blockingFile = path.join(dir, 'not-a-directory');
     fs.writeFileSync(blockingFile, 'x');
     assert.throws(() => writeBatchSummary(blockingFile, 'batch-2', 'Failed batch', undefined, []));
-    const failure = createBatchSummary(blockingFile, 'batch-2', 'Failed batch', undefined, []);
+    const failure = createBatchSummary(blockingFile, 'batch-2', 'Failed batch', undefined, [], undefined, receipts);
     assert.equal(failure.ok, false);
     assert.equal(failure.status, 'failed');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(receipts, { recursive: true, force: true });
   }
 });
 
 test('createBatchSummary reuses the confirmed file for a repeated batch ID', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-idempotent-'));
+  const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-receipts-'));
   try {
     const first = createBatchSummary(dir, 'stable-batch', 'Test batch', 'Playlist', [
       { title: 'One', folder: '/videos/one', status: 'done' },
-    ]);
+    ], undefined, receipts);
     assert.equal(first.ok, true);
     assert.equal(typeof first.summaryPath, 'string');
     const original = fs.readFileSync(first.summaryPath as string, 'utf8');
 
     const repeated = createBatchSummary(dir, 'stable-batch', 'Changed label', 'Channel', [
       { title: 'Different item', status: 'failed' },
-    ]);
+    ], undefined, receipts);
     assert.deepEqual(repeated, first);
     assert.equal(fs.readFileSync(first.summaryPath as string, 'utf8'), original);
     assert.equal(fs.readdirSync(path.join(dir, 'TubeVault Summaries')).length, 1);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(receipts, { recursive: true, force: true });
+  }
+});
+
+test('createBatchSummary reuses the reserved root when a blank-root fallback changes', () => {
+  const firstRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-first-root-'));
+  const secondRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-second-root-'));
+  const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-receipts-'));
+  try {
+    const first = createBatchSummary('', 'stable-blank-batch', 'Test batch', 'Playlist', [
+      { title: 'One', status: 'done' },
+    ], firstRoot, receipts);
+    const repeated = createBatchSummary('', 'stable-blank-batch', 'Changed batch', 'Channel', [
+      { title: 'Two', status: 'failed' },
+    ], secondRoot, receipts);
+
+    assert.deepEqual(repeated, first);
+    assert.equal(fs.readdirSync(path.join(firstRoot, 'TubeVault Summaries')).length, 1);
+    assert.equal(fs.existsSync(path.join(secondRoot, 'TubeVault Summaries')), false);
+  } finally {
+    fs.rmSync(firstRoot, { recursive: true, force: true });
+    fs.rmSync(secondRoot, { recursive: true, force: true });
+    fs.rmSync(receipts, { recursive: true, force: true });
   }
 });
 

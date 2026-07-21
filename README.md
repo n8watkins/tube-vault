@@ -61,7 +61,7 @@ See [SETUP.md](SETUP.md) for native messaging registration and platform-specific
 npm run build       # Build extension and helper
 npm run typecheck   # Type-check both packages
 npm run lint        # Lint source, tests, and build scripts
-npm test            # Run extension and helper unit tests
+npm test            # Run script, extension, and helper unit tests
 npm run test:e2e    # Build and run unpacked-extension Chromium smoke tests
 npm run changelog   # Regenerate CHANGELOG.md from release commits
 npm run check       # Lint, type-check, unit test, check the changelog, and build

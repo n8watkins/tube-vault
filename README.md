@@ -98,8 +98,9 @@ You can set `TUBE_VAULT_WINDOWS_REPO` instead of passing `--target`.
 The CLI argument takes precedence when both are present.
 The destination must be the absolute root of an existing Git repository with TubeVault extension and helper package identities.
 The command copies only the extension manifest, HTML, icons, bundles, helper bundles, and helper package metadata.
-The copy is transactional: a failed publication restores every replaced allowlisted file and removes only newly installed allowlisted files.
-The next sync also recovers an interrupted transaction before publishing new artifacts.
+The copy is serialized and transactional: a failed publication restores replaced allowlisted files and removes newly installed allowlisted files when they are still owned by that transaction.
+If another process changes an artifact concurrently, the sync preserves that change and retains its transaction backups rather than overwriting data it no longer owns.
+The next sync recovers an interrupted transaction before publishing new artifacts when its ownership records still match, and otherwise stops for manual inspection.
 Files outside the allowlist are never deleted.
 
 Reload the unpacked extension at `chrome://extensions` after syncing.

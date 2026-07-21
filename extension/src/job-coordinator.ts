@@ -195,13 +195,10 @@ export class JobCoordinator {
       return { changed: true, value: result, options: !!job.batchId };
     });
     if (!cancellation) return;
-    if (cancellation.wasInFlight) {
-      const response = await this.safeNative({ action: 'cancel', jobId: id });
-      if (!cancellationAcknowledged(response)) throw new Error('Could not cancel native job');
-      await this.finalizeCancellations([id]);
-      if (response?.status === 'cancelled') await this.cleanupNativeCancellations([id]);
-    }
     try {
+      if (cancellation.wasInFlight && !await this.attemptCancellations([id])) {
+        throw new Error('Could not cancel native job');
+      }
       await this.maybeWriteBatchSummary(cancellation.batchId).catch(() => undefined);
     } finally {
       void this.pumpQueue();
@@ -225,7 +222,16 @@ export class JobCoordinator {
       }
       return { changed, value: ids };
     }, true);
-    const outcomes = await Promise.all(inFlight.map(async (jobId) => ({
+    try {
+      if (!await this.attemptCancellations(inFlight)) throw new Error('Could not cancel every native job');
+      await this.maybeWriteBatchSummary(batchId).catch(() => undefined);
+    } finally {
+      void this.pumpQueue();
+    }
+  }
+
+  private async attemptCancellations(ids: string[]): Promise<boolean> {
+    const outcomes = await Promise.all(ids.map(async (jobId) => ({
       jobId,
       response: await this.safeNative({ action: 'cancel', jobId }),
     })));
@@ -233,12 +239,7 @@ export class JobCoordinator {
     const settled = outcomes.filter(({ response }) => response?.status === 'cancelled').map(({ jobId }) => jobId);
     await this.finalizeCancellations(acknowledged);
     await this.cleanupNativeCancellations(settled);
-    if (acknowledged.length !== inFlight.length) throw new Error('Could not cancel every native job');
-    try {
-      await this.maybeWriteBatchSummary(batchId).catch(() => undefined);
-    } finally {
-      void this.pumpQueue();
-    }
+    return acknowledged.length === ids.length;
   }
 
   private async finalizeCancellations(ids: string[]): Promise<void> {
@@ -347,6 +348,11 @@ export class JobCoordinator {
   private async drainQueue(): Promise<void> {
     while (true) {
       const jobs = await this.effects.storage.getJobs();
+      const cancelling = jobs.filter((job) => job.status === 'cancelling').map((job) => job.id);
+      if (cancelling.length > 0) {
+        if (!await this.attemptCancellations(cancelling)) throw new Error('Could not cancel native jobs');
+        continue;
+      }
       if (jobs.some(isInFlight)) return;
       const next = jobs.find((job) => job.status === 'queued');
       if (!next) return;

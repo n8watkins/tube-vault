@@ -459,6 +459,43 @@ describe('JobCoordinator', () => {
     expect(test.jobs[0].finishedAt).toBeUndefined();
   });
 
+  it.each(['job', 'batch'] as const)('durably retries failed %s cancellation and resumes the queue', async (mode) => {
+    let cancellationAttempts = 0;
+    const wakes: number[] = [];
+    const test = harness({
+      jobs: [
+        job('active', 'running', { batchId: mode === 'batch' ? 'batch' : undefined }),
+        job('next', 'queued', { estBytes: 1 }),
+      ],
+      native: async (payload) => {
+        if (payload.action !== 'cancel') return { ok: true };
+        cancellationAttempts += 1;
+        return cancellationAttempts <= 5 ? { ok: false } : { ok: true, status: 'cancelled' };
+      },
+      scheduleQueueWake: (milliseconds) => { wakes.push(milliseconds); },
+    });
+
+    const cancellation = mode === 'job'
+      ? test.coordinator.cancelJob('active')
+      : test.coordinator.cancelBatch('batch');
+    await expect(cancellation).rejects.toThrow(/Could not cancel/);
+    await test.coordinator.whenIdle();
+
+    expect(test.jobs.map(({ id, status }) => ({ id, status }))).toEqual([
+      { id: 'active', status: 'cancelling' },
+      { id: 'next', status: 'queued' },
+    ]);
+    expect(wakes).toEqual([1_000]);
+
+    test.coordinator.wakeQueue();
+    await test.coordinator.whenIdle();
+
+    expect(test.jobs.map(({ id, status }) => ({ id, status }))).toEqual([
+      { id: 'active', status: 'cancelled' },
+      { id: 'next', status: 'done' },
+    ]);
+  });
+
   it('finalizes a cancellation protected by a durable native tombstone', async () => {
     const test = harness({
       jobs: [job('active', 'probing')],

@@ -1,10 +1,20 @@
 import assert from 'node:assert/strict';
 import { link, mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
 import { main, readProcessIdentity, recoverSyncTransactions, syncArtifacts, targetArgument, validateTarget } from './sync-windows.mjs';
+
+function transactionJournal(transaction, entries, state = 'pending') {
+  return JSON.stringify({
+    owner: 'tube-vault-sync',
+    version: 1,
+    transaction: basename(transaction),
+    state,
+    entries,
+  });
+}
 
 async function makeTarget({ git = true, validIdentity = true } = {}) {
   const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-test-'));
@@ -227,15 +237,23 @@ test('recovers an install interrupted before staged-link cleanup', async () => {
   await mkdir(join(transaction, 'files', 'extension'), { recursive: true });
   await writeFile(staged, 'partially installed\n');
   await link(staged, join(target, relativePath));
-  await writeFile(join(transaction, 'journal.json'), JSON.stringify({
-    state: 'pending',
-    entries: [{ relativePath, existed: false }],
-  }));
+  await writeFile(join(transaction, 'journal.json'), transactionJournal(transaction, [{ relativePath, existed: false }]));
 
   await recoverSyncTransactions(target);
 
   await assert.rejects(readFile(join(target, relativePath), 'utf8'), /ENOENT/);
   assert.deepEqual((await readdir(target)).filter((name) => name.startsWith('.tube-vault-sync-')), []);
+});
+
+test('preserves unowned directories that resemble sync transactions', async () => {
+  const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));
+  const unowned = join(target, '.tube-vault-sync-notes');
+  await mkdir(unowned);
+  await writeFile(join(unowned, 'notes.txt'), 'preserved\n');
+
+  await recoverSyncTransactions(target);
+
+  assert.equal(await readFile(join(unowned, 'notes.txt'), 'utf8'), 'preserved\n');
 });
 
 test('preserves a recovery destination when staged ownership evidence is missing', async () => {
@@ -247,10 +265,7 @@ test('preserves a recovery destination when staged ownership evidence is missing
   await mkdir(join(transaction, 'backups', 'extension'), { recursive: true });
   await writeFile(join(target, relativePath), 'concurrent\n');
   await writeFile(backup, 'original\n');
-  await writeFile(join(transaction, 'journal.json'), JSON.stringify({
-    state: 'pending',
-    entries: [{ relativePath, existed: true }],
-  }));
+  await writeFile(join(transaction, 'journal.json'), transactionJournal(transaction, [{ relativePath, existed: true }]));
 
   await assert.rejects(recoverSyncTransactions(target), /changed concurrently during rollback/);
 
@@ -271,7 +286,7 @@ test('recovers an interrupted transaction before starting the next sync', async 
   await writeFile(join(transaction, 'files', relativePath), 'partially installed\n');
   await link(join(transaction, 'files', relativePath), join(target, relativePath));
   await writeFile(join(transaction, 'backups', relativePath), 'original\n');
-  await writeFile(join(transaction, 'journal.json'), JSON.stringify({ entries: [{ relativePath, existed: true }] }));
+  await writeFile(join(transaction, 'journal.json'), transactionJournal(transaction, [{ relativePath, existed: true }]));
 
   await assert.rejects(syncArtifacts(source, target, [relativePath], {
     beforeInstall: () => { throw new Error('stop after recovery'); },
@@ -292,10 +307,7 @@ test('preserves installed artifacts when committed transaction cleanup was inter
   await writeFile(join(source, relativePath), 'next\n');
   await writeFile(join(target, relativePath), 'committed\n');
   await writeFile(join(transaction, 'backups', relativePath), 'original\n');
-  await writeFile(join(transaction, 'journal.json'), JSON.stringify({
-    state: 'committed',
-    entries: [{ relativePath, existed: true }],
-  }));
+  await writeFile(join(transaction, 'journal.json'), transactionJournal(transaction, [{ relativePath, existed: true }], 'committed'));
 
   await assert.rejects(syncArtifacts(source, target, [relativePath], {
     beforeInstall: () => { throw new Error('stop after recovery'); },
@@ -312,7 +324,7 @@ test('rejects transaction journal paths outside the artifact allowlist', async (
   const outside = join(testRoot, 'outside.txt');
   await mkdir(transaction, { recursive: true });
   await writeFile(outside, 'preserved\n');
-  await writeFile(join(transaction, 'journal.json'), JSON.stringify({ entries: [{ relativePath: '../outside.txt', existed: false }] }));
+  await writeFile(join(transaction, 'journal.json'), transactionJournal(transaction, [{ relativePath: '../outside.txt', existed: false }]));
 
   await assert.rejects(syncArtifacts(target, target, []), /Invalid sync artifact path/);
   assert.equal(await readFile(outside, 'utf8'), 'preserved\n');
@@ -334,9 +346,10 @@ test('rejects symlinks in recovered transaction artifact trees', async (context)
       await writeFile(join(target, relativePath), 'partially installed\n');
       await writeFile(join(outside, 'manifest.json'), 'preserved\n');
       await symlink(outside, join(transaction, tree, 'extension'), 'dir');
-      await writeFile(join(transaction, 'journal.json'), JSON.stringify({
-        entries: [{ relativePath, existed: tree === 'backups' }],
-      }));
+      await writeFile(join(transaction, 'journal.json'), transactionJournal(transaction, [{
+        relativePath,
+        existed: tree === 'backups',
+      }]));
 
       await assert.rejects(syncArtifacts(target, target, []), /Sync transaction path cannot contain a symbolic link/);
       assert.equal(await readFile(join(outside, 'manifest.json'), 'utf8'), 'preserved\n');

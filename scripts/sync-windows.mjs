@@ -12,6 +12,8 @@ import { randomUUID } from 'node:crypto';
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const TRANSACTION_PREFIX = '.tube-vault-sync-';
+const TRANSACTION_OWNER = 'tube-vault-sync';
+const TRANSACTION_SCHEMA_VERSION = 1;
 const LOCK_NAME = '.tube-vault-sync.lock';
 const LOCK_READY_NAME = `${LOCK_NAME}.ready`;
 const LOCK_INTENT_PREFIX = `${LOCK_NAME}.intent-`;
@@ -346,7 +348,13 @@ async function writeJournalDurably(transactionRoot, entries, state = 'pending') 
   const journalPath = join(transactionRoot, 'journal.json');
   const temporaryPath = join(transactionRoot, 'journal.json.tmp');
   try {
-    await writeFileExclusivelyDurably(temporaryPath, `${JSON.stringify({ state, entries }, null, 2)}\n`);
+    await writeFileExclusivelyDurably(temporaryPath, `${JSON.stringify({
+      owner: TRANSACTION_OWNER,
+      version: TRANSACTION_SCHEMA_VERSION,
+      transaction: basename(transactionRoot),
+      state,
+      entries,
+    }, null, 2)}\n`);
     await renameDurably(temporaryPath, journalPath);
   } finally {
     await removeDurably(temporaryPath, { force: true });
@@ -677,15 +685,21 @@ export async function recoverSyncTransactions(target) {
     if (!info.isDirectory() || info.isSymbolicLink()) continue;
     await requireSafeTransactionPath(transactionRoot);
     const journalPath = join(transactionRoot, 'journal.json');
-    if (await pathExists(journalPath)) {
-      await requireSafeTransactionPath(transactionRoot, 'journal.json');
-      const journal = JSON.parse(await readFile(journalPath, 'utf8'));
-      if (!journal || typeof journal !== 'object' || !['pending', 'committed'].includes(journal.state ?? 'pending')) {
-        throw new Error(`Invalid sync transaction journal: ${journalPath}`);
-      }
-      const entries = validateEntries(journal.entries, journalPath);
-      if (journal.state !== 'committed') await restoreTransaction(target, transactionRoot, entries);
+    if (!await pathExists(journalPath)) continue;
+    await requireSafeTransactionPath(transactionRoot, 'journal.json');
+    const journal = JSON.parse(await readFile(journalPath, 'utf8'));
+    if (
+      !journal
+      || typeof journal !== 'object'
+      || journal.owner !== TRANSACTION_OWNER
+      || journal.version !== TRANSACTION_SCHEMA_VERSION
+      || journal.transaction !== name
+      || !['pending', 'committed'].includes(journal.state ?? 'pending')
+    ) {
+      throw new Error(`Invalid sync transaction journal: ${journalPath}`);
     }
+    const entries = validateEntries(journal.entries, journalPath);
+    if (journal.state !== 'committed') await restoreTransaction(target, transactionRoot, entries);
     await removeDurably(transactionRoot, { recursive: true, force: true });
   }
 }
@@ -705,6 +719,7 @@ export async function syncArtifacts(sourceRoot, target, files = SYNC_FILES, hook
       await syncDirectory(target);
       const entries = [];
       let removeTransaction = false;
+      let journalWritten = false;
       try {
         for (const [index, { relativePath }] of requestedEntries.entries()) {
           const staged = join(transactionRoot, 'files', relativePath);
@@ -721,6 +736,7 @@ export async function syncArtifacts(sourceRoot, target, files = SYNC_FILES, hook
           });
         }
         await writeJournalDurably(transactionRoot, entries);
+        journalWritten = true;
 
         try {
           for (const [index, entry] of entries.entries()) {
@@ -766,7 +782,9 @@ export async function syncArtifacts(sourceRoot, target, files = SYNC_FILES, hook
         await writeJournalDurably(transactionRoot, entries, 'committed');
         removeTransaction = true;
       } finally {
-        if (removeTransaction) await removeDurably(transactionRoot, { recursive: true, force: true });
+        if (removeTransaction || !journalWritten) {
+          await removeDurably(transactionRoot, { recursive: true, force: true });
+        }
       }
     } finally {
       await releaseLock();

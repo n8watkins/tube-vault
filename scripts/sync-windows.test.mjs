@@ -49,7 +49,16 @@ test('rolls back every artifact when installation fails partway through', async 
   }
 
   await assert.rejects(syncArtifacts(source, target, files, {
-    beforeInstall: (_relativePath, index) => {
+    beforeInstall: async (_relativePath, index) => {
+      if (index === 0) {
+        const transactions = (await readdir(target)).filter((name) => name.startsWith('.tube-vault-sync-'));
+        assert.equal(transactions.length, 1);
+        const transactionEntries = await readdir(join(target, transactions[0]));
+        assert.equal(transactionEntries.includes('journal.json'), true);
+        assert.equal(transactionEntries.some((name) => name.startsWith('journal.json.')), false);
+        const journal = JSON.parse(await readFile(join(target, transactions[0], 'journal.json'), 'utf8'));
+        assert.deepEqual(journal.entries, files.map((relativePath, entryIndex) => ({ relativePath, existed: entryIndex < 2 })));
+      }
       if (index === 2) throw new Error('simulated installation failure');
     },
   }), /simulated installation failure/);

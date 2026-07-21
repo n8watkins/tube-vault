@@ -1454,15 +1454,18 @@ export function removeBatchSummaryReceipt(
   receiptDir = batchSummaryReceiptDir(),
   syncDirectory = syncParentDirectory,
 ): { ok: boolean; status: string; error?: string } {
+  const receiptFile = batchSummaryReceiptFile(batchId, receiptDir);
   try {
-    const receiptFile = batchSummaryReceiptFile(batchId, receiptDir);
     fs.unlinkSync(receiptFile);
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT') {
+      return { ok: false, status: 'failed', error: error instanceof Error ? error.message : 'Could not remove batch summary receipt' };
+    }
+  }
+  try {
     syncDirectory(receiptFile);
     return { ok: true, status: 'ok' };
   } catch (error) {
-    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-      return { ok: true, status: 'ok' };
-    }
     return { ok: false, status: 'failed', error: error instanceof Error ? error.message : 'Could not remove batch summary receipt' };
   }
 }

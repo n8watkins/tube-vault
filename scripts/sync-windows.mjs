@@ -1,4 +1,4 @@
-import { cp, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises';
 import { isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const TRANSACTION_PREFIX = '.tube-vault-sync-';
+const DIRECTORY_SYNC_UNAVAILABLE_CODES = new Set(['EACCES', 'EPERM', 'EINVAL', 'EBADF', 'EISDIR', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
 
 export const SYNC_FILES = [
   'extension/manifest.json',
@@ -57,6 +58,41 @@ async function pathExists(path) {
   }
 }
 
+async function syncDirectory(path) {
+  let handle;
+  try {
+    handle = await open(path, 'r');
+  } catch (error) {
+    if (error?.code && DIRECTORY_SYNC_UNAVAILABLE_CODES.has(error.code)) return;
+    throw error;
+  }
+  try {
+    await handle.sync();
+  } catch (error) {
+    if (!error?.code || !DIRECTORY_SYNC_UNAVAILABLE_CODES.has(error.code)) throw error;
+  } finally {
+    await handle.close();
+  }
+}
+
+async function writeJournalDurably(transactionRoot, entries) {
+  const journalPath = join(transactionRoot, 'journal.json');
+  const temporaryPath = join(transactionRoot, 'journal.json.tmp');
+  let handle;
+  try {
+    handle = await open(temporaryPath, 'wx');
+    await handle.writeFile(`${JSON.stringify({ entries }, null, 2)}\n`);
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await rename(temporaryPath, journalPath);
+    await syncDirectory(transactionRoot);
+  } finally {
+    if (handle) await handle.close();
+    await rm(temporaryPath, { force: true });
+  }
+}
+
 async function restoreTransaction(target, transactionRoot, entries) {
   for (const entry of [...entries].reverse()) {
     const destination = join(target, entry.relativePath);
@@ -100,7 +136,7 @@ export async function syncArtifacts(sourceRoot, target, files = SYNC_FILES, hook
       await cp(join(sourceRoot, relativePath), staged);
       entries.push({ relativePath, existed: await pathExists(join(target, relativePath)) });
     }
-    await writeFile(join(transactionRoot, 'journal.json'), `${JSON.stringify({ entries }, null, 2)}\n`);
+    await writeJournalDurably(transactionRoot, entries);
 
     for (const [index, entry] of entries.entries()) {
       await hooks.beforeInstall?.(entry.relativePath, index);

@@ -872,6 +872,29 @@ test('removeBatchSummaryReceipt deletes a receipt idempotently after finalizatio
   }
 });
 
+test('removeBatchSummaryReceipt synchronizes the directory when retrying after a sync failure', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-cleanup-retry-root-'));
+  const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-cleanup-retry-receipts-'));
+  try {
+    assert.equal(createBatchSummary(root, 'cleanup-retry-batch', 'Cleanup retry batch', undefined, [], undefined, receipts).ok, true);
+    let synchronizationAttempts = 0;
+    const syncDirectory = (file: string) => {
+      synchronizationAttempts += 1;
+      assert.equal(fs.existsSync(file), false);
+      if (synchronizationAttempts === 1) throw new Error('simulated directory sync failure');
+    };
+
+    const first = removeBatchSummaryReceipt('cleanup-retry-batch', receipts, syncDirectory);
+    assert.equal(first.ok, false);
+    assert.match(first.error || '', /simulated directory sync failure/);
+    assert.deepEqual(removeBatchSummaryReceipt('cleanup-retry-batch', receipts, syncDirectory), { ok: true, status: 'ok' });
+    assert.equal(synchronizationAttempts, 2);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(receipts, { recursive: true, force: true });
+  }
+});
+
 test('writeTextFileDurably atomically replaces content and cleans temporary files', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-durable-text-'));
   const file = path.join(dir, 'summary.txt');

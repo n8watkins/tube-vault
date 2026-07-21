@@ -10,7 +10,7 @@ A local Node.js native messaging helper runs `yt-dlp` and `ffmpeg` without a Tub
 - Selects video quality and format, audio format, subtitles, thumbnails, and metadata per request.
 - Expands playlist and channel requests into individually selectable per-video jobs.
 - Probes batch rows progressively for title, expected size, duration, and view count.
-- Keeps probing and downloads strictly serial to reduce YouTube rate-limit pressure.
+- Keeps downloads and queue-time probes serial, while planning and visible-row probes use bounded concurrency.
 - Supports SponsorBlock chapter marking or explicit segment removal.
 - Supports concurrent media fragments for faster individual downloads.
 - Shows active work, queued batches, recent results, and cancellation controls in the popup.

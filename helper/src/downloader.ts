@@ -735,7 +735,9 @@ function writeSummary(folder: string, mediaPath: string, req: DownloadRequest, m
 
 export interface BatchSummaryItem { title: string; folder?: string; status: string; }
 
-interface BatchSummaryReceipt { root: string; }
+interface BatchSummaryReceipt { root: string; summaryName?: string; }
+
+const BATCH_SUMMARY_ID_LENGTH = 16;
 
 function batchSummaryReceiptDir(): string {
   const localAppData = process.env.LOCALAPPDATA;
@@ -753,24 +755,42 @@ function batchSummaryReceiptFile(batchId: string, receiptDir: string): string {
   return path.join(receiptDir, `${batchSlug}.json`);
 }
 
-function reserveBatchSummaryRoot(batchId: string, root: string, receiptDir: string): string {
+function batchSummaryId(batchId: string): string {
+  return createHash('sha256').update(batchId).digest('hex');
+}
+
+function batchSummaryName(batchId: string, batchLabel: string): string {
+  const sanitized = (sanitizeFilename(batchLabel || 'Download') || 'Download').replace(/[. ]+$/g, '') || 'Download';
+  const safeLabel = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(sanitized) ? `_${sanitized}` : sanitized;
+  return `${safeLabel} - ${batchSummaryId(batchId).slice(0, BATCH_SUMMARY_ID_LENGTH)}.txt`;
+}
+
+function isBatchSummaryName(batchId: string, summaryName: string): boolean {
+  const suffix = ` - ${batchSummaryId(batchId).slice(0, BATCH_SUMMARY_ID_LENGTH)}.txt`;
+  return path.basename(summaryName) === summaryName && summaryName.endsWith(suffix);
+}
+
+function reserveBatchSummaryReceipt(batchId: string, root: string, batchLabel: string, receiptDir: string): BatchSummaryReceipt {
   ensureDir(receiptDir);
   const receiptFile = batchSummaryReceiptFile(batchId, receiptDir);
   const batchSlug = path.basename(receiptFile, '.json');
   const readReceipt = (): BatchSummaryReceipt => {
     const receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8')) as Partial<BatchSummaryReceipt>;
     if (typeof receipt.root !== 'string' || !receipt.root) throw new Error('Invalid batch summary receipt');
-    return { root: receipt.root };
+    if (receipt.summaryName !== undefined && (typeof receipt.summaryName !== 'string' || !isBatchSummaryName(batchId, receipt.summaryName))) {
+      throw new Error('Invalid batch summary receipt');
+    }
+    return { root: receipt.root, summaryName: receipt.summaryName };
   };
   try {
-    return readReceipt().root;
+    return readReceipt();
   } catch (error) {
     if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
   }
 
   const temporaryFile = path.join(receiptDir, `.${batchSlug}.${process.pid}.${randomUUID()}.tmp`);
   try {
-    fs.writeFileSync(temporaryFile, JSON.stringify({ root }), { encoding: 'utf8', flag: 'wx' });
+    fs.writeFileSync(temporaryFile, JSON.stringify({ root, summaryName: batchSummaryName(batchId, batchLabel) }), { encoding: 'utf8', flag: 'wx' });
     try {
       fs.linkSync(temporaryFile, receiptFile);
     } catch (error) {
@@ -779,7 +799,7 @@ function reserveBatchSummaryRoot(batchId: string, root: string, receiptDir: stri
   } finally {
     try { fs.unlinkSync(temporaryFile); } catch { /* ignore */ }
   }
-  return readReceipt().root;
+  return readReceipt();
 }
 
 export function resolveBatchSummaryRoot(rawRoot: string | undefined, fallback = defaultOutputRoot()): string {
@@ -798,8 +818,8 @@ export function createBatchSummary(
 ): { ok: boolean; status: string; summaryPath?: string; error?: string } {
   try {
     if (typeof batchId !== 'string' || !batchId) throw new Error('Batch ID is required');
-    const root = reserveBatchSummaryRoot(batchId, resolveBatchSummaryRoot(rawRoot, fallback), receiptDir);
-    return { ok: true, status: 'ok', summaryPath: writeBatchSummary(root, batchId, batchLabel, category, items) };
+    const receipt = reserveBatchSummaryReceipt(batchId, resolveBatchSummaryRoot(rawRoot, fallback), batchLabel, receiptDir);
+    return { ok: true, status: 'ok', summaryPath: writeBatchSummary(receipt.root, batchId, batchLabel, category, items, receipt.summaryName) };
   } catch (error) {
     return { ok: false, status: 'failed', error: error instanceof Error ? error.message : 'Could not write batch summary' };
   }
@@ -828,11 +848,19 @@ export function writeBatchSummary(
   batchLabel: string,
   category: string | undefined,
   items: BatchSummaryItem[],
+  reservedName?: string,
 ): string {
   const dir = path.join(root, 'TubeVault Summaries');
   ensureDir(dir);
-  const batchSlug = createHash('sha256').update(batchId).digest('hex');
-  const file = path.join(dir, `TubeVault batch - ${batchSlug}.txt`);
+  const batchSlug = batchSummaryId(batchId);
+  const legacyFile = path.join(dir, `TubeVault batch - ${batchSlug}.txt`);
+  if (fs.existsSync(legacyFile)) return wslToWindowsPath(legacyFile);
+
+  const stableSuffix = ` - ${batchSlug.slice(0, BATCH_SUMMARY_ID_LENGTH)}.txt`;
+  const existingName = fs.readdirSync(dir).sort().find((name) => name.endsWith(stableSuffix));
+  const summaryName = existingName || reservedName || batchSummaryName(batchId, batchLabel);
+  if (!isBatchSummaryName(batchId, summaryName)) throw new Error('Invalid batch summary filename');
+  const file = path.join(dir, summaryName);
   if (fs.existsSync(file)) return wslToWindowsPath(file);
 
   const stamp = new Date();

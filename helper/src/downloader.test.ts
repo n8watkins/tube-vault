@@ -83,6 +83,7 @@ test('writeBatchSummary confirms a written file and propagates write failures', 
     assert.equal(response.ok, true);
     assert.equal(typeof response.summaryPath, 'string');
     assert.equal(fs.existsSync(response.summaryPath as string), true);
+    assert.match(path.basename(response.summaryPath as string), /^Test batch - [a-f0-9]{16}\.txt$/);
 
     const blockingFile = path.join(dir, 'not-a-directory');
     fs.writeFileSync(blockingFile, 'x');
@@ -113,6 +114,44 @@ test('createBatchSummary reuses the confirmed file for a repeated batch ID', () 
     assert.deepEqual(repeated, first);
     assert.equal(fs.readFileSync(first.summaryPath as string, 'utf8'), original);
     assert.equal(fs.readdirSync(path.join(dir, 'TubeVault Summaries')).length, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(receipts, { recursive: true, force: true });
+  }
+});
+
+test('createBatchSummary sanitizes the readable label without changing its stable identity', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-safe-name-'));
+  const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-receipts-'));
+  try {
+    const first = createBatchSummary(dir, 'safe-batch', '../Unsafe: Playlist? / Name. ', undefined, [], undefined, receipts);
+    const repeated = createBatchSummary(dir, 'safe-batch', 'A different label', undefined, [], undefined, receipts);
+
+    assert.equal(first.ok, true);
+    assert.deepEqual(repeated, first);
+    assert.match(path.basename(first.summaryPath as string), /^\.\.Unsafe Playlist Name - [a-f0-9]{16}\.txt$/);
+    assert.equal(path.dirname(first.summaryPath as string), path.join(dir, 'TubeVault Summaries'));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(receipts, { recursive: true, force: true });
+  }
+});
+
+test('createBatchSummary reuses an existing opaque summary during receipt recovery', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-legacy-'));
+  const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-receipts-'));
+  try {
+    const first = createBatchSummary(dir, 'legacy-batch', 'Readable label', undefined, [], undefined, receipts);
+    assert.equal(first.ok, true);
+
+    const readableFile = first.summaryPath as string;
+    const digest = path.basename(fs.readdirSync(receipts)[0], '.json');
+    const opaqueFile = path.join(dir, 'TubeVault Summaries', `TubeVault batch - ${digest}.txt`);
+    fs.renameSync(readableFile, opaqueFile);
+
+    const recovered = createBatchSummary(dir, 'legacy-batch', 'Readable label', undefined, [], undefined, receipts);
+    assert.equal(recovered.summaryPath, opaqueFile);
+    assert.equal(fs.readdirSync(path.dirname(opaqueFile)).length, 1);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(receipts, { recursive: true, force: true });

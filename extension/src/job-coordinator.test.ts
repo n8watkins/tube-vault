@@ -210,6 +210,23 @@ describe('JobCoordinator', () => {
     ]);
   });
 
+  it('continues queued downloads when batch summary persistence fails', async () => {
+    const test = harness({
+      jobs: [
+        job('batch', 'queued', { batchId: 'batch', estBytes: 1 }),
+        job('next', 'queued', { estBytes: 1 }),
+      ],
+      beforeSetValues: async () => { throw new Error('Retry-state storage failed'); },
+    });
+
+    await test.coordinator.initialize();
+    await test.coordinator.whenIdle();
+
+    expect(test.jobs.map(({ status }) => status)).toEqual(['done', 'done']);
+    expect(test.calls.filter((call) => call.action === 'custom').map((call) => call.url)).toEqual(['https://youtube.test/batch', 'https://youtube.test/next']);
+    expect(test.calls.filter((call) => call.action === 'batch_summary')).toEqual([]);
+  });
+
   it('cancels queued jobs without calling the native helper', async () => {
     const test = harness({ jobs: [job('queued', 'queued')] });
     await test.coordinator.cancelJob('queued');

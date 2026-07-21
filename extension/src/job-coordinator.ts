@@ -252,7 +252,7 @@ export class JobCoordinator {
       },
     });
     if (await this.isCancelled(job.id)) {
-      await this.maybeWriteBatchSummary(job.batchId);
+      await this.maybeWriteBatchSummary(job.batchId).catch(() => undefined);
       return;
     }
 
@@ -276,7 +276,7 @@ export class JobCoordinator {
       if (settings.notifyOnDone) this.effects.notify(job.label, folder);
       if (settings.autoOpenFolder && folder && !job.batchId) await this.effects.openFolder(folder);
     }
-    await this.maybeWriteBatchSummary(job.batchId);
+    await this.maybeWriteBatchSummary(job.batchId).catch(() => undefined);
   }
 
   private async safeNative(payload: Record<string, unknown>): Promise<NativeResponse | null> {

@@ -1,6 +1,6 @@
 import { cp, link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, unlink } from 'node:fs/promises';
 import { hostname } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isAbsolute as isWindowsAbsolute } from 'node:path/win32';
 import { isAbsolute as isPosixAbsolute, normalize as normalizePosix } from 'node:path/posix';
 import { fileURLToPath } from 'node:url';
@@ -12,6 +12,7 @@ const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const TRANSACTION_PREFIX = '.tube-vault-sync-';
 const LOCK_NAME = '.tube-vault-sync.lock';
 const LOCK_INTENT_PREFIX = `${LOCK_NAME}.intent-`;
+const LOCK_RECLAIMER_PREFIX = `${LOCK_NAME}.reclaimer-`;
 const DIRECTORY_SYNC_UNAVAILABLE_CODES = new Set(['EACCES', 'EPERM', 'EINVAL', 'EBADF', 'EISDIR', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
 
 export const SYNC_FILES = [
@@ -151,7 +152,9 @@ async function mkdirDurably(path) {
   }
   const existing = await lstat(current);
   if (!existing.isDirectory() || existing.isSymbolicLink()) throw new Error(`Sync directory path is unsafe: ${current}`);
-  for (const created of missing.reverse()) await mutateDurably([created], () => mkdir(created));
+  for (const created of missing.reverse()) {
+    await mutateDurably([created], ([anchoredPath]) => mkdir(anchoredPath));
+  }
 }
 
 function sameFile(left, right) {
@@ -184,7 +187,11 @@ async function mutateDurably(paths, mutation) {
   try {
     for (const path of [...new Set(paths.map((entry) => dirname(entry)))]) directories.push(await openStableDirectory(path));
     for (const directory of directories) await requireStableDirectory(directory);
-    await mutation();
+    const anchoredPaths = paths.map((path) => {
+      const directory = directories.find((entry) => entry.path === dirname(path));
+      return join('/proc/self/fd', String(directory.handle.fd), basename(path));
+    });
+    await mutation(anchoredPaths);
     for (const directory of directories) await requireStableDirectory(directory);
     for (const directory of directories) await directory.handle.sync().catch((error) => {
       if (!error?.code || !DIRECTORY_SYNC_UNAVAILABLE_CODES.has(error.code)) throw error;
@@ -196,7 +203,23 @@ async function mutateDurably(paths, mutation) {
 
 async function removeDurably(path, options = {}) {
   if (!await pathExists(path)) return;
-  await mutateDurably([path], () => rm(path, options));
+  await mutateDurably([path], ([anchoredPath]) => rm(anchoredPath, options));
+}
+
+async function linkDurably(existingPath, newPath) {
+  await mutateDurably([existingPath, newPath], ([anchoredExistingPath, anchoredNewPath]) => (
+    link(anchoredExistingPath, anchoredNewPath)
+  ));
+}
+
+async function renameDurably(existingPath, newPath) {
+  await mutateDurably([existingPath, newPath], ([anchoredExistingPath, anchoredNewPath]) => (
+    rename(anchoredExistingPath, anchoredNewPath)
+  ));
+}
+
+async function unlinkDurably(path) {
+  await mutateDurably([path], ([anchoredPath]) => unlink(anchoredPath));
 }
 
 async function writeJournalDurably(transactionRoot, entries, state = 'pending') {
@@ -209,11 +232,10 @@ async function writeJournalDurably(transactionRoot, entries, state = 'pending') 
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await rename(temporaryPath, journalPath);
-    await syncDirectory(transactionRoot);
+    await renameDurably(temporaryPath, journalPath);
   } finally {
     if (handle) await handle.close();
-    await rm(temporaryPath, { force: true });
+    await removeDurably(temporaryPath, { force: true });
   }
 }
 
@@ -294,6 +316,7 @@ async function readLockOwner(lockPath) {
     || owner.pid <= 0
     || typeof owner.hostname !== 'string'
     || typeof owner.token !== 'string'
+    || owner.token.length === 0
     || (owner.processIdentity !== undefined && (typeof owner.processIdentity !== 'string' || owner.processIdentity.length === 0))
   ) {
     throw new Error(`Sync lock is invalid: ${lockPath}`);
@@ -303,11 +326,11 @@ async function readLockOwner(lockPath) {
 
 async function restoreClaimedLock(claimPath, lockPath) {
   try {
-    await link(claimPath, lockPath);
+    await linkDurably(claimPath, lockPath);
   } catch (error) {
     if (error?.code !== 'EEXIST') throw error;
   }
-  await unlink(claimPath);
+  await unlinkDurably(claimPath);
 }
 
 async function ownerIsAlive(owner, localOwner) {
@@ -318,17 +341,55 @@ async function ownerIsAlive(owner, localOwner) {
     : processIsAlive(owner.pid);
 }
 
-async function claimLockIntent(target, ownerPath, owner) {
-  const ownerName = ownerPath.slice(target.length + 1);
+async function removeAbandonedIntent(contenderPath, owner) {
+  const claimPath = join(dirname(contenderPath), `${LOCK_NAME}.reclaim-intent-${owner.token}-${randomUUID()}`);
+  try {
+    await renameDurably(contenderPath, claimPath);
+  } catch (error) {
+    if (error?.code === 'ENOENT') return;
+    throw error;
+  }
+  const claimedOwner = await readLockOwner(claimPath).catch(() => null);
+  if (claimedOwner && await ownerIsAlive(claimedOwner, owner)) {
+    await linkDurably(claimPath, contenderPath).catch(async (error) => {
+      if (error?.code !== 'EEXIST') throw error;
+    });
+    await unlinkDurably(claimPath);
+    return claimedOwner;
+  }
+  await unlinkDurably(claimPath);
+}
+
+async function liveIntentOwners(target, prefix, owner, excludedName) {
+  const liveContenders = [];
   for (const name of await readdir(target)) {
-    if (!name.startsWith(LOCK_INTENT_PREFIX) || name === ownerName) continue;
+    if (!name.startsWith(prefix) || name === excludedName) continue;
     const contenderPath = join(target, name);
-    const contender = await readLockOwner(contenderPath);
-    if (await ownerIsAlive(contender, owner)) {
-      throw new Error(`Another sync is already running for target: ${target}`);
+    const contender = await readLockOwner(contenderPath).catch(() => null);
+    if (contender && await ownerIsAlive(contender, owner)) liveContenders.push(contender);
+    else {
+      const recoveredContender = await removeAbandonedIntent(contenderPath, owner);
+      if (recoveredContender) liveContenders.push(recoveredContender);
     }
-    const confirmedContender = await readLockOwner(contenderPath);
-    if (confirmedContender.token === contender.token) await unlink(contenderPath);
+  }
+  return liveContenders;
+}
+
+async function claimLockIntent(target, ownerPath, owner) {
+  const reclaimers = await liveIntentOwners(target, LOCK_RECLAIMER_PREFIX, owner);
+  if (reclaimers.length > 0) throw new Error(`Another sync is already running for target: ${target}`);
+  const ownerName = ownerPath.slice(target.length + 1);
+  const liveContenders = await liveIntentOwners(target, LOCK_INTENT_PREFIX, owner, ownerName);
+  if (liveContenders.some((contender) => contender.token < owner.token)) {
+    throw new Error(`Another sync is already running for target: ${target}`);
+  }
+}
+
+async function claimReclaimerIntent(target, reclaimerPath, owner) {
+  const reclaimerName = reclaimerPath.slice(target.length + 1);
+  const liveReclaimers = await liveIntentOwners(target, LOCK_RECLAIMER_PREFIX, owner, reclaimerName);
+  if (liveReclaimers.some((contender) => contender.token < owner.token)) {
+    throw new Error(`Another sync is already running for target: ${target}`);
   }
 }
 
@@ -342,32 +403,32 @@ async function acquireSyncLock(target, hooks = {}) {
     processIdentity: await readProcessIdentity(process.pid),
   };
   const ownerPath = join(target, `${LOCK_INTENT_PREFIX}${token}`);
+  const temporaryOwnerPath = join(target, `${LOCK_NAME}.tmp-intent-${token}`);
   let ownerHandle;
   let acquired = false;
   try {
-    ownerHandle = await open(ownerPath, 'wx');
+    ownerHandle = await open(temporaryOwnerPath, 'wx');
     await ownerHandle.writeFile(`${JSON.stringify(owner)}\n`);
     await ownerHandle.sync();
     await ownerHandle.close();
     ownerHandle = undefined;
-    await syncDirectory(target);
+    await linkDurably(temporaryOwnerPath, ownerPath);
+    await unlinkDurably(temporaryOwnerPath);
+    await hooks.afterLockIntent?.(owner);
     await claimLockIntent(target, ownerPath, owner);
 
     while (true) {
       try {
-        await link(ownerPath, lockPath);
-        await syncDirectory(target);
+        await linkDurably(ownerPath, lockPath);
         acquired = true;
         return async () => {
           try {
             const currentOwner = await readLockOwner(lockPath).catch(() => null);
             if (currentOwner?.token === token) {
-              await unlink(lockPath);
-              await syncDirectory(target);
+              await unlinkDurably(lockPath);
             }
           } finally {
-            await rm(ownerPath, { force: true });
-            await syncDirectory(target);
+            await removeDurably(ownerPath, { force: true });
           }
         };
       } catch (error) {
@@ -376,28 +437,36 @@ async function acquireSyncLock(target, hooks = {}) {
         if (await ownerIsAlive(existingOwner, owner)) {
           throw new Error(`Another sync is already running for target: ${target}`);
         }
-        const confirmedOwner = await readLockOwner(lockPath);
-        if (confirmedOwner.token !== existingOwner.token) continue;
-        await hooks.beforeReclaim?.(existingOwner);
-        const claimPath = join(target, `${LOCK_NAME}.reclaim-${token}-${randomUUID()}`);
+        const reclaimerPath = join(target, `${LOCK_RECLAIMER_PREFIX}${token}`);
+        await linkDurably(ownerPath, reclaimerPath);
         try {
-          await rename(lockPath, claimPath);
-        } catch (claimError) {
-          if (claimError?.code === 'ENOENT') continue;
-          throw claimError;
+          await claimReclaimerIntent(target, reclaimerPath, owner);
+          const confirmedOwner = await readLockOwner(lockPath);
+          if (confirmedOwner.token !== existingOwner.token) continue;
+          await hooks.beforeReclaim?.(existingOwner);
+          const claimPath = join(target, `${LOCK_NAME}.reclaim-${token}-${randomUUID()}`);
+          try {
+            await renameDurably(lockPath, claimPath);
+          } catch (claimError) {
+            if (claimError?.code === 'ENOENT') continue;
+            throw claimError;
+          }
+          await hooks.afterReclaimClaim?.(existingOwner);
+          const claimedOwner = await readLockOwner(claimPath).catch(() => null);
+          if (claimedOwner?.token !== existingOwner.token) {
+            await restoreClaimedLock(claimPath, lockPath);
+            continue;
+          }
+          await unlinkDurably(claimPath);
+        } finally {
+          await removeDurably(reclaimerPath, { force: true });
         }
-        await hooks.afterReclaimClaim?.(existingOwner);
-        const claimedOwner = await readLockOwner(claimPath).catch(() => null);
-        if (claimedOwner?.token !== existingOwner.token) {
-          await restoreClaimedLock(claimPath, lockPath);
-          continue;
-        }
-        await unlink(claimPath);
       }
     }
   } finally {
     if (ownerHandle) await ownerHandle.close();
-    if (!acquired) await rm(ownerPath, { force: true });
+    await removeDurably(temporaryOwnerPath, { force: true });
+    if (!acquired) await removeDurably(ownerPath, { force: true });
   }
 }
 
@@ -415,7 +484,7 @@ async function restoreTransaction(target, transactionRoot, entries) {
       await mkdirDurably(resolve(destination, '..'));
       await requireSafeTargetPath(target, entry.relativePath);
       await requireSafeTransactionPath(transactionRoot, `backups/${entry.relativePath}`);
-      await mutateDurably([backup, destination], () => rename(backup, destination));
+      await renameDurably(backup, destination);
     } else if (!entry.existed && installed && await pathExists(destination)) {
       await removeDurably(destination, { force: true });
     }
@@ -481,13 +550,13 @@ export async function syncArtifacts(sourceRoot, target, files = SYNC_FILES, hook
             await requireSafeTargetPath(target, entry.relativePath);
             await requireSafeTransactionPath(transactionRoot, `backups/${entry.relativePath}`);
             await syncFile(destination);
-            await mutateDurably([destination, backup], () => rename(destination, backup));
+            await renameDurably(destination, backup);
           } else {
             await mkdirDurably(resolve(destination, '..'));
           }
           await requireSafeTargetPath(target, entry.relativePath);
           await requireSafeTransactionPath(transactionRoot, `files/${entry.relativePath}`);
-          await mutateDurably([staged, destination], () => rename(staged, destination));
+          await renameDurably(staged, destination);
         }
       } catch (error) {
         try {

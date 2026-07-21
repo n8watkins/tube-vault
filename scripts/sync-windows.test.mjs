@@ -255,6 +255,70 @@ test('prevents concurrent sync and recovers a dead owner lock', async () => {
   }
 });
 
+test('elects one winner when lock intents are published concurrently', async () => {
+  const source = await mkdtemp(join(tmpdir(), 'tube-vault-sync-source-'));
+  const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));
+  const relativePath = 'extension/manifest.json';
+  await mkdir(join(source, 'extension'), { recursive: true });
+  await mkdir(join(target, 'extension'), { recursive: true });
+  await writeFile(join(source, relativePath), 'new\n');
+  await writeFile(join(target, relativePath), 'old\n');
+
+  let publishedIntents = 0;
+  let releaseIntentBarrier;
+  const intentBarrier = new Promise((resolve) => {
+    releaseIntentBarrier = resolve;
+  });
+  let releaseWinner;
+  const winnerPaused = new Promise((resolve) => {
+    releaseWinner = resolve;
+  });
+  let markRejected;
+  const contenderRejected = new Promise((resolve) => {
+    markRejected = resolve;
+  });
+  const hooks = {
+    afterLockIntent: async () => {
+      publishedIntents += 1;
+      if (publishedIntents === 2) releaseIntentBarrier();
+      await intentBarrier;
+    },
+    beforeInstall: () => winnerPaused,
+  };
+  const attempts = [0, 1].map(async () => {
+    try {
+      await syncArtifacts(source, target, [relativePath], hooks);
+      return 'acquired';
+    } catch (error) {
+      markRejected();
+      return error;
+    }
+  });
+
+  await contenderRejected;
+  releaseWinner();
+  const results = await Promise.all(attempts);
+  assert.equal(results.filter((result) => result === 'acquired').length, 1);
+  assert.equal(results.filter((result) => result instanceof Error && /Another sync is already running/.test(result.message)).length, 1);
+  assert.deepEqual((await readdir(target)).filter((name) => name.includes('.intent-')), []);
+});
+
+test('recovers an incomplete abandoned lock intent', async () => {
+  const source = await mkdtemp(join(tmpdir(), 'tube-vault-sync-source-'));
+  const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));
+  const relativePath = 'extension/manifest.json';
+  await mkdir(join(source, 'extension'), { recursive: true });
+  await mkdir(join(target, 'extension'), { recursive: true });
+  await writeFile(join(source, relativePath), 'new\n');
+  await writeFile(join(target, relativePath), 'old\n');
+  await writeFile(join(target, '.tube-vault-sync.lock.intent-incomplete'), '');
+
+  await syncArtifacts(source, target, [relativePath]);
+
+  assert.equal(await readFile(join(target, relativePath), 'utf8'), 'new\n');
+  assert.deepEqual((await readdir(target)).filter((name) => name.includes('.intent-')), []);
+});
+
 test('does not reclaim a replacement lock from a new owner', async () => {
   const source = await mkdtemp(join(tmpdir(), 'tube-vault-sync-source-'));
   const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));

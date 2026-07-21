@@ -7,6 +7,7 @@
 ### Fixed
 
 - Detect reused lock owner PIDs.
+- Ignore changelog refresh commits.
 
 ## v0.3.83
 

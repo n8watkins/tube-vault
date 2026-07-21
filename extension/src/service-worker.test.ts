@@ -28,7 +28,7 @@ describe('service worker startup', () => {
               return;
             }
             if (Array.isArray(defaults)) {
-              callback({});
+              callback({ tvBatchSummarySchemaVersion: 1 });
               return;
             }
             callback({ tvJobs: structuredClone(jobs) });

@@ -1,6 +1,6 @@
 import { NamingOptions } from './types';
 
-export type JobStatus = 'queued' | 'probing' | 'running' | 'done' | 'failed' | 'cancelled';
+export type JobStatus = 'queued' | 'probing' | 'running' | 'cancelling' | 'done' | 'failed' | 'cancelled';
 
 export interface Job {
   id: string;
@@ -81,7 +81,11 @@ const MAX_QUEUE_WRITE_RETRY_DELAY_MS = 1_000;
 const INITIAL_QUEUE_WAKE_DELAY_MS = 1_000;
 const MAX_QUEUE_WAKE_DELAY_MS = 60_000;
 const MAX_SUMMARY_BACKGROUND_RETRIES = 3;
-const isActive = (job: Job) => job.status === 'queued' || job.status === 'probing' || job.status === 'running';
+const isActive = (job: Job) => job.status === 'queued' || job.status === 'probing'
+  || job.status === 'running' || job.status === 'cancelling';
+const isInFlight = (job: Job) => job.status === 'probing' || job.status === 'running' || job.status === 'cancelling';
+const cancellationAcknowledged = (response: NativeResponse | null): boolean => response?.ok === true
+  && (response.status === 'cancelled' || response.status === 'cancellation_pending');
 
 interface BatchSummaryRetry {
   attempts: number;
@@ -107,16 +111,19 @@ export class JobCoordinator {
     await this.migrateLegacyTerminalBatches();
     const jobs = await this.withJobsLock(async () => {
       const currentJobs = await this.effects.storage.getJobs();
-      const interruptedJobs = currentJobs.filter((job) => job.status === 'running' || job.status === 'probing');
+      const interruptedJobs = currentJobs.filter(isInFlight);
       const cancellations = await Promise.all(interruptedJobs.map((job) => (
         this.effects.sendNative({ action: 'cancel', jobId: job.id })
       )));
-      if (cancellations.some((response) => !response?.ok)) throw new Error('Could not cancel interrupted native jobs');
+      if (cancellations.some((response) => !cancellationAcknowledged(response))) {
+        throw new Error('Could not cancel interrupted native jobs');
+      }
       let changed = false;
       for (const job of currentJobs) {
-        if (job.status === 'running' || job.status === 'probing') {
-          job.status = 'failed';
-          job.error = 'Interrupted';
+        if (isInFlight(job)) {
+          const wasCancelling = job.status === 'cancelling';
+          job.status = wasCancelling ? 'cancelled' : 'failed';
+          job.error = wasCancelling ? undefined : 'Interrupted';
           job.finishedAt = this.effects.now();
           changed = true;
         }
@@ -165,21 +172,25 @@ export class JobCoordinator {
   }
 
   async cancelJob(id: string): Promise<void> {
-    const cancelled = await this.mutateJobs((jobs) => {
+    const cancellation = await this.mutateJobs((jobs) => {
       const job = jobs.find((candidate) => candidate.id === id);
       if (!job || !isActive(job)) return { changed: false, value: undefined };
       const result = {
         batchId: job.batchId,
-        wasInFlight: job.status === 'running' || job.status === 'probing',
+        wasInFlight: isInFlight(job),
       };
-      job.status = 'cancelled';
-      job.finishedAt = this.effects.now();
+      job.status = result.wasInFlight ? 'cancelling' : 'cancelled';
+      if (!result.wasInFlight) job.finishedAt = this.effects.now();
       return { changed: true, value: result, options: !!job.batchId };
     });
-    if (!cancelled) return;
+    if (!cancellation) return;
+    if (cancellation.wasInFlight) {
+      const response = await this.safeNative({ action: 'cancel', jobId: id });
+      if (!cancellationAcknowledged(response)) throw new Error('Could not cancel native job');
+      await this.finalizeCancellations([id]);
+    }
     try {
-      if (cancelled.wasInFlight) await this.effects.sendNative({ action: 'cancel', jobId: id });
-      await this.maybeWriteBatchSummary(cancelled.batchId).catch(() => undefined);
+      await this.maybeWriteBatchSummary(cancellation.batchId).catch(() => undefined);
     } finally {
       void this.pumpQueue();
     }
@@ -191,19 +202,44 @@ export class JobCoordinator {
       let changed = false;
       for (const job of jobs) {
         if (job.batchId !== batchId || !isActive(job)) continue;
-        if (job.status === 'running' || job.status === 'probing') ids.push(job.id);
-        job.status = 'cancelled';
-        job.finishedAt = this.effects.now();
+        if (isInFlight(job)) {
+          ids.push(job.id);
+          job.status = 'cancelling';
+        } else {
+          job.status = 'cancelled';
+          job.finishedAt = this.effects.now();
+        }
         changed = true;
       }
       return { changed, value: ids };
     }, true);
+    const outcomes = await Promise.all(inFlight.map(async (jobId) => ({
+      jobId,
+      response: await this.safeNative({ action: 'cancel', jobId }),
+    })));
+    const acknowledged = outcomes.filter(({ response }) => cancellationAcknowledged(response)).map(({ jobId }) => jobId);
+    await this.finalizeCancellations(acknowledged);
+    if (acknowledged.length !== inFlight.length) throw new Error('Could not cancel every native job');
     try {
-      await Promise.all(inFlight.map((jobId) => this.effects.sendNative({ action: 'cancel', jobId })));
       await this.maybeWriteBatchSummary(batchId).catch(() => undefined);
     } finally {
       void this.pumpQueue();
     }
+  }
+
+  private async finalizeCancellations(ids: string[]): Promise<void> {
+    if (ids.length === 0) return;
+    const acknowledged = new Set(ids);
+    await this.mutateJobs((jobs) => {
+      let changed = false;
+      for (const job of jobs) {
+        if (!acknowledged.has(job.id) || job.status !== 'cancelling') continue;
+        job.status = 'cancelled';
+        job.finishedAt = this.effects.now();
+        changed = true;
+      }
+      return { changed, value: undefined, options: true };
+    });
   }
 
   async clearHistory(): Promise<void> {
@@ -278,7 +314,7 @@ export class JobCoordinator {
   private async drainQueue(): Promise<void> {
     while (true) {
       const jobs = await this.effects.storage.getJobs();
-      if (jobs.some((job) => job.status === 'running' || job.status === 'probing')) return;
+      if (jobs.some(isInFlight)) return;
       const next = jobs.find((job) => job.status === 'queued');
       if (!next) return;
       await this.runJob(next);
@@ -371,7 +407,9 @@ export class JobCoordinator {
   private async updateJob(id: string, patch: Partial<Job>, persistUntilStored = false): Promise<boolean> {
     return this.mutateJobs((jobs) => {
       const index = jobs.findIndex((job) => job.id === id);
-      if (index < 0 || jobs[index].status === 'cancelled') return { changed: false, value: false };
+      if (index < 0 || jobs[index].status === 'cancelled' || jobs[index].status === 'cancelling') {
+        return { changed: false, value: false };
+      }
       jobs[index] = { ...jobs[index], ...patch };
       return { changed: true, value: true, options: !!jobs[index].batchId, persistUntilStored };
     });

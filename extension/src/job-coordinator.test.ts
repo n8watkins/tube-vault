@@ -83,6 +83,7 @@ function harness(options: {
       calls.push(payload);
       if (options.native) return options.native(payload);
       if (payload.action === 'probe') return { ok: true, bytes: 25, title: 'Probed title' };
+      if (payload.action === 'cancel') return { ok: true, status: 'cancelled' };
       return { ok: true, folderPath: '/videos/item' };
     },
     now: () => now,
@@ -436,6 +437,27 @@ describe('JobCoordinator', () => {
     expect(test.calls).toContainEqual({ action: 'cancel', jobId: 'active' });
   });
 
+  it('does not finalize an in-flight cancellation without native acknowledgement', async () => {
+    const test = harness({
+      jobs: [job('active', 'running')],
+      native: async () => ({ ok: true, status: 'already_finished' }),
+    });
+
+    await expect(test.coordinator.cancelJob('active')).rejects.toThrow('Could not cancel native job');
+    expect(test.jobs[0].status).toBe('cancelling');
+    expect(test.jobs[0].finishedAt).toBeUndefined();
+  });
+
+  it('finalizes a cancellation protected by a durable native tombstone', async () => {
+    const test = harness({
+      jobs: [job('active', 'probing')],
+      native: async () => ({ ok: true, status: 'cancellation_pending' }),
+    });
+
+    await test.coordinator.cancelJob('active');
+    expect(test.jobs[0].status).toBe('cancelled');
+  });
+
   it('cancels every active member of a batch', async () => {
     const test = harness({ jobs: [
       job('one', 'running', { batchId: 'batch' }),
@@ -452,7 +474,11 @@ describe('JobCoordinator', () => {
 
   it('resumes the queue after a cancelled probe settles', async () => {
     const probe = deferred<NativeResponse>();
-    const test = harness({ native: async (payload) => payload.action === 'probe' && payload.url === 'one' ? probe.promise : { ok: true } });
+    const test = harness({ native: async (payload) => {
+      if (payload.action === 'probe' && payload.url === 'one') return probe.promise;
+      if (payload.action === 'cancel') return { ok: true, status: 'cancelled' };
+      return { ok: true };
+    } });
     await test.coordinator.enqueue({ items: [{ url: 'one' }, { url: 'two', bytes: 1 }] });
     await vi.waitFor(() => expect(test.jobs[0].status).toBe('probing'));
     expect(test.calls[0]).toMatchObject({ action: 'probe', jobId: test.jobs[0].id });
@@ -580,7 +606,7 @@ describe('JobCoordinator', () => {
       native: async (payload) => {
         if (payload.action === 'cancel') {
           cancelled.push(payload.jobId as string);
-          return { ok: true };
+          return { ok: true, status: 'cancelled' };
         }
         expect(cancelled).toEqual(['probe', 'download']);
         return { ok: true, folderPath: '/videos/item' };
@@ -610,6 +636,23 @@ describe('JobCoordinator', () => {
       { id: 'next', status: 'queued' },
     ]);
     expect(test.calls).toEqual([{ action: 'cancel', jobId: 'stale' }]);
+  });
+
+  it('completes a persisted cancellation during restart recovery', async () => {
+    const test = harness({
+      jobs: [job('stale', 'cancelling'), job('next', 'queued', { estBytes: 1 })],
+      native: async (payload) => payload.action === 'cancel'
+        ? { ok: true, status: 'cancellation_pending' }
+        : { ok: true },
+    });
+
+    await test.coordinator.initialize();
+    await test.coordinator.whenIdle();
+
+    expect(test.jobs.map(({ id, status }) => ({ id, status }))).toEqual([
+      { id: 'stale', status: 'cancelled' },
+      { id: 'next', status: 'done' },
+    ]);
   });
 
   it('recovers legacy terminal batches whose summary write was interrupted', async () => {

@@ -48,6 +48,10 @@ function ownerFile(jobId: string): string {
   return path.join(jobsDirectory, `${jobId}.pid`);
 }
 
+function cancellationFile(jobId: string): string {
+  return path.join(jobsDirectory, `${jobId}.cancel`);
+}
+
 test('native cancellation rejects path traversal without touching an outside PID file', async () => {
   const victim = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
   const stem = `tube-vault-traversal-${process.pid}`;
@@ -64,10 +68,18 @@ test('native cancellation rejects path traversal without touching an outside PID
   }
 });
 
-test('native cancellation treats an absent owner as already finished', async () => {
-  const response = await nativeRequest({ action: 'cancel', jobId: 'already-finished' });
+test('native cancellation durably prevents a job that has not registered yet', async () => {
+  const jobId = `not-registered-${process.pid}`;
+  const response = await nativeRequest({ action: 'cancel', jobId });
 
-  assert.deepEqual(response, { ok: true, status: 'already_finished' });
+  assert.deepEqual(response, { ok: true, status: 'cancellation_pending' });
+  assert.equal(fs.existsSync(cancellationFile(jobId)), true);
+  const probe = await nativeRequest({
+    action: 'probe',
+    jobId,
+    url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
+  });
+  assert.deepEqual(probe, { ok: false, status: 'failed', error: 'Job cancelled' });
 });
 
 test('native cancellation rejects a reused PID and preserves its owner record', async () => {
@@ -85,6 +97,7 @@ test('native cancellation rejects a reused PID and preserves its owner record', 
   } finally {
     victim.kill('SIGKILL');
     fs.rmSync(file, { force: true });
+    fs.rmSync(cancellationFile(jobId), { force: true });
   }
 });
 
@@ -111,6 +124,7 @@ test('native cancellation terminates only the matching process incarnation', asy
   } finally {
     if (isAlive(victim.pid as number)) victim.kill('SIGKILL');
     fs.rmSync(file, { force: true });
+    fs.rmSync(cancellationFile(jobId), { force: true });
   }
 });
 

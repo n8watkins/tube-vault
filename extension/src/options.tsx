@@ -9,7 +9,7 @@ export const DEFAULT_OUTPUT_ROOT = '';
 
 type Tab = 'downloads' | 'settings' | 'status' | 'setup';
 
-type JobStatus = 'queued' | 'probing' | 'running' | 'done' | 'failed' | 'cancelled';
+type JobStatus = 'queued' | 'probing' | 'running' | 'cancelling' | 'done' | 'failed' | 'cancelled';
 interface Job {
   id: string;
   batchId?: string;

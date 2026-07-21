@@ -36,6 +36,7 @@ const JOBS_DIR = process.env.NODE_ENV === 'test' && process.env.TUBE_VAULT_TEST_
   ? process.env.TUBE_VAULT_TEST_JOBS_DIR
   : defaultJobsDirectory;
 const pidFile = (jobId: string) => path.join(JOBS_DIR, `${jobId}.pid`);
+const cancellationFile = (jobId: string) => path.join(JOBS_DIR, `${jobId}.cancel`);
 interface JobOwner { pid: number; processIdentity: string; }
 
 function errorCode(error: unknown): string | undefined {
@@ -73,6 +74,28 @@ function writePid(jobId: string): string {
     throw error;
   }
 }
+function recordCancellation(jobId: string): void {
+  ensureJobsDirectory();
+  try {
+    fs.writeFileSync(cancellationFile(jobId), JSON.stringify({ cancelledAt: Date.now() }), {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    });
+  } catch (error) {
+    if (errorCode(error) !== 'EEXIST') throw error;
+    assertPrivatePath(cancellationFile(jobId), 'file');
+  }
+}
+function cancellationRequested(jobId: string): boolean {
+  try {
+    assertPrivatePath(cancellationFile(jobId), 'file');
+    return true;
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return false;
+    throw error;
+  }
+}
 function clearPid(jobId: string, expectedContents: string): void {
   try {
     ensureJobsDirectory();
@@ -93,12 +116,24 @@ function readJobOwner(jobId: string): { owner: JobOwner; contents: string } {
 
 async function withJobOwner<T>(jobId: string | undefined, operation: () => Promise<T>): Promise<T> {
   if (!jobId) return operation();
+  ensureJobsDirectory();
+  if (cancellationRequested(jobId)) throw new Error('Job cancelled');
   const ownerContents = writePid(jobId);
   try {
+    if (cancellationRequested(jobId)) throw new Error('Job cancelled');
     return await operation();
   } finally {
     clearPid(jobId, ownerContents);
   }
+}
+
+async function waitForOwnerExit(owner: JobOwner): Promise<boolean> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (readProcessIdentity(owner.pid) !== owner.processIdentity) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return readProcessIdentity(owner.pid) !== owner.processIdentity;
 }
 
 // When cancelled, kill our yt-dlp children and exit. The pending sendNativeMessage
@@ -143,14 +178,16 @@ readMessages(async (raw) => {
     }
     const jobId = req.jobId;
     try {
+      recordCancellation(jobId);
       const { owner, contents } = readJobOwner(jobId);
       if (readProcessIdentity(owner.pid) !== owner.processIdentity) throw new Error('Job owner changed');
       process.kill(owner.pid, 'SIGTERM');
+      if (!(await waitForOwnerExit(owner))) throw new Error('Job owner did not exit');
       clearPid(jobId, contents);
       writeMessage({ ok: true, status: 'cancelled' });
     } catch (error) {
       if (errorCode(error) === 'ENOENT') {
-        writeMessage({ ok: true, status: 'already_finished' });
+        writeMessage({ ok: true, status: 'cancellation_pending' });
       } else {
         writeMessage({ ok: false, status: 'failed', error: 'Job cancellation failed' });
       }

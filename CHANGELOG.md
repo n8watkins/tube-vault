@@ -12,6 +12,10 @@
 
 - Update changelog for durable cancellation.
 
+### Documentation
+
+- Clarify recovery state lifecycle.
+
 ## v0.3.100
 
 ### Documentation

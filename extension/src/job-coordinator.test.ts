@@ -439,6 +439,18 @@ describe('JobCoordinator', () => {
     expect(test.jobs[0].nativeCancellationCleaned).toBe(true);
   });
 
+  it('removes a cancelled in-flight job after native cleanup when history is disabled', async () => {
+    const test = harness({
+      jobs: [job('active', 'running')],
+      settings: { collectHistory: false },
+    });
+
+    await test.coordinator.cancelJob('active');
+
+    expect(test.calls).toContainEqual({ action: 'cancel_finalize', jobId: 'active' });
+    expect(test.jobs).toEqual([]);
+  });
+
   it('retries tombstone cleanup on restart after cancellation was persisted', async () => {
     const test = harness({ jobs: [job('cancelled', 'cancelled', { nativeCancellationCleaned: false })] });
 

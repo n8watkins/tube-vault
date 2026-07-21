@@ -272,7 +272,7 @@ export class JobCoordinator {
         job.nativeCancellationCleaned = true;
         changed = true;
       }
-      return { changed, value: undefined, options: true };
+      return { changed, value: undefined };
     });
   }
 

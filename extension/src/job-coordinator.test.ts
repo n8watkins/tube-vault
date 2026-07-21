@@ -45,7 +45,7 @@ function harness(options: {
   legacyJobs?: boolean;
 } = {}) {
   let jobs = structuredClone(options.jobs ?? []);
-  const values = {
+  const values: Record<string, unknown> = {
     ...(options.legacyJobs ? {} : { tvBatchSummarySchemaVersion: 1 }),
     ...(options.values ?? {}),
   };

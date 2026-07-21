@@ -1,6 +1,6 @@
-import { cp, link, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, unlink } from 'node:fs/promises';
+import { cp, link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, unlink } from 'node:fs/promises';
 import { hostname } from 'node:os';
-import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isAbsolute as isWindowsAbsolute } from 'node:path/win32';
 import { isAbsolute as isPosixAbsolute, normalize as normalizePosix } from 'node:path/posix';
 import { fileURLToPath } from 'node:url';
@@ -61,6 +61,36 @@ async function pathExists(path) {
     if (error?.code === 'ENOENT') return false;
     throw error;
   }
+}
+
+function isWithinRoot(root, path) {
+  const pathFromRoot = relative(root, path);
+  return pathFromRoot === '' || (!pathFromRoot.startsWith(`..${sep}`) && pathFromRoot !== '..' && !isAbsolute(pathFromRoot));
+}
+
+async function requireSafeTargetPath(target, relativePath = '') {
+  const canonicalTarget = await realpath(target);
+  if (canonicalTarget !== resolve(target)) throw new Error(`Sync target cannot be a symbolic link: ${target}`);
+
+  let current = canonicalTarget;
+  for (const segment of relativePath.split('/').filter(Boolean)) {
+    current = join(current, segment);
+    const info = await lstat(current).catch((error) => {
+      if (error?.code === 'ENOENT') return null;
+      throw error;
+    });
+    if (!info) break;
+    if (info.isSymbolicLink()) throw new Error(`Sync target path cannot contain a symbolic link: ${current}`);
+    const canonicalPath = await realpath(current);
+    if (!isWithinRoot(canonicalTarget, canonicalPath)) {
+      throw new Error(`Sync target path escapes the repository: ${current}`);
+    }
+  }
+  return canonicalTarget;
+}
+
+async function requireSafeArtifactPaths(target, entries) {
+  for (const { relativePath } of entries) await requireSafeTargetPath(target, relativePath);
 }
 
 async function syncDirectory(path) {
@@ -182,7 +212,16 @@ async function readLockOwner(lockPath) {
   return owner;
 }
 
-async function acquireSyncLock(target) {
+async function restoreClaimedLock(claimPath, lockPath) {
+  try {
+    await link(claimPath, lockPath);
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error;
+  }
+  await unlink(claimPath);
+}
+
+async function acquireSyncLock(target, hooks = {}) {
   const lockPath = join(target, LOCK_NAME);
   const token = randomUUID();
   const owner = {
@@ -223,7 +262,21 @@ async function acquireSyncLock(target) {
           throw new Error(`Another sync is already running for target: ${target}`);
         }
         const confirmedOwner = await readLockOwner(lockPath);
-        if (confirmedOwner.token === existingOwner.token) await unlink(lockPath);
+        if (confirmedOwner.token !== existingOwner.token) continue;
+        await hooks.beforeReclaim?.(existingOwner);
+        const claimPath = join(target, `${LOCK_NAME}.reclaim-${token}-${randomUUID()}`);
+        try {
+          await rename(lockPath, claimPath);
+        } catch (claimError) {
+          if (claimError?.code === 'ENOENT') continue;
+          throw claimError;
+        }
+        const claimedOwner = await readLockOwner(claimPath).catch(() => null);
+        if (claimedOwner?.token !== existingOwner.token) {
+          await restoreClaimedLock(claimPath, lockPath);
+          continue;
+        }
+        await unlink(claimPath);
       }
     }
   } finally {
@@ -234,6 +287,7 @@ async function acquireSyncLock(target) {
 
 async function restoreTransaction(target, transactionRoot, entries) {
   for (const entry of [...entries].reverse()) {
+    await requireSafeTargetPath(target, entry.relativePath);
     const destination = join(target, entry.relativePath);
     const staged = join(transactionRoot, 'files', entry.relativePath);
     const backup = join(transactionRoot, 'backups', entry.relativePath);
@@ -268,9 +322,11 @@ export async function syncArtifacts(sourceRoot, target, files = SYNC_FILES, hook
     files.map((relativePath) => ({ relativePath, existed: false })),
     'requested artifact list',
   );
-  const releaseLock = await acquireSyncLock(target);
+  await requireSafeArtifactPaths(target, requestedEntries);
+  const releaseLock = await acquireSyncLock(target, hooks);
   try {
     await recoverSyncTransactions(target);
+    await requireSafeArtifactPaths(target, requestedEntries);
     const transactionRoot = await mkdtemp(join(target, TRANSACTION_PREFIX));
     const entries = [];
     let removeTransaction = false;
@@ -285,6 +341,7 @@ export async function syncArtifacts(sourceRoot, target, files = SYNC_FILES, hook
 
       for (const [index, entry] of entries.entries()) {
         await hooks.beforeInstall?.(entry.relativePath, index);
+        await requireSafeTargetPath(target, entry.relativePath);
         const destination = join(target, entry.relativePath);
         const staged = join(transactionRoot, 'files', entry.relativePath);
         if (entry.existed) {
@@ -325,8 +382,11 @@ export async function validateTarget(requestedTarget) {
 
   const target = resolve(requestedTarget);
   await requireDirectory(target, 'Sync target');
+  await requireSafeTargetPath(target);
   await requireDirectory(join(target, 'extension'), 'Target extension directory');
   await requireDirectory(join(target, 'helper'), 'Target helper directory');
+  await requireSafeTargetPath(target, 'extension');
+  await requireSafeTargetPath(target, 'helper');
 
   const gitRootResult = spawnSync('git', ['-C', target, 'rev-parse', '--show-toplevel'], { encoding: 'utf8' });
   const gitRoot = gitRootResult.status === 0 ? resolve(gitRootResult.stdout.trim()) : '';
@@ -338,6 +398,7 @@ export async function validateTarget(requestedTarget) {
   if (extensionPackage.name !== 'tube-vault-extension' || manifest.name !== 'TubeVault' || helperPackage.name !== 'tube-vault-helper') {
     throw new Error(`Sync target is not a TubeVault repository: ${target}`);
   }
+  await requireSafeArtifactPaths(target, SYNC_FILES.map((relativePath) => ({ relativePath })));
   return target;
 }
 

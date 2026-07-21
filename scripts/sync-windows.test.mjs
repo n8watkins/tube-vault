@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
@@ -33,6 +33,27 @@ test('accepts only an exact TubeVault Git repository root', async () => {
 
   const wrongProject = await makeTarget({ validIdentity: false });
   await assert.rejects(validateTarget(wrongProject), /not a TubeVault repository/);
+
+  const linkedRoot = `${valid}-link`;
+  await symlink(valid, linkedRoot, 'dir');
+  await assert.rejects(validateTarget(linkedRoot), /cannot be a symbolic link/);
+});
+
+test('rejects symlinked artifact paths before publishing', async () => {
+  const testRoot = await mkdtemp(join(tmpdir(), 'tube-vault-sync-symlink-test-'));
+  const source = join(testRoot, 'source');
+  const target = join(testRoot, 'target');
+  const outside = join(testRoot, 'outside');
+  const relativePath = 'extension/dist/content-script.js';
+  await mkdir(join(source, 'extension/dist'), { recursive: true });
+  await mkdir(join(target, 'extension'), { recursive: true });
+  await mkdir(outside, { recursive: true });
+  await writeFile(join(source, relativePath), 'new\n');
+  await writeFile(join(outside, 'content-script.js'), 'preserved\n');
+  await symlink(outside, join(target, 'extension/dist'), 'dir');
+
+  await assert.rejects(syncArtifacts(source, target, [relativePath]), /cannot contain a symbolic link/);
+  assert.equal(await readFile(join(outside, 'content-script.js'), 'utf8'), 'preserved\n');
 });
 
 test('rolls back every artifact when installation fails partway through', async () => {
@@ -182,4 +203,36 @@ test('prevents concurrent sync and recovers a dead owner lock', async () => {
     await syncArtifacts(source, target, [relativePath]);
     assert.equal((await readdir(target)).includes('.tube-vault-sync.lock'), false);
   }
+});
+
+test('does not reclaim a replacement lock from a new owner', async () => {
+  const source = await mkdtemp(join(tmpdir(), 'tube-vault-sync-source-'));
+  const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));
+  const relativePath = 'extension/manifest.json';
+  const lockPath = join(target, '.tube-vault-sync.lock');
+  const replacementOwner = {
+    pid: process.pid,
+    hostname: hostname(),
+    token: 'replacement-owner',
+    processIdentity: await readProcessIdentity(process.pid),
+  };
+  await mkdir(join(source, 'extension'), { recursive: true });
+  await mkdir(join(target, 'extension'), { recursive: true });
+  await writeFile(join(source, relativePath), 'new\n');
+  await writeFile(join(target, relativePath), 'old\n');
+  await writeFile(lockPath, JSON.stringify({
+    pid: 2_147_483_647,
+    hostname: hostname(),
+    token: 'dead-owner',
+  }));
+
+  await assert.rejects(syncArtifacts(source, target, [relativePath], {
+    beforeReclaim: async () => {
+      await rm(lockPath);
+      await writeFile(lockPath, JSON.stringify(replacementOwner));
+    },
+  }), /Another sync is already running/);
+
+  assert.deepEqual(JSON.parse(await readFile(lockPath, 'utf8')), replacementOwner);
+  assert.equal(await readFile(join(target, relativePath), 'utf8'), 'old\n');
 });

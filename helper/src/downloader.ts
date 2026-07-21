@@ -855,6 +855,11 @@ interface PublicationOwnerSnapshot {
   contents: string;
   owner?: Partial<PublicationOwner>;
   modifiedAt: number;
+  heartbeatAt?: number;
+}
+
+function publicationHeartbeatFile(lockPath: string, token: string): string {
+  return path.join(lockPath, `.heartbeat-${createHash('sha256').update(token).digest('hex')}`);
 }
 
 function publicationOwner(token = randomUUID()): PublicationOwner {
@@ -872,7 +877,16 @@ function readPublicationOwner(lockPath: string): PublicationOwnerSnapshot | unde
     const contents = fs.readFileSync(ownerFile, 'utf8');
     let owner: Partial<PublicationOwner> | undefined;
     try { owner = JSON.parse(contents) as Partial<PublicationOwner>; } catch {}
-    return { contents, owner, modifiedAt: fs.statSync(ownerFile).mtimeMs };
+    const modifiedAt = fs.statSync(ownerFile).mtimeMs;
+    let heartbeatAt: number | undefined;
+    if (ownerFile !== lockPath && typeof owner?.token === 'string') {
+      try {
+        heartbeatAt = fs.statSync(publicationHeartbeatFile(lockPath, owner.token)).mtimeMs;
+      } catch (error) {
+        if (errorCode(error) !== 'ENOENT') throw error;
+      }
+    }
+    return { contents, owner, modifiedAt, heartbeatAt };
   } catch (error) {
     if (errorCode(error) === 'ENOENT') return undefined;
     throw error;
@@ -883,6 +897,20 @@ function lockHasToken(lockPath: string, token: string): boolean {
   return readPublicationOwner(lockPath)?.owner?.token === token;
 }
 
+function refreshPublicationLease(lockPath: string, token: string): void {
+  if (!lockHasToken(lockPath, token)) throw new Error('Batch summary publication ownership changed concurrently');
+  const heartbeat = publicationHeartbeatFile(lockPath, token);
+  const descriptor = fs.openSync(heartbeat, 'a');
+  try {
+    if (!lockHasToken(lockPath, token)) throw new Error('Batch summary publication ownership changed concurrently');
+    const now = new Date();
+    fs.futimesSync(descriptor, now, now);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  if (!lockHasToken(lockPath, token)) throw new Error('Batch summary publication ownership changed concurrently');
+}
+
 function removePublicationLock(lockPath: string, token: string): boolean {
   if (!lockHasToken(lockPath, token)) return false;
   try {
@@ -891,7 +919,8 @@ function removePublicationLock(lockPath: string, token: string): boolean {
       return true;
     }
     for (const entry of fs.readdirSync(lockPath)) {
-      if (!/^\.owner-[a-f0-9-]+\.tmp$/i.test(entry) || !lockHasToken(lockPath, token)) continue;
+      const heartbeat = /^\.heartbeat-[a-f0-9]{64}$/i.test(entry);
+      if ((!/^\.owner-[a-f0-9-]+\.tmp$/i.test(entry) && !heartbeat) || !lockHasToken(lockPath, token)) continue;
       try { fs.unlinkSync(path.join(lockPath, entry)); } catch (error) {
         if (errorCode(error) !== 'ENOENT') throw error;
       }
@@ -947,37 +976,42 @@ function publicationOwnerState(snapshot: PublicationOwnerSnapshot): 'alive' | 'l
     } catch (error) {
       if (errorCode(error) !== 'EPERM') return 'dead';
     }
-    const leaseExpiresAt = typeof owner.leaseExpiresAt === 'number'
-      ? owner.leaseExpiresAt
-      : snapshot.modifiedAt + PUBLICATION_LEASE_MS;
+    const leaseExpiresAt = publicationLeaseDeadline(snapshot);
     return Date.now() < leaseExpiresAt ? 'leased' : 'dead';
   } catch {
     return 'dead';
   }
 }
 
-function waitForPublicationLease(file: string, lockPath: string, snapshot: PublicationOwnerSnapshot): boolean {
-  const deadline = typeof snapshot.owner?.leaseExpiresAt === 'number'
+function publicationLeaseDeadline(snapshot: PublicationOwnerSnapshot): number {
+  const initialDeadline = typeof snapshot.owner?.leaseExpiresAt === 'number'
     ? snapshot.owner.leaseExpiresAt
     : snapshot.modifiedAt + PUBLICATION_LEASE_MS;
+  return Math.max(initialDeadline, (snapshot.heartbeatAt ?? 0) + PUBLICATION_LEASE_MS);
+}
+
+function waitForPublicationLease(file: string, lockPath: string, snapshot: PublicationOwnerSnapshot): boolean {
   const signal = new Int32Array(new SharedArrayBuffer(4));
+  let deadline = publicationLeaseDeadline(snapshot);
   while (Date.now() < deadline) {
     if (fs.existsSync(file) && hasValidSummaryIntegrity(file)) return true;
     const current = readPublicationOwner(lockPath);
     if (!current || current.contents !== snapshot.contents) return false;
+    snapshot = current;
+    deadline = publicationLeaseDeadline(snapshot);
     Atomics.wait(signal, 0, 0, Math.min(50, deadline - Date.now()));
   }
   return false;
 }
 
 function waitForCoordinationLease(lockPath: string, snapshot: PublicationOwnerSnapshot): void {
-  const deadline = typeof snapshot.owner?.leaseExpiresAt === 'number'
-    ? snapshot.owner.leaseExpiresAt
-    : snapshot.modifiedAt + PUBLICATION_LEASE_MS;
   const signal = new Int32Array(new SharedArrayBuffer(4));
+  let deadline = publicationLeaseDeadline(snapshot);
   while (Date.now() < deadline) {
     const current = readPublicationOwner(lockPath);
     if (!current || current.contents !== snapshot.contents) return;
+    snapshot = current;
+    deadline = publicationLeaseDeadline(snapshot);
     Atomics.wait(signal, 0, 0, Math.min(50, deadline - Date.now()));
   }
 }
@@ -1028,7 +1062,7 @@ function takeOverPublicationLock(lockPath: string, observed: PublicationOwnerSna
   if (!recoveryToken) return undefined;
   try {
     const current = readPublicationOwner(lockPath);
-    if (!current || current.contents !== observed.contents) return undefined;
+    if (!current || current.contents !== observed.contents || current.heartbeatAt !== observed.heartbeatAt) return undefined;
     const token = randomUUID();
     const ownerFile = publicationLockOwnerFile(lockPath);
     if (ownerFile === lockPath) {
@@ -1102,13 +1136,30 @@ function publishWithoutHardLinks(temporaryFile: string, file: string, lockPath: 
         fs.unlinkSync(file);
       }
       try {
-        fs.copyFileSync(temporaryFile, file, fs.constants.COPYFILE_EXCL);
-        const published = fs.openSync(file, 'r');
-        try { fs.fsyncSync(published); } finally { fs.closeSync(published); }
+        const source = fs.openSync(temporaryFile, 'r');
+        try {
+          const published = fs.openSync(file, 'wx');
+          try {
+            const buffer = Buffer.allocUnsafe(64 * 1024);
+            let bytesRead: number;
+            do {
+              refreshPublicationLease(lockPath, publicationToken);
+              bytesRead = fs.readSync(source, buffer, 0, buffer.length, null);
+              if (bytesRead > 0) fs.writeSync(published, buffer, 0, bytesRead);
+            } while (bytesRead > 0);
+            refreshPublicationLease(lockPath, publicationToken);
+            fs.fsyncSync(published);
+            refreshPublicationLease(lockPath, publicationToken);
+          } finally {
+            fs.closeSync(published);
+          }
+        } finally {
+          fs.closeSync(source);
+        }
         if (!hasValidSummaryIntegrity(file)) throw new Error('Batch summary publication was incomplete');
         return;
       } catch (error) {
-        if (fs.existsSync(file) && !hasValidSummaryIntegrity(file)) {
+        if (lockHasToken(lockPath, publicationToken) && fs.existsSync(file) && !hasValidSummaryIntegrity(file)) {
           try { fs.unlinkSync(file); } catch {}
         }
         throw error;

@@ -194,6 +194,33 @@ test('writeBatchSummary falls back when hard links are unavailable and remains r
   }
 });
 
+test('writeBatchSummary heartbeats throughout a slow fallback publication', (context) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-heartbeat-'));
+  try {
+    context.mock.method(fs, 'linkSync', () => {
+      const error = new Error('Hard links unavailable') as NodeJS.ErrnoException;
+      error.code = 'EXDEV';
+      throw error;
+    });
+    const futimesSync = fs.futimesSync.bind(fs);
+    let heartbeats = 0;
+    context.mock.method(fs, 'futimesSync', ((...args: Parameters<typeof fs.futimesSync>) => {
+      heartbeats += 1;
+      return futimesSync(...args);
+    }) as typeof fs.futimesSync);
+
+    const created = writeBatchSummary(dir, 'slow-fallback', 'Slow fallback', undefined, [
+      { title: 'x'.repeat(200_000), status: 'done' },
+    ]);
+
+    assert.ok(heartbeats >= 6);
+    assert.match(fs.readFileSync(created, 'utf8'), /\nIntegrity: SHA-256 [a-f0-9]{64}\n$/);
+    assert.equal(fs.readdirSync(path.dirname(created)).some((entry) => entry.startsWith('.heartbeat-')), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('writeBatchSummary cleans an interrupted fallback before retrying', (context) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-partial-'));
   const summaries = path.join(dir, 'TubeVault Summaries');
@@ -402,7 +429,7 @@ test('readProcessIdentity obtains stable macOS process start metadata', () => {
   assert.deepEqual(calls[0]?.slice(0, 2), ['/bin/ps', ['-p', '42', '-o', 'lstart=']]);
 });
 
-test('writeBatchSummary waits out an unverifiable process lease within one request', (context) => {
+test('writeBatchSummary recovers an unverifiable owner after its heartbeat becomes stale', (context) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-process-lease-'));
   const summaries = path.join(dir, 'TubeVault Summaries');
   try {
@@ -412,11 +439,16 @@ test('writeBatchSummary waits out an unverifiable process lease within one reque
     const lockPath = path.join(summaries, `.tv-${stableId}.lock`);
     fs.writeFileSync(created, 'incomplete');
     fs.mkdirSync(lockPath);
+    const token = 'expired-owner';
     fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({
-      token: 'expired-owner',
+      token,
       pid: 1,
-      leaseExpiresAt: Date.now() + 20,
+      leaseExpiresAt: Date.now() - 1,
     }));
+    const heartbeat = path.join(lockPath, `.heartbeat-${createHash('sha256').update(token).digest('hex')}`);
+    fs.writeFileSync(heartbeat, '');
+    const stale = new Date(Date.now() - 60_000);
+    fs.utimesSync(heartbeat, stale, stale);
     context.mock.method(fs, 'linkSync', () => {
       const error = new Error('Hard links unavailable') as NodeJS.ErrnoException;
       error.code = 'EXDEV';
@@ -428,6 +460,49 @@ test('writeBatchSummary waits out an unverifiable process lease within one reque
     assert.equal(recovered, created);
     assert.match(fs.readFileSync(recovered, 'utf8'), /\nIntegrity: SHA-256 [a-f0-9]{64}\n$/);
     assert.equal(fs.existsSync(lockPath), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('writeBatchSummary does not take over an owner that heartbeats after stale observation', (context) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-heartbeat-race-'));
+  const summaries = path.join(dir, 'TubeVault Summaries');
+  try {
+    const batchId = 'heartbeat-race-batch';
+    const created = writeBatchSummary(dir, batchId, 'Heartbeat race', undefined, []);
+    const stableId = path.basename(created).match(/[a-f0-9]{16}(?=\.txt$)/)?.[0] as string;
+    const lockPath = path.join(summaries, `.tv-${stableId}.lock`);
+    const ownerFile = path.join(lockPath, 'owner.json');
+    const token = 'heartbeat-owner';
+    const heartbeat = path.join(lockPath, `.heartbeat-${createHash('sha256').update(token).digest('hex')}`);
+    fs.writeFileSync(created, 'incomplete');
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(ownerFile, JSON.stringify({ token, pid: 1, leaseExpiresAt: Date.now() - 1 }));
+    fs.writeFileSync(heartbeat, '');
+    const stale = new Date(Date.now() - 60_000);
+    fs.utimesSync(heartbeat, stale, stale);
+    const readFileSync = fs.readFileSync.bind(fs);
+    let ownerReads = 0;
+    context.mock.method(fs, 'readFileSync', ((target: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+      if (target === ownerFile && ++ownerReads === 2) {
+        const refreshed = new Date();
+        fs.utimesSync(heartbeat, refreshed, refreshed);
+      }
+      return (readFileSync as (...parameters: unknown[]) => unknown)(target, ...args);
+    }) as typeof fs.readFileSync);
+    context.mock.method(fs, 'linkSync', () => {
+      const error = new Error('Hard links unavailable') as NodeJS.ErrnoException;
+      error.code = 'EXDEV';
+      throw error;
+    });
+
+    assert.throws(
+      () => writeBatchSummary(dir, batchId, 'Heartbeat race', undefined, []),
+      /ownership changed concurrently/,
+    );
+    assert.equal(JSON.parse(readFileSync(ownerFile, 'utf8')).token, token);
+    assert.equal(fs.readFileSync(created, 'utf8'), 'incomplete');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -471,7 +546,7 @@ test('writeBatchSummary rejects a replacement owner before taking over recovery'
   }
 });
 
-test('writeBatchSummary cleanup never removes a successor lock token', (context) => {
+test('writeBatchSummary stops publishing and preserves a successor after losing its token', (context) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-cleanup-owner-'));
   const summaries = path.join(dir, 'TubeVault Summaries');
   try {
@@ -483,17 +558,25 @@ test('writeBatchSummary cleanup never removes a successor lock token', (context)
       error.code = 'EXDEV';
       throw error;
     });
-    const copyFileSync = fs.copyFileSync.bind(fs);
-    context.mock.method(fs, 'copyFileSync', ((source: fs.PathLike, destination: fs.PathLike, mode?: number) => {
-      fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({
-        token: 'successor-token',
-        pid: process.pid,
-        leaseExpiresAt: Date.now() + 30_000,
-      }));
-      copyFileSync(source, destination, mode);
-    }) as typeof fs.copyFileSync);
+    const writeSync = fs.writeSync.bind(fs);
+    let replaced = false;
+    context.mock.method(fs, 'writeSync', ((...args: Parameters<typeof fs.writeSync>) => {
+      const result = writeSync(...args);
+      if (!replaced && fs.existsSync(path.join(lockPath, 'owner.json'))) {
+        replaced = true;
+        fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({
+          token: 'successor-token',
+          pid: process.pid,
+          leaseExpiresAt: Date.now() + 30_000,
+        }));
+      }
+      return result;
+    }) as typeof fs.writeSync);
 
-    writeBatchSummary(dir, batchId, 'Cleanup owner', undefined, []);
+    assert.throws(
+      () => writeBatchSummary(dir, batchId, 'Cleanup owner', undefined, []),
+      /ownership changed concurrently/,
+    );
 
     assert.equal(fs.existsSync(lockPath), true);
     assert.equal(JSON.parse(fs.readFileSync(path.join(lockPath, 'owner.json'), 'utf8')).token, 'successor-token');

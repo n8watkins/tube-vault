@@ -531,7 +531,7 @@ export class JobCoordinator {
 
   private async cleanupBatchSummaryReceipt(batchId: string): Promise<boolean> {
     const response = await this.safeNative({ action: 'batch_summary_finalize', batchId });
-    if (!response?.ok) return false;
+    if (!response?.ok) throw new Error('Could not finalize batch summary receipt');
     await this.mutateJobs((jobs) => {
       let changed = false;
       for (const job of jobs) {

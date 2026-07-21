@@ -705,6 +705,27 @@ describe('JobCoordinator', () => {
     expect(test.jobs[0]).toMatchObject({ summaryWritten: true, summaryReceiptCleaned: true });
   });
 
+  it('retries receipt cleanup without rewriting the completed summary', async () => {
+    let cleanupAttempts = 0;
+    const test = harness({
+      jobs: [job('one', 'done', { batchId: 'batch' })],
+      native: async (payload) => {
+        if (payload.action === 'batch_summary_finalize') {
+          cleanupAttempts += 1;
+          return { ok: cleanupAttempts >= 3 };
+        }
+        return { ok: true };
+      },
+    });
+
+    await test.coordinator.cancelBatch('batch');
+    await vi.waitFor(() => expect(test.jobs[0]?.summaryReceiptCleaned).toBe(true));
+
+    expect(test.calls.filter((call) => call.action === 'batch_summary')).toHaveLength(1);
+    expect(test.calls.filter((call) => call.action === 'batch_summary_finalize')).toHaveLength(3);
+    expect(test.values.tvBatchSummaryAttempts).toEqual({});
+  });
+
   it('removes private history while retaining minimal receipt cleanup state across restart', async () => {
     const beforeRestart = harness({
       jobs: [job('one', 'done', { batchId: 'batch' })],

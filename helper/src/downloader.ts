@@ -741,6 +741,7 @@ const BATCH_SUMMARY_ID_LENGTH = 16;
 const MAX_FILENAME_BYTES = 255;
 const SUMMARY_INTEGRITY_PREFIX = 'Integrity: SHA-256 ';
 const HARD_LINK_UNAVAILABLE_CODES = new Set(['EACCES', 'EPERM', 'EXDEV', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
+const PUBLICATION_LEASE_MS = 30_000;
 const PROCESS_IDENTITY = readProcessIdentity(process.pid);
 
 function errorCode(error: unknown): string | undefined {
@@ -821,76 +822,189 @@ function publicationLockOwnerFile(lockPath: string): string {
   }
 }
 
-function readProcessIdentity(pid: number): string | undefined {
-  if (process.platform !== 'linux') return undefined;
+export function readProcessIdentity(
+  pid: number,
+  platform = process.platform,
+  execute: typeof execFileSync = execFileSync,
+): string | undefined {
   try {
+    if (platform === 'darwin') {
+      const started = execute('/bin/ps', ['-p', String(pid), '-o', 'lstart='], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      return started ? `darwin:${started}` : undefined;
+    }
+    if (platform !== 'linux') return undefined;
     const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
     const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
-    return fields[19];
+    return fields[19] ? `linux:${fields[19]}` : undefined;
   } catch {
     return undefined;
   }
 }
 
-function removePublicationLock(lockPath: string): void {
+interface PublicationOwner {
+  token: string;
+  pid: number;
+  processIdentity?: string;
+  leaseExpiresAt: number;
+}
+
+interface PublicationOwnerSnapshot {
+  contents: string;
+  owner?: Partial<PublicationOwner>;
+  modifiedAt: number;
+}
+
+function publicationOwner(token = randomUUID()): PublicationOwner {
+  return {
+    token,
+    pid: process.pid,
+    processIdentity: PROCESS_IDENTITY,
+    leaseExpiresAt: Date.now() + PUBLICATION_LEASE_MS,
+  };
+}
+
+function readPublicationOwner(lockPath: string): PublicationOwnerSnapshot | undefined {
   try {
-    if (!fs.statSync(lockPath).isDirectory()) {
-      fs.unlinkSync(lockPath);
-      return;
-    }
-    try { fs.unlinkSync(path.join(lockPath, 'owner.json')); } catch (error) {
-      if (errorCode(error) !== 'ENOENT') throw error;
-    }
-    fs.rmdirSync(lockPath);
+    const ownerFile = publicationLockOwnerFile(lockPath);
+    const contents = fs.readFileSync(ownerFile, 'utf8');
+    let owner: Partial<PublicationOwner> | undefined;
+    try { owner = JSON.parse(contents) as Partial<PublicationOwner>; } catch {}
+    return { contents, owner, modifiedAt: fs.statSync(ownerFile).mtimeMs };
   } catch (error) {
-    if (errorCode(error) !== 'ENOENT') throw error;
+    if (errorCode(error) === 'ENOENT') return undefined;
+    throw error;
   }
 }
 
-function acquirePublicationLock(lockPath: string): boolean {
+function lockHasToken(lockPath: string, token: string): boolean {
+  return readPublicationOwner(lockPath)?.owner?.token === token;
+}
+
+function removePublicationLock(lockPath: string, token: string): boolean {
+  if (!lockHasToken(lockPath, token)) return false;
+  try {
+    if (!fs.statSync(lockPath).isDirectory()) {
+      fs.unlinkSync(lockPath);
+      return true;
+    }
+    fs.unlinkSync(path.join(lockPath, 'owner.json'));
+    fs.rmdirSync(lockPath);
+    return true;
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+function acquirePublicationLock(lockPath: string): string | undefined {
+  const token = randomUUID();
   const preparedLock = `${lockPath}.${process.pid}.${randomUUID()}.tmp`;
   fs.mkdirSync(preparedLock);
   try {
     const ownerFile = path.join(preparedLock, 'owner.json');
     const owner = fs.openSync(ownerFile, 'wx');
     try {
-      fs.writeFileSync(owner, JSON.stringify({ pid: process.pid, processIdentity: PROCESS_IDENTITY }), 'utf8');
+      fs.writeFileSync(owner, JSON.stringify(publicationOwner(token)), 'utf8');
       fs.fsyncSync(owner);
     } finally {
       fs.closeSync(owner);
     }
     try {
       fs.renameSync(preparedLock, lockPath);
-      return true;
+      return token;
     } catch (error) {
       if (!fs.existsSync(lockPath)) throw error;
-      return false;
+      return undefined;
     }
   } finally {
-    removePublicationLock(preparedLock);
+    if (fs.existsSync(preparedLock)) fs.rmSync(preparedLock, { recursive: true });
   }
 }
 
-function publicationOwnerIsAlive(lockPath: string): boolean | undefined {
+function publicationOwnerState(snapshot: PublicationOwnerSnapshot): 'alive' | 'leased' | 'dead' {
+  const owner = snapshot.owner;
+  if (typeof owner?.pid !== 'number' || !Number.isInteger(owner.pid) || owner.pid <= 0) return 'dead';
   try {
-    const owner = JSON.parse(fs.readFileSync(publicationLockOwnerFile(lockPath), 'utf8')) as {
-      pid?: unknown;
-      processIdentity?: unknown;
-    };
-    if (typeof owner.pid !== 'number' || !Number.isInteger(owner.pid) || owner.pid <= 0) return undefined;
     const currentIdentity = readProcessIdentity(owner.pid);
     if (typeof owner.processIdentity === 'string' && currentIdentity !== undefined) {
-      return owner.processIdentity === currentIdentity;
+      return owner.processIdentity === currentIdentity ? 'alive' : 'dead';
     }
-    if (owner.pid === process.pid) return owner.processIdentity === undefined || owner.processIdentity === PROCESS_IDENTITY;
+    if (owner.pid === process.pid) {
+      return owner.processIdentity === undefined || owner.processIdentity === PROCESS_IDENTITY ? 'alive' : 'dead';
+    }
     try {
       process.kill(owner.pid, 0);
-      return true;
     } catch (error) {
-      return errorCode(error) === 'EPERM' ? true : false;
+      if (errorCode(error) !== 'EPERM') return 'dead';
     }
+    const leaseExpiresAt = typeof owner.leaseExpiresAt === 'number'
+      ? owner.leaseExpiresAt
+      : snapshot.modifiedAt + PUBLICATION_LEASE_MS;
+    return Date.now() < leaseExpiresAt ? 'leased' : 'dead';
   } catch {
-    return undefined;
+    return 'dead';
+  }
+}
+
+function waitForPublicationLease(file: string, lockPath: string, snapshot: PublicationOwnerSnapshot): boolean {
+  const deadline = typeof snapshot.owner?.leaseExpiresAt === 'number'
+    ? snapshot.owner.leaseExpiresAt
+    : snapshot.modifiedAt + PUBLICATION_LEASE_MS;
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  while (Date.now() < deadline) {
+    if (fs.existsSync(file) && hasValidSummaryIntegrity(file)) return true;
+    const current = readPublicationOwner(lockPath);
+    if (!current || current.contents !== snapshot.contents) return false;
+    Atomics.wait(signal, 0, 0, Math.min(50, deadline - Date.now()));
+  }
+  return false;
+}
+
+function takeOverPublicationLock(lockPath: string, observed: PublicationOwnerSnapshot): string | undefined {
+  const recoveryFile = `${lockPath}.recovery`;
+  const recoveryToken = randomUUID();
+  let recovery: number;
+  try {
+    recovery = fs.openSync(recoveryFile, 'wx');
+  } catch (error) {
+    if (errorCode(error) === 'EEXIST') return undefined;
+    throw error;
+  }
+  try {
+    fs.writeFileSync(recovery, recoveryToken, 'utf8');
+    fs.fsyncSync(recovery);
+  } finally {
+    fs.closeSync(recovery);
+  }
+  try {
+    const current = readPublicationOwner(lockPath);
+    if (!current || current.contents !== observed.contents) return undefined;
+    const token = randomUUID();
+    const ownerFile = publicationLockOwnerFile(lockPath);
+    if (ownerFile === lockPath) {
+      fs.unlinkSync(lockPath);
+      const acquired = acquirePublicationLock(lockPath);
+      return acquired;
+    }
+    const replacement = path.join(lockPath, `.owner-${token}.tmp`);
+    const descriptor = fs.openSync(replacement, 'wx');
+    try {
+      fs.writeFileSync(descriptor, JSON.stringify(publicationOwner(token)), 'utf8');
+      fs.fsyncSync(descriptor);
+    } finally {
+      fs.closeSync(descriptor);
+    }
+    fs.renameSync(replacement, ownerFile);
+    return token;
+  } finally {
+    try {
+      if (fs.readFileSync(recoveryFile, 'utf8') === recoveryToken) fs.unlinkSync(recoveryFile);
+    } catch (error) {
+      if (errorCode(error) !== 'ENOENT') throw error;
+    }
   }
 }
 
@@ -900,37 +1014,34 @@ function recoverInterruptedPublication(file: string, lockPath: string): boolean 
     try { fs.fsyncSync(published); } finally { fs.closeSync(published); }
     return true;
   }
-  if (!fs.existsSync(lockPath)) return false;
-  const claimedLock = `${lockPath}.recover.${process.pid}.${randomUUID()}`;
-  try {
-    fs.renameSync(lockPath, claimedLock);
-  } catch (error) {
-    if (errorCode(error) === 'ENOENT') return false;
-    throw error;
+  let observed = readPublicationOwner(lockPath);
+  if (!observed) return false;
+  const ownerState = publicationOwnerState(observed);
+  if (ownerState === 'alive') throw new Error('Batch summary publication is already in progress');
+  if (ownerState === 'leased') {
+    if (waitForPublicationLease(file, lockPath, observed)) return true;
+    observed = readPublicationOwner(lockPath);
+    if (!observed) return false;
+    const stateAfterWait = publicationOwnerState(observed);
+    if (stateAfterWait !== 'dead') throw new Error('Batch summary publication is already in progress');
   }
-  let ownsRecoveryLock = false;
+  const recoveryToken = takeOverPublicationLock(lockPath, observed);
+  if (!recoveryToken) throw new Error('Batch summary publication ownership changed concurrently');
   try {
-    if (publicationOwnerIsAlive(claimedLock) === true) {
-      if (fs.existsSync(lockPath)) throw new Error('Batch summary publication ownership changed concurrently');
-      fs.renameSync(claimedLock, lockPath);
-      throw new Error('Batch summary publication is already in progress');
-    }
-    ownsRecoveryLock = acquirePublicationLock(lockPath);
-    if (!ownsRecoveryLock) throw new Error('Batch summary publication is already in progress');
     if (fs.existsSync(file) && hasValidSummaryIntegrity(file)) return true;
     try { fs.unlinkSync(file); } catch (error) {
       if (errorCode(error) !== 'ENOENT') throw error;
     }
   } finally {
-    if (ownsRecoveryLock) removePublicationLock(lockPath);
-    removePublicationLock(claimedLock);
+    removePublicationLock(lockPath, recoveryToken);
   }
   return false;
 }
 
 function publishWithoutHardLinks(temporaryFile: string, file: string, lockPath: string): void {
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    if (!acquirePublicationLock(lockPath)) {
+    const publicationToken = acquirePublicationLock(lockPath);
+    if (!publicationToken) {
       if (recoverInterruptedPublication(file, lockPath)) return;
       continue;
     }
@@ -954,7 +1065,7 @@ function publishWithoutHardLinks(temporaryFile: string, file: string, lockPath: 
         throw error;
       }
     } finally {
-      removePublicationLock(lockPath);
+      removePublicationLock(lockPath, publicationToken);
     }
   }
   throw new Error('Could not recover batch summary publication');

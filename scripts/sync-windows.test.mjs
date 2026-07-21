@@ -4,7 +4,7 @@ import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
-import { syncArtifacts, targetArgument, validateTarget } from './sync-windows.mjs';
+import { readProcessIdentity, syncArtifacts, targetArgument, validateTarget } from './sync-windows.mjs';
 
 async function makeTarget({ git = true, validIdentity = true } = {}) {
   const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-test-'));
@@ -155,6 +155,11 @@ test('prevents concurrent sync and recovers a dead owner lock', async () => {
     },
   });
   await firstSyncStarted;
+  const currentIdentity = await readProcessIdentity(process.pid);
+  if (currentIdentity) {
+    const liveOwner = JSON.parse(await readFile(join(target, '.tube-vault-sync.lock'), 'utf8'));
+    assert.equal(liveOwner.processIdentity, currentIdentity);
+  }
   await assert.rejects(syncArtifacts(source, target, [relativePath]), /Another sync is already running/);
   continueFirstSync();
   await firstSync;
@@ -166,4 +171,15 @@ test('prevents concurrent sync and recovers a dead owner lock', async () => {
   }));
   await syncArtifacts(source, target, [relativePath]);
   assert.equal((await readdir(target)).includes('.tube-vault-sync.lock'), false);
+
+  if (currentIdentity) {
+    await writeFile(join(target, '.tube-vault-sync.lock'), JSON.stringify({
+      pid: process.pid,
+      hostname: hostname(),
+      token: 'reused-owner',
+      processIdentity: 'different-incarnation',
+    }));
+    await syncArtifacts(source, target, [relativePath]);
+    assert.equal((await readdir(target)).includes('.tube-vault-sync.lock'), false);
+  }
 });

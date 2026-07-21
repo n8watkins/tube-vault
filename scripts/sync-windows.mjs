@@ -142,6 +142,25 @@ function processIsAlive(pid) {
   }
 }
 
+export async function readProcessIdentity(pid, platform = process.platform) {
+  try {
+    if (platform === 'darwin') {
+      const result = spawnSync('/bin/ps', ['-p', String(pid), '-o', 'lstart='], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      const started = result.status === 0 ? result.stdout.trim() : '';
+      return started ? `darwin:${started}` : undefined;
+    }
+    if (platform !== 'linux') return undefined;
+    const processStat = await readFile(`/proc/${pid}/stat`, 'utf8');
+    const fields = processStat.slice(processStat.lastIndexOf(')') + 2).split(' ');
+    return fields[19] ? `linux:${fields[19]}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function readLockOwner(lockPath) {
   let owner;
   try {
@@ -156,6 +175,7 @@ async function readLockOwner(lockPath) {
     || owner.pid <= 0
     || typeof owner.hostname !== 'string'
     || typeof owner.token !== 'string'
+    || (owner.processIdentity !== undefined && (typeof owner.processIdentity !== 'string' || owner.processIdentity.length === 0))
   ) {
     throw new Error(`Sync lock is invalid: ${lockPath}`);
   }
@@ -165,7 +185,12 @@ async function readLockOwner(lockPath) {
 async function acquireSyncLock(target) {
   const lockPath = join(target, LOCK_NAME);
   const token = randomUUID();
-  const owner = { pid: process.pid, hostname: hostname(), token };
+  const owner = {
+    pid: process.pid,
+    hostname: hostname(),
+    token,
+    processIdentity: await readProcessIdentity(process.pid),
+  };
   const ownerPath = join(target, `${LOCK_NAME}.${token}`);
   let ownerHandle;
   try {
@@ -190,7 +215,11 @@ async function acquireSyncLock(target) {
       } catch (error) {
         if (error?.code !== 'EEXIST') throw error;
         const existingOwner = await readLockOwner(lockPath);
-        if (existingOwner.hostname !== owner.hostname || processIsAlive(existingOwner.pid)) {
+        const existingIdentity = await readProcessIdentity(existingOwner.pid);
+        const ownerIsAlive = typeof existingOwner.processIdentity === 'string' && existingIdentity !== undefined
+          ? existingOwner.processIdentity === existingIdentity
+          : processIsAlive(existingOwner.pid);
+        if (existingOwner.hostname !== owner.hostname || ownerIsAlive) {
           throw new Error(`Another sync is already running for target: ${target}`);
         }
         const confirmedOwner = await readLockOwner(lockPath);

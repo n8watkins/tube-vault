@@ -168,6 +168,14 @@ function sameFile(left, right) {
   return left.dev === right.dev && left.ino === right.ino;
 }
 
+function fileIdentity(info) {
+  return { dev: String(info.dev), ino: String(info.ino) };
+}
+
+function hasFileIdentity(info, identity) {
+  return identity && String(info.dev) === identity.dev && String(info.ino) === identity.ino;
+}
+
 async function openStableDirectory(path) {
   const absolutePath = resolve(path);
   const mutationRoot = mutationRootStorage.getStore();
@@ -330,11 +338,28 @@ function validateEntries(entries, description) {
       throw new Error(`Invalid sync transaction journal entry: ${description}`);
     }
     const relativePath = validateRelativePath(entry.relativePath);
-    if (!allowedPaths.has(relativePath) || seenPaths.has(relativePath) || typeof entry.existed !== 'boolean') {
+    const identity = entry.identity;
+    if (
+      !allowedPaths.has(relativePath)
+      || seenPaths.has(relativePath)
+      || typeof entry.existed !== 'boolean'
+      || (
+        identity !== undefined
+        && (
+          !identity
+          || typeof identity !== 'object'
+          || Array.isArray(identity)
+          || typeof identity.dev !== 'string'
+          || identity.dev.length === 0
+          || typeof identity.ino !== 'string'
+          || identity.ino.length === 0
+        )
+      )
+    ) {
       throw new Error(`Invalid sync transaction journal entry: ${description}`);
     }
     seenPaths.add(relativePath);
-    return { relativePath, existed: entry.existed };
+    return { relativePath, existed: entry.existed, ...(identity === undefined ? {} : { identity }) };
   });
 }
 
@@ -563,7 +588,7 @@ async function restoreTransaction(target, transactionRoot, entries) {
     const destination = join(target, entry.relativePath);
     const staged = join(transactionRoot, 'files', entry.relativePath);
     const backup = join(transactionRoot, 'backups', entry.relativePath);
-    const stagedInfo = await lstat(staged).catch((error) => {
+    const stagedInfo = await lstat(staged, { bigint: true }).catch((error) => {
       if (error?.code === 'ENOENT') return null;
       throw error;
     });
@@ -580,8 +605,8 @@ async function restoreTransaction(target, transactionRoot, entries) {
       }
     }
 
-    const claimedInfo = claimed ? await lstat(claimed.path) : null;
-    const transactionOwned = claimedInfo && (!stagedInfo || sameFile(claimedInfo, stagedInfo));
+    const claimedInfo = claimed ? await lstat(claimed.path, { bigint: true }) : null;
+    const transactionOwned = claimedInfo && stagedInfo && sameFile(claimedInfo, stagedInfo);
     if (claimed && !transactionOwned) {
       await installWithoutOverwrite(claimed.path, destination);
       await removeDurably(claimed.root, { recursive: true, force: true });
@@ -647,7 +672,15 @@ export async function syncArtifacts(sourceRoot, target, files = SYNC_FILES, hook
           await copyFileDurably(join(sourceRoot, relativePath), staged);
           await syncFile(staged);
           await syncDirectory(dirname(staged));
-          entries.push({ relativePath, existed: await pathExists(join(target, relativePath)) });
+          const destinationInfo = await lstat(join(target, relativePath), { bigint: true }).catch((error) => {
+            if (error?.code === 'ENOENT') return null;
+            throw error;
+          });
+          entries.push({
+            relativePath,
+            existed: Boolean(destinationInfo),
+            ...(destinationInfo ? { identity: fileIdentity(destinationInfo) } : {}),
+          });
         }
         await writeJournalDurably(transactionRoot, entries);
 
@@ -665,6 +698,12 @@ export async function syncArtifacts(sourceRoot, target, files = SYNC_FILES, hook
               await requireSafeTransactionPath(transactionRoot, `backups/${entry.relativePath}`);
               await syncFile(destination);
               await renameDurably(destination, backup);
+              const backupInfo = await lstat(backup, { bigint: true });
+              if (!hasFileIdentity(backupInfo, entry.identity)) {
+                await installWithoutOverwrite(backup, destination);
+                await unlinkDurably(backup);
+                throw new Error(`Sync target artifact changed concurrently before backup: ${destination}`);
+              }
               await hooks.afterBackup?.(entry.relativePath, index);
             } else {
               await mkdirDurably(resolve(destination, '..'));

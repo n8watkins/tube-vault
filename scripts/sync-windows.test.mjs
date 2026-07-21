@@ -79,7 +79,15 @@ test('rolls back every artifact when installation fails partway through', async 
         assert.equal(transactionEntries.some((name) => name.startsWith('journal.json.')), false);
         const journal = JSON.parse(await readFile(join(target, transactions[0], 'journal.json'), 'utf8'));
         assert.equal(journal.state, 'pending');
-        assert.deepEqual(journal.entries, files.map((relativePath, entryIndex) => ({ relativePath, existed: entryIndex < 2 })));
+        assert.deepEqual(
+          journal.entries.map(({ relativePath, existed }) => ({ relativePath, existed })),
+          files.map((relativePath, entryIndex) => ({ relativePath, existed: entryIndex < 2 })),
+        );
+        for (const entry of journal.entries.slice(0, 2)) {
+          assert.equal(typeof entry.identity.dev, 'string');
+          assert.equal(typeof entry.identity.ino, 'string');
+        }
+        assert.equal(journal.entries[2].identity, undefined);
       }
       if (index === 2) throw new Error('simulated installation failure');
     },
@@ -130,6 +138,28 @@ test('does not overwrite an artifact created after backing up the original', asy
   assert.equal(await readFile(join(target, transactions[0], 'backups', relativePath), 'utf8'), 'original\n');
 });
 
+test('does not back up an existing artifact replaced after staging', async () => {
+  const source = await mkdtemp(join(tmpdir(), 'tube-vault-sync-source-'));
+  const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));
+  const relativePath = 'extension/manifest.json';
+  const displaced = join(target, 'original-manifest.json');
+  await mkdir(join(source, 'extension'), { recursive: true });
+  await mkdir(join(target, 'extension'), { recursive: true });
+  await writeFile(join(source, relativePath), 'new\n');
+  await writeFile(join(target, relativePath), 'original\n');
+
+  await assert.rejects(syncArtifacts(source, target, [relativePath], {
+    beforeInstall: async () => {
+      await rename(join(target, relativePath), displaced);
+      await writeFile(join(target, relativePath), 'concurrent\n');
+    },
+  }), /changed concurrently before backup/);
+
+  assert.equal(await readFile(join(target, relativePath), 'utf8'), 'concurrent\n');
+  assert.equal(await readFile(displaced, 'utf8'), 'original\n');
+  assert.deepEqual((await readdir(target)).filter((name) => name.startsWith('.tube-vault-sync-')), []);
+});
+
 test('recovers an install interrupted before staged-link cleanup', async () => {
   const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));
   const relativePath = 'extension/manifest.json';
@@ -150,6 +180,26 @@ test('recovers an install interrupted before staged-link cleanup', async () => {
   assert.deepEqual((await readdir(target)).filter((name) => name.startsWith('.tube-vault-sync-')), []);
 });
 
+test('preserves a recovery destination when staged ownership evidence is missing', async () => {
+  const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));
+  const relativePath = 'extension/manifest.json';
+  const transaction = join(target, '.tube-vault-sync-missing-staged');
+  const backup = join(transaction, 'backups', relativePath);
+  await mkdir(join(target, 'extension'), { recursive: true });
+  await mkdir(join(transaction, 'backups', 'extension'), { recursive: true });
+  await writeFile(join(target, relativePath), 'concurrent\n');
+  await writeFile(backup, 'original\n');
+  await writeFile(join(transaction, 'journal.json'), JSON.stringify({
+    state: 'pending',
+    entries: [{ relativePath, existed: true }],
+  }));
+
+  await assert.rejects(recoverSyncTransactions(target), /changed concurrently during rollback/);
+
+  assert.equal(await readFile(join(target, relativePath), 'utf8'), 'concurrent\n');
+  assert.equal(await readFile(backup, 'utf8'), 'original\n');
+});
+
 test('recovers an interrupted transaction before starting the next sync', async () => {
   const source = await mkdtemp(join(tmpdir(), 'tube-vault-sync-source-'));
   const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));
@@ -160,7 +210,8 @@ test('recovers an interrupted transaction before starting the next sync', async 
   await mkdir(join(transaction, 'backups', 'extension'), { recursive: true });
   await mkdir(join(transaction, 'files', 'extension'), { recursive: true });
   await writeFile(join(source, relativePath), 'next\n');
-  await writeFile(join(target, relativePath), 'partially installed\n');
+  await writeFile(join(transaction, 'files', relativePath), 'partially installed\n');
+  await link(join(transaction, 'files', relativePath), join(target, relativePath));
   await writeFile(join(transaction, 'backups', relativePath), 'original\n');
   await writeFile(join(transaction, 'journal.json'), JSON.stringify({ entries: [{ relativePath, existed: true }] }));
 

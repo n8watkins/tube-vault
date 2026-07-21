@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
-import { targetArgument, validateTarget } from './sync-windows.mjs';
+import { syncArtifacts, targetArgument, validateTarget } from './sync-windows.mjs';
 
 async function makeTarget({ git = true, validIdentity = true } = {}) {
   const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-test-'));
@@ -33,4 +33,51 @@ test('accepts only an exact TubeVault Git repository root', async () => {
 
   const wrongProject = await makeTarget({ validIdentity: false });
   await assert.rejects(validateTarget(wrongProject), /not a TubeVault repository/);
+});
+
+test('rolls back every artifact when installation fails partway through', async () => {
+  const source = await mkdtemp(join(tmpdir(), 'tube-vault-sync-source-'));
+  const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));
+  const files = ['extension/manifest.json', 'helper/dist/index.js', 'helper/dist/new.js'];
+  for (const relativePath of files) {
+    await mkdir(join(source, relativePath, '..'), { recursive: true });
+    await writeFile(join(source, relativePath), `new ${relativePath}\n`);
+  }
+  for (const relativePath of files.slice(0, 2)) {
+    await mkdir(join(target, relativePath, '..'), { recursive: true });
+    await writeFile(join(target, relativePath), `old ${relativePath}\n`);
+  }
+
+  await assert.rejects(syncArtifacts(source, target, files, {
+    beforeInstall: (_relativePath, index) => {
+      if (index === 2) throw new Error('simulated installation failure');
+    },
+  }), /simulated installation failure/);
+
+  assert.equal(await readFile(join(target, files[0]), 'utf8'), `old ${files[0]}\n`);
+  assert.equal(await readFile(join(target, files[1]), 'utf8'), `old ${files[1]}\n`);
+  await assert.rejects(readFile(join(target, files[2]), 'utf8'), /ENOENT/);
+  assert.deepEqual((await readdir(target)).filter((name) => name.startsWith('.tube-vault-sync-')), []);
+});
+
+test('recovers an interrupted transaction before starting the next sync', async () => {
+  const source = await mkdtemp(join(tmpdir(), 'tube-vault-sync-source-'));
+  const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));
+  const relativePath = 'extension/manifest.json';
+  const transaction = join(target, '.tube-vault-sync-interrupted');
+  await mkdir(join(source, 'extension'), { recursive: true });
+  await mkdir(join(target, 'extension'), { recursive: true });
+  await mkdir(join(transaction, 'backups', 'extension'), { recursive: true });
+  await mkdir(join(transaction, 'files', 'extension'), { recursive: true });
+  await writeFile(join(source, relativePath), 'next\n');
+  await writeFile(join(target, relativePath), 'partially installed\n');
+  await writeFile(join(transaction, 'backups', relativePath), 'original\n');
+  await writeFile(join(transaction, 'journal.json'), JSON.stringify({ entries: [{ relativePath, existed: true }] }));
+
+  await assert.rejects(syncArtifacts(source, target, [relativePath], {
+    beforeInstall: () => { throw new Error('stop after recovery'); },
+  }), /stop after recovery/);
+
+  assert.equal(await readFile(join(target, relativePath), 'utf8'), 'original\n');
+  assert.deepEqual((await readdir(target)).filter((name) => name.startsWith('.tube-vault-sync-')), []);
 });

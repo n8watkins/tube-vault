@@ -54,12 +54,30 @@ function sendNative(payload: Record<string, unknown>): Promise<NativeResponse | 
   }));
 }
 
+function setLocalValues(values: Record<string, unknown>): Promise<void> {
+  return new Promise((resolve, reject) => chrome.storage.local.set(values, () => {
+    const error = chrome.runtime.lastError;
+    if (error) {
+      reject(new Error(error.message || 'Failed to save TubeVault data'));
+      return;
+    }
+    resolve();
+  }));
+}
+
+function coordinatorFailure(error: unknown): { ok: false; error: string } {
+  return {
+    ok: false,
+    error: error instanceof Error ? error.message : 'TubeVault storage failed',
+  };
+}
+
 const coordinator = new JobCoordinator({
   storage: {
     getJobs: () => new Promise((resolve) => chrome.storage.local.get({ [JOBS_KEY]: [] }, (values) => resolve(values[JOBS_KEY] as Job[]))),
-    setJobs: (jobs) => new Promise((resolve) => chrome.storage.local.set({ [JOBS_KEY]: jobs }, resolve)),
+    setJobs: (jobs) => setLocalValues({ [JOBS_KEY]: jobs }),
     getValues: (keys) => new Promise((resolve) => chrome.storage.local.get(keys, resolve)),
-    setValues: (values) => new Promise((resolve) => chrome.storage.local.set(values, resolve)),
+    setValues: setLocalValues,
   },
   sendNative,
   now: () => Date.now(),
@@ -92,19 +110,30 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === 'TUBE_VAULT_CANCEL') {
-    void coordinatorReady.then(() => coordinator.cancelJob(message.jobId)).then(() => sendResponse({ ok: true }));
+    void coordinatorReady.then(() => coordinator.cancelJob(message.jobId)).then(
+      () => sendResponse({ ok: true }),
+      (error) => sendResponse(coordinatorFailure(error)),
+    );
     return true;
   }
   if (message.type === 'TUBE_VAULT_CANCEL_BATCH') {
-    void coordinatorReady.then(() => coordinator.cancelBatch(message.batchId)).then(() => sendResponse({ ok: true }));
+    void coordinatorReady.then(() => coordinator.cancelBatch(message.batchId)).then(
+      () => sendResponse({ ok: true }),
+      (error) => sendResponse(coordinatorFailure(error)),
+    );
     return true;
   }
   if (message.type === 'TUBE_VAULT_CLEAR_HISTORY') {
-    void coordinatorReady.then(() => coordinator.clearHistory()).then(() => sendResponse({ ok: true }));
+    void coordinatorReady.then(() => coordinator.clearHistory()).then(
+      () => sendResponse({ ok: true }),
+      (error) => sendResponse(coordinatorFailure(error)),
+    );
     return true;
   }
   if (message.type === 'TUBE_VAULT_ENQUEUE') {
-    void coordinatorReady.then(() => coordinator.enqueue(message)).then(sendResponse);
+    void coordinatorReady.then(() => coordinator.enqueue(message)).then(sendResponse, (error) => {
+      sendResponse(coordinatorFailure(error));
+    });
     return true;
   }
   if (message.type !== 'TUBE_VAULT_REQUEST') return false;

@@ -63,4 +63,96 @@ describe('service worker startup', () => {
     ]));
     await vi.waitFor(() => expect(jobs).toEqual([]));
   });
+
+  it('reports enqueue storage failures without acknowledging or running the job', async () => {
+    let messageListener: ((message: Record<string, unknown>, sender: unknown, sendResponse: (response: unknown) => void) => boolean) | undefined;
+    const nativeCalls: Record<string, unknown>[] = [];
+    const runtime = {
+      sendNativeMessage: vi.fn((_host: string, payload: Record<string, unknown>, callback: (response: unknown) => void) => {
+        nativeCalls.push(payload);
+        callback({ ok: true });
+      }),
+      onMessage: { addListener: vi.fn((listener) => { messageListener = listener; }) },
+      lastError: undefined as { message?: string } | undefined,
+    };
+    const chromeStub = {
+      storage: {
+        local: {
+          get: vi.fn((defaults: Record<string, unknown> | string[], callback: (values: Record<string, unknown>) => void) => {
+            callback(Array.isArray(defaults) ? {} : { ...defaults, tvJobs: [] });
+          }),
+          set: vi.fn((_values: Record<string, unknown>, callback: () => void) => {
+            runtime.lastError = { message: 'Storage quota exceeded' };
+            callback();
+            runtime.lastError = undefined;
+          }),
+        },
+        onChanged: { addListener: vi.fn() },
+      },
+      runtime,
+      notifications: { create: vi.fn() },
+    };
+    vi.stubGlobal('chrome', chromeStub);
+
+    await import('./service-worker');
+    const response = await new Promise<unknown>((resolve) => {
+      messageListener?.({
+        type: 'TUBE_VAULT_ENQUEUE',
+        items: [{ url: 'https://youtube.test/one', bytes: 1 }],
+      }, {}, resolve);
+    });
+
+    expect(response).toEqual({ ok: false, error: 'Storage quota exceeded' });
+    expect(nativeCalls).toEqual([]);
+  });
+
+  it('does not request a summary when persisting its attempt fails', async () => {
+    const jobs = [{
+      id: 'one',
+      batchId: 'batch',
+      videoUrl: 'https://youtube.test/one',
+      label: 'One',
+      components: {},
+      status: 'done',
+      createdAt: 1,
+      finishedAt: 2,
+    }];
+    const nativeCalls: Record<string, unknown>[] = [];
+    const runtime = {
+      sendNativeMessage: vi.fn((_host: string, payload: Record<string, unknown>, callback: (response: unknown) => void) => {
+        nativeCalls.push(payload);
+        callback({ ok: true });
+      }),
+      onMessage: { addListener: vi.fn() },
+      lastError: undefined as { message?: string } | undefined,
+    };
+    const chromeStub = {
+      storage: {
+        local: {
+          get: vi.fn((defaults: Record<string, unknown> | string[], callback: (values: Record<string, unknown>) => void) => {
+            if (Array.isArray(defaults)) callback({});
+            else if ('collectHistory' in defaults) callback(defaults);
+            else callback({ tvJobs: structuredClone(jobs) });
+          }),
+          set: vi.fn((values: Record<string, unknown>, callback: () => void) => {
+            if ('tvBatchSummaryAttempts' in values) runtime.lastError = { message: 'Storage quota exceeded' };
+            callback();
+            runtime.lastError = undefined;
+          }),
+        },
+        onChanged: { addListener: vi.fn() },
+      },
+      runtime,
+      notifications: { create: vi.fn() },
+    };
+    vi.stubGlobal('chrome', chromeStub);
+
+    await import('./service-worker');
+    await vi.waitFor(() => expect(chromeStub.storage.local.set).toHaveBeenCalledWith(
+      expect.objectContaining({ tvBatchSummaryAttempts: { batch: 1 } }),
+      expect.any(Function),
+    ));
+
+    expect(nativeCalls).toEqual([]);
+  });
 });

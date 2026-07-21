@@ -64,7 +64,7 @@ npm run lint        # Lint source, tests, and build scripts
 npm test            # Run extension and helper unit tests
 npm run test:e2e    # Build and run unpacked-extension Chromium smoke tests
 npm run changelog   # Regenerate CHANGELOG.md from release commits
-npm run check       # Lint, type-check, unit test, and build
+npm run check       # Lint, type-check, unit test, check the changelog, and build
 ```
 
 Install the bundled Playwright browser before the first local E2E run:

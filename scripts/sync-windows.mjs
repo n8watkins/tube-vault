@@ -198,13 +198,13 @@ async function removeDurably(path, options = {}) {
   await mutateDurably([path], () => rm(path, options));
 }
 
-async function writeJournalDurably(transactionRoot, entries) {
+async function writeJournalDurably(transactionRoot, entries, state = 'pending') {
   const journalPath = join(transactionRoot, 'journal.json');
   const temporaryPath = join(transactionRoot, 'journal.json.tmp');
   let handle;
   try {
     handle = await open(temporaryPath, 'wx');
-    await handle.writeFile(`${JSON.stringify({ entries }, null, 2)}\n`);
+    await handle.writeFile(`${JSON.stringify({ state, entries }, null, 2)}\n`);
     await handle.sync();
     await handle.close();
     handle = undefined;
@@ -405,7 +405,11 @@ export async function recoverSyncTransactions(target) {
     if (await pathExists(journalPath)) {
       await requireSafeTransactionPath(transactionRoot, 'journal.json');
       const journal = JSON.parse(await readFile(journalPath, 'utf8'));
-      await restoreTransaction(target, transactionRoot, validateEntries(journal.entries, journalPath));
+      if (!journal || typeof journal !== 'object' || !['pending', 'committed'].includes(journal.state ?? 'pending')) {
+        throw new Error(`Invalid sync transaction journal: ${journalPath}`);
+      }
+      const entries = validateEntries(journal.entries, journalPath);
+      if (journal.state !== 'committed') await restoreTransaction(target, transactionRoot, entries);
     }
     await removeDurably(transactionRoot, { recursive: true, force: true });
   }
@@ -436,35 +440,38 @@ export async function syncArtifacts(sourceRoot, target, files = SYNC_FILES, hook
       }
       await writeJournalDurably(transactionRoot, entries);
 
-      for (const [index, entry] of entries.entries()) {
-        await hooks.beforeInstall?.(entry.relativePath, index);
-        await requireSafeTargetPath(target, entry.relativePath);
-        const destination = join(target, entry.relativePath);
-        const staged = join(transactionRoot, 'files', entry.relativePath);
-        await requireSafeTransactionPath(transactionRoot, `files/${entry.relativePath}`);
-        if (entry.existed) {
-          const backup = join(transactionRoot, 'backups', entry.relativePath);
-          await mkdirDurably(resolve(backup, '..'));
-          await requireSafeTargetPath(target, entry.relativePath);
-          await requireSafeTransactionPath(transactionRoot, `backups/${entry.relativePath}`);
-          await syncFile(destination);
-          await mutateDurably([destination, backup], () => rename(destination, backup));
-        } else {
-          await mkdirDurably(resolve(destination, '..'));
-        }
-        await requireSafeTargetPath(target, entry.relativePath);
-        await requireSafeTransactionPath(transactionRoot, `files/${entry.relativePath}`);
-        await mutateDurably([staged, destination], () => rename(staged, destination));
-      }
-      removeTransaction = true;
-    } catch (error) {
       try {
-        await restoreTransaction(target, transactionRoot, entries);
-        removeTransaction = true;
-      } catch (rollbackError) {
-        throw new AggregateError([error, rollbackError], 'Artifact sync and rollback both failed', { cause: error });
+        for (const [index, entry] of entries.entries()) {
+          await hooks.beforeInstall?.(entry.relativePath, index);
+          await requireSafeTargetPath(target, entry.relativePath);
+          const destination = join(target, entry.relativePath);
+          const staged = join(transactionRoot, 'files', entry.relativePath);
+          await requireSafeTransactionPath(transactionRoot, `files/${entry.relativePath}`);
+          if (entry.existed) {
+            const backup = join(transactionRoot, 'backups', entry.relativePath);
+            await mkdirDurably(resolve(backup, '..'));
+            await requireSafeTargetPath(target, entry.relativePath);
+            await requireSafeTransactionPath(transactionRoot, `backups/${entry.relativePath}`);
+            await syncFile(destination);
+            await mutateDurably([destination, backup], () => rename(destination, backup));
+          } else {
+            await mkdirDurably(resolve(destination, '..'));
+          }
+          await requireSafeTargetPath(target, entry.relativePath);
+          await requireSafeTransactionPath(transactionRoot, `files/${entry.relativePath}`);
+          await mutateDurably([staged, destination], () => rename(staged, destination));
+        }
+      } catch (error) {
+        try {
+          await restoreTransaction(target, transactionRoot, entries);
+          removeTransaction = true;
+        } catch (rollbackError) {
+          throw new AggregateError([error, rollbackError], 'Artifact sync and rollback both failed', { cause: error });
+        }
+        throw error;
       }
-      throw error;
+      await writeJournalDurably(transactionRoot, entries, 'committed');
+      removeTransaction = true;
     } finally {
       if (removeTransaction) await removeDurably(transactionRoot, { recursive: true, force: true });
     }

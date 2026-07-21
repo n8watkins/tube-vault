@@ -1,11 +1,16 @@
-import { cp, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat } from 'node:fs/promises';
+import { cp, link, lstat, mkdir, mkdtemp, open, readFile, readdir, rename, rm, stat, unlink } from 'node:fs/promises';
+import { hostname } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
+import { isAbsolute as isWindowsAbsolute } from 'node:path/win32';
+import { isAbsolute as isPosixAbsolute, normalize as normalizePosix } from 'node:path/posix';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const TRANSACTION_PREFIX = '.tube-vault-sync-';
+const LOCK_NAME = '.tube-vault-sync.lock';
 const DIRECTORY_SYNC_UNAVAILABLE_CODES = new Set(['EACCES', 'EPERM', 'EINVAL', 'EBADF', 'EISDIR', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
 
 export const SYNC_FILES = [
@@ -93,6 +98,111 @@ async function writeJournalDurably(transactionRoot, entries) {
   }
 }
 
+function validateRelativePath(relativePath) {
+  if (
+    typeof relativePath !== 'string'
+    || relativePath.length === 0
+    || relativePath.includes('\\')
+    || isPosixAbsolute(relativePath)
+    || isWindowsAbsolute(relativePath)
+    || normalizePosix(relativePath) !== relativePath
+    || relativePath === '..'
+    || relativePath.startsWith('../')
+  ) {
+    throw new Error(`Invalid sync artifact path: ${String(relativePath)}`);
+  }
+  return relativePath;
+}
+
+function validateEntries(entries, description) {
+  if (!Array.isArray(entries)) throw new Error(`Invalid sync transaction journal: ${description}`);
+  const allowedPaths = new Set(SYNC_FILES.map(validateRelativePath));
+  const seenPaths = new Set();
+  return entries.map((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`Invalid sync transaction journal entry: ${description}`);
+    }
+    const relativePath = validateRelativePath(entry.relativePath);
+    if (!allowedPaths.has(relativePath) || seenPaths.has(relativePath) || typeof entry.existed !== 'boolean') {
+      throw new Error(`Invalid sync transaction journal entry: ${description}`);
+    }
+    seenPaths.add(relativePath);
+    return { relativePath, existed: entry.existed };
+  });
+}
+
+function processIsAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    if (error?.code === 'EPERM') return true;
+    if (error?.code === 'ESRCH') return false;
+    throw error;
+  }
+}
+
+async function readLockOwner(lockPath) {
+  let owner;
+  try {
+    owner = JSON.parse(await readFile(lockPath, 'utf8'));
+  } catch {
+    throw new Error(`Sync lock is invalid: ${lockPath}`);
+  }
+  if (
+    !owner
+    || typeof owner !== 'object'
+    || !Number.isSafeInteger(owner.pid)
+    || owner.pid <= 0
+    || typeof owner.hostname !== 'string'
+    || typeof owner.token !== 'string'
+  ) {
+    throw new Error(`Sync lock is invalid: ${lockPath}`);
+  }
+  return owner;
+}
+
+async function acquireSyncLock(target) {
+  const lockPath = join(target, LOCK_NAME);
+  const token = randomUUID();
+  const owner = { pid: process.pid, hostname: hostname(), token };
+  const ownerPath = join(target, `${LOCK_NAME}.${token}`);
+  let ownerHandle;
+  try {
+    ownerHandle = await open(ownerPath, 'wx');
+    await ownerHandle.writeFile(`${JSON.stringify(owner)}\n`);
+    await ownerHandle.sync();
+    await ownerHandle.close();
+    ownerHandle = undefined;
+
+    while (true) {
+      try {
+        await link(ownerPath, lockPath);
+        await unlink(ownerPath);
+        await syncDirectory(target);
+        return async () => {
+          const currentOwner = await readLockOwner(lockPath).catch(() => null);
+          if (currentOwner?.token === token) {
+            await unlink(lockPath);
+            await syncDirectory(target);
+          }
+        };
+      } catch (error) {
+        if (error?.code !== 'EEXIST') throw error;
+        const existingOwner = await readLockOwner(lockPath);
+        if (existingOwner.hostname !== owner.hostname || processIsAlive(existingOwner.pid)) {
+          throw new Error(`Another sync is already running for target: ${target}`);
+        }
+        const confirmedOwner = await readLockOwner(lockPath);
+        if (confirmedOwner.token === existingOwner.token) await unlink(lockPath);
+      }
+    }
+  } finally {
+    if (ownerHandle) await ownerHandle.close();
+    await rm(ownerPath, { force: true });
+  }
+}
+
 async function restoreTransaction(target, transactionRoot, entries) {
   for (const entry of [...entries].reverse()) {
     const destination = join(target, entry.relativePath);
@@ -118,44 +228,59 @@ export async function recoverSyncTransactions(target) {
     const journalPath = join(transactionRoot, 'journal.json');
     if (await pathExists(journalPath)) {
       const journal = JSON.parse(await readFile(journalPath, 'utf8'));
-      if (!Array.isArray(journal.entries)) throw new Error(`Invalid sync transaction journal: ${journalPath}`);
-      await restoreTransaction(target, transactionRoot, journal.entries);
+      await restoreTransaction(target, transactionRoot, validateEntries(journal.entries, journalPath));
     }
     await rm(transactionRoot, { recursive: true, force: true });
   }
 }
 
 export async function syncArtifacts(sourceRoot, target, files = SYNC_FILES, hooks = {}) {
-  await recoverSyncTransactions(target);
-  const transactionRoot = await mkdtemp(join(target, TRANSACTION_PREFIX));
-  const entries = [];
+  const requestedEntries = validateEntries(
+    files.map((relativePath) => ({ relativePath, existed: false })),
+    'requested artifact list',
+  );
+  const releaseLock = await acquireSyncLock(target);
   try {
-    for (const relativePath of files) {
-      const staged = join(transactionRoot, 'files', relativePath);
-      await mkdir(resolve(staged, '..'), { recursive: true });
-      await cp(join(sourceRoot, relativePath), staged);
-      entries.push({ relativePath, existed: await pathExists(join(target, relativePath)) });
-    }
-    await writeJournalDurably(transactionRoot, entries);
-
-    for (const [index, entry] of entries.entries()) {
-      await hooks.beforeInstall?.(entry.relativePath, index);
-      const destination = join(target, entry.relativePath);
-      const staged = join(transactionRoot, 'files', entry.relativePath);
-      if (entry.existed) {
-        const backup = join(transactionRoot, 'backups', entry.relativePath);
-        await mkdir(resolve(backup, '..'), { recursive: true });
-        await rename(destination, backup);
-      } else {
-        await mkdir(resolve(destination, '..'), { recursive: true });
+    await recoverSyncTransactions(target);
+    const transactionRoot = await mkdtemp(join(target, TRANSACTION_PREFIX));
+    const entries = [];
+    let removeTransaction = false;
+    try {
+      for (const { relativePath } of requestedEntries) {
+        const staged = join(transactionRoot, 'files', relativePath);
+        await mkdir(resolve(staged, '..'), { recursive: true });
+        await cp(join(sourceRoot, relativePath), staged);
+        entries.push({ relativePath, existed: await pathExists(join(target, relativePath)) });
       }
-      await rename(staged, destination);
+      await writeJournalDurably(transactionRoot, entries);
+
+      for (const [index, entry] of entries.entries()) {
+        await hooks.beforeInstall?.(entry.relativePath, index);
+        const destination = join(target, entry.relativePath);
+        const staged = join(transactionRoot, 'files', entry.relativePath);
+        if (entry.existed) {
+          const backup = join(transactionRoot, 'backups', entry.relativePath);
+          await mkdir(resolve(backup, '..'), { recursive: true });
+          await rename(destination, backup);
+        } else {
+          await mkdir(resolve(destination, '..'), { recursive: true });
+        }
+        await rename(staged, destination);
+      }
+      removeTransaction = true;
+    } catch (error) {
+      try {
+        await restoreTransaction(target, transactionRoot, entries);
+        removeTransaction = true;
+      } catch (rollbackError) {
+        throw new AggregateError([error, rollbackError], 'Artifact sync and rollback both failed', { cause: error });
+      }
+      throw error;
+    } finally {
+      if (removeTransaction) await rm(transactionRoot, { recursive: true, force: true });
     }
-  } catch (error) {
-    await restoreTransaction(target, transactionRoot, entries);
-    throw error;
   } finally {
-    await rm(transactionRoot, { recursive: true, force: true });
+    await releaseLock();
   }
 }
 

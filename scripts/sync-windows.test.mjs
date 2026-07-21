@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
@@ -38,7 +38,7 @@ test('accepts only an exact TubeVault Git repository root', async () => {
 test('rolls back every artifact when installation fails partway through', async () => {
   const source = await mkdtemp(join(tmpdir(), 'tube-vault-sync-source-'));
   const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));
-  const files = ['extension/manifest.json', 'helper/dist/index.js', 'helper/dist/new.js'];
+  const files = ['extension/manifest.json', 'helper/dist/index.js', 'helper/dist/protocol.js'];
   for (const relativePath of files) {
     await mkdir(join(source, relativePath, '..'), { recursive: true });
     await writeFile(join(source, relativePath), `new ${relativePath}\n`);
@@ -89,4 +89,81 @@ test('recovers an interrupted transaction before starting the next sync', async 
 
   assert.equal(await readFile(join(target, relativePath), 'utf8'), 'original\n');
   assert.deepEqual((await readdir(target)).filter((name) => name.startsWith('.tube-vault-sync-')), []);
+});
+
+test('rejects transaction journal paths outside the artifact allowlist', async () => {
+  const testRoot = await mkdtemp(join(tmpdir(), 'tube-vault-sync-test-'));
+  const target = join(testRoot, 'target');
+  const transaction = join(target, '.tube-vault-sync-crafted');
+  const outside = join(testRoot, 'outside.txt');
+  await mkdir(transaction, { recursive: true });
+  await writeFile(outside, 'preserved\n');
+  await writeFile(join(transaction, 'journal.json'), JSON.stringify({ entries: [{ relativePath: '../outside.txt', existed: false }] }));
+
+  await assert.rejects(syncArtifacts(target, target, []), /Invalid sync artifact path/);
+  assert.equal(await readFile(outside, 'utf8'), 'preserved\n');
+  assert.equal((await readdir(target)).includes('.tube-vault-sync-crafted'), true);
+  await rm(outside);
+});
+
+test('preserves transaction backups when rollback fails', async () => {
+  const source = await mkdtemp(join(tmpdir(), 'tube-vault-sync-source-'));
+  const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));
+  const files = ['extension/manifest.json', 'helper/dist/index.js'];
+  for (const relativePath of files) {
+    await mkdir(join(source, relativePath, '..'), { recursive: true });
+    await mkdir(join(target, relativePath, '..'), { recursive: true });
+    await writeFile(join(source, relativePath), 'new\n');
+    await writeFile(join(target, relativePath), 'old\n');
+  }
+
+  await assert.rejects(syncArtifacts(source, target, files, {
+    beforeInstall: async (_relativePath, index) => {
+      if (index !== 1) return;
+      await rm(join(target, files[0]));
+      await mkdir(join(target, files[0], 'child'), { recursive: true });
+      throw new Error('simulated installation failure');
+    },
+  }), /Artifact sync and rollback both failed/);
+
+  const transactions = (await readdir(target)).filter((name) => name.startsWith('.tube-vault-sync-'));
+  assert.equal(transactions.length, 1);
+  assert.equal(await readFile(join(target, transactions[0], 'backups', files[0]), 'utf8'), 'old\n');
+});
+
+test('prevents concurrent sync and recovers a dead owner lock', async () => {
+  const source = await mkdtemp(join(tmpdir(), 'tube-vault-sync-source-'));
+  const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));
+  const relativePath = 'extension/manifest.json';
+  await mkdir(join(source, 'extension'), { recursive: true });
+  await mkdir(join(target, 'extension'), { recursive: true });
+  await writeFile(join(source, relativePath), 'new\n');
+  await writeFile(join(target, relativePath), 'old\n');
+
+  let continueFirstSync;
+  const firstSyncPaused = new Promise((resolvePaused) => {
+    continueFirstSync = resolvePaused;
+  });
+  let markFirstSyncStarted;
+  const firstSyncStarted = new Promise((resolveStarted) => {
+    markFirstSyncStarted = resolveStarted;
+  });
+  const firstSync = syncArtifacts(source, target, [relativePath], {
+    beforeInstall: async () => {
+      markFirstSyncStarted();
+      await firstSyncPaused;
+    },
+  });
+  await firstSyncStarted;
+  await assert.rejects(syncArtifacts(source, target, [relativePath]), /Another sync is already running/);
+  continueFirstSync();
+  await firstSync;
+
+  await writeFile(join(target, '.tube-vault-sync.lock'), JSON.stringify({
+    pid: 2_147_483_647,
+    hostname: hostname(),
+    token: 'dead-owner',
+  }));
+  await syncArtifacts(source, target, [relativePath]);
+  assert.equal((await readdir(target)).includes('.tube-vault-sync.lock'), false);
 });

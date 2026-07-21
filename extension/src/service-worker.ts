@@ -3,6 +3,7 @@ import { NamingOptions, defaultNaming, NAMING_KEYS } from './types';
 
 const NATIVE_HOST = 'com.tube_vault.helper';
 const JOBS_KEY = 'tvJobs';
+const QUEUE_WAKE_ALARM = 'tube-vault-queue-wake';
 const namingKeyList = Object.keys(NAMING_KEYS) as (keyof NamingOptions)[];
 const namingStorageDefaults = Object.fromEntries(namingKeyList.map((key) => [NAMING_KEYS[key], defaultNaming[key]]));
 const settings = {
@@ -100,7 +101,14 @@ const coordinator = new JobCoordinator({
   }),
   openFolder: async (folder) => { await sendNative({ action: 'open_folder', windowsPath: folder }); },
   delay: (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  scheduleQueueWake: (milliseconds) => {
+    chrome.alarms.create(QUEUE_WAKE_ALARM, { when: Date.now() + milliseconds });
+  },
   getSettings: () => settings,
+});
+
+chrome.alarms?.onAlarm.addListener((alarm) => {
+  if (alarm.name === QUEUE_WAKE_ALARM) coordinator.wakeQueue();
 });
 
 let coordinatorReady: Promise<void> | null = null;

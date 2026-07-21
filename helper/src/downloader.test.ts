@@ -606,6 +606,83 @@ test('createBatchSummary reuses an existing opaque summary during receipt recove
   }
 });
 
+test('createBatchSummary rejects a corrupt opaque legacy summary', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-corrupt-legacy-'));
+  const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-corrupt-receipts-'));
+  try {
+    const batchId = 'corrupt-legacy-batch';
+    const first = createBatchSummary(dir, batchId, 'Readable label', undefined, [], undefined, receipts);
+    assert.equal(first.ok, true);
+    const digest = createHash('sha256').update(batchId).digest('hex');
+    const opaqueFile = path.join(dir, 'TubeVault Summaries', `TubeVault batch - ${digest}.txt`);
+    fs.renameSync(first.summaryPath as string, opaqueFile);
+    fs.writeFileSync(opaqueFile, 'truncated');
+
+    const recovered = createBatchSummary(dir, batchId, 'Readable label', undefined, [], undefined, receipts);
+
+    assert.equal(recovered.ok, true);
+    assert.notEqual(recovered.summaryPath, opaqueFile);
+    assert.match(fs.readFileSync(recovered.summaryPath as string, 'utf8'), /\nIntegrity: SHA-256 [a-f0-9]{64}\n$/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(receipts, { recursive: true, force: true });
+  }
+});
+
+test('createBatchSummary reserves receipts when hard links are unavailable', (context) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-portable-receipt-'));
+  const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-portable-receipts-'));
+  try {
+    context.mock.method(fs, 'linkSync', () => {
+      const error = new Error('Hard links unavailable') as NodeJS.ErrnoException;
+      error.code = 'EXDEV';
+      throw error;
+    });
+
+    const first = createBatchSummary(dir, 'portable-receipt', 'Portable receipt', undefined, [], undefined, receipts);
+    const replay = createBatchSummary('/different-root', 'portable-receipt', 'Changed', undefined, [], undefined, receipts);
+
+    assert.equal(first.ok, true);
+    assert.equal(replay.summaryPath, first.summaryPath);
+    assert.equal(fs.readdirSync(receipts).filter((entry) => entry.endsWith('.json')).length, 1);
+    assert.equal(fs.readdirSync(receipts).some((entry) => entry.includes('.lock')), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(receipts, { recursive: true, force: true });
+  }
+});
+
+test('createBatchSummary recovers a partial portable receipt from a dead owner', (context) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-partial-receipt-'));
+  const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-partial-receipts-'));
+  try {
+    const batchId = 'partial-portable-receipt';
+    const digest = createHash('sha256').update(batchId).digest('hex');
+    const receiptFile = path.join(receipts, `${digest}.json`);
+    const lockPath = path.join(receipts, `.${digest}.lock`);
+    fs.writeFileSync(receiptFile, '{"root":');
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({
+      token: 'dead-receipt-owner',
+      pid: 2_147_483_647,
+    }));
+    context.mock.method(fs, 'linkSync', () => {
+      const error = new Error('Hard links unavailable') as NodeJS.ErrnoException;
+      error.code = 'ENOTSUP';
+      throw error;
+    });
+
+    const recovered = createBatchSummary(dir, batchId, 'Recovered receipt', undefined, [], undefined, receipts);
+
+    assert.equal(recovered.ok, true);
+    assert.equal(JSON.parse(fs.readFileSync(receiptFile, 'utf8')).root, dir);
+    assert.equal(fs.existsSync(lockPath), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(receipts, { recursive: true, force: true });
+  }
+});
+
 test('createBatchSummary reuses the reserved root when a blank-root fallback changes', () => {
   const firstRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-first-root-'));
   const secondRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-second-root-'));

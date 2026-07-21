@@ -41,6 +41,7 @@ function harness(options: {
   beforeSetJobs?: (jobs: Job[]) => Promise<void>;
   beforeGetJobs?: (readCount: number) => Promise<void>;
   afterGetJobs?: (jobs: Job[], readCount: number) => Promise<void>;
+  scheduleQueueWake?: (milliseconds: number) => void;
 } = {}) {
   let jobs = structuredClone(options.jobs ?? []);
   const values = { ...(options.values ?? {}) };
@@ -85,6 +86,7 @@ function harness(options: {
     notify: (label, folder) => notifications.push([label, folder]),
     openFolder: async (folder) => { opened.push(folder); },
     delay: async (milliseconds) => { delays.push(milliseconds); },
+    scheduleQueueWake: options.scheduleQueueWake ?? (() => undefined),
     getSettings: () => settings,
   };
   const coordinator = new JobCoordinator(effects);
@@ -296,6 +298,32 @@ describe('JobCoordinator', () => {
       expect.objectContaining({ videoUrl: 'late', status: 'done' }),
     ]));
     expect(test.delays).toEqual([100, 200, 300]);
+  });
+
+  it('schedules a durable capped wake after prolonged storage failure', async () => {
+    let storageAvailable = false;
+    const wakes: number[] = [];
+    const test = harness({
+      jobs: [job('queued', 'queued', { estBytes: 1 })],
+      beforeGetJobs: async () => {
+        if (!storageAvailable) throw new Error('Persistent storage failure');
+      },
+      scheduleQueueWake: (milliseconds) => { wakes.push(milliseconds); },
+    });
+
+    test.coordinator.wakeQueue();
+    await test.coordinator.whenIdle();
+    expect(wakes).toEqual([1_000]);
+
+    test.coordinator.wakeQueue();
+    await test.coordinator.whenIdle();
+    expect(wakes).toEqual([1_000, 2_000]);
+
+    storageAvailable = true;
+    test.coordinator.wakeQueue();
+    await test.coordinator.whenIdle();
+    expect(test.jobs[0].status).toBe('done');
+    expect(test.calls.filter((call) => call.action === 'custom')).toHaveLength(1);
   });
 
   it('probes and downloads strictly serially while applying probe metadata', async () => {

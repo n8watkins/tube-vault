@@ -59,6 +59,7 @@ export interface CoordinatorEffects {
   notify(label: string, folder: string): void;
   openFolder(folder: string): Promise<void>;
   delay(milliseconds: number): Promise<void>;
+  scheduleQueueWake(milliseconds: number): void;
   getSettings(): CoordinatorSettings;
 }
 
@@ -75,6 +76,8 @@ const MAX_SUMMARY_ATTEMPTS = 3;
 const MAX_QUEUE_PUMP_RETRIES = 3;
 const QUEUE_WRITE_RETRY_DELAY_MS = 100;
 const MAX_QUEUE_WRITE_RETRY_DELAY_MS = 1_000;
+const INITIAL_QUEUE_WAKE_DELAY_MS = 1_000;
+const MAX_QUEUE_WAKE_DELAY_MS = 60_000;
 const MAX_SUMMARY_BACKGROUND_RETRIES = 3;
 const isActive = (job: Job) => job.status === 'queued' || job.status === 'probing' || job.status === 'running';
 
@@ -89,6 +92,7 @@ export class JobCoordinator {
   private pumpPromise: Promise<void> | null = null;
   private pumpRequested = false;
   private pumpWakeVersion = 0;
+  private queueWakeDelayMs = INITIAL_QUEUE_WAKE_DELAY_MS;
   private readonly summaryPromises = new Map<string, Promise<void>>();
   private readonly summaryRetryCounts = new Map<string, number>();
   private jobsTail = Promise.resolve();
@@ -217,6 +221,10 @@ export class JobCoordinator {
     await this.pumpPromise;
   }
 
+  wakeQueue(): void {
+    void this.pumpQueue();
+  }
+
   private pumpQueue(): Promise<void> {
     const wakeVersion = ++this.pumpWakeVersion;
     this.pumpRequested = true;
@@ -235,10 +243,15 @@ export class JobCoordinator {
         const attemptWakeVersion = this.pumpWakeVersion;
         try {
           await this.drainQueue();
+          this.queueWakeDelayMs = INITIAL_QUEUE_WAKE_DELAY_MS;
           handledWakeVersion = attemptWakeVersion;
         } catch {
           if (retries >= MAX_QUEUE_PUMP_RETRIES) {
             restartRequested = this.pumpWakeVersion > handledWakeVersion;
+            if (!restartRequested) {
+              this.effects.scheduleQueueWake(this.queueWakeDelayMs);
+              this.queueWakeDelayMs = Math.min(this.queueWakeDelayMs * 2, MAX_QUEUE_WAKE_DELAY_MS);
+            }
             return;
           }
           retries += 1;

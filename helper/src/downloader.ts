@@ -911,27 +911,31 @@ function refreshPublicationLease(lockPath: string, token: string): void {
   if (!lockHasToken(lockPath, token)) throw new Error('Batch summary publication ownership changed concurrently');
 }
 
-function removePublicationLock(lockPath: string, token: string): boolean {
+function removeClaimedPublicationLock(lockPath: string, token: string): boolean {
   if (!lockHasToken(lockPath, token)) return false;
+  const claimedPath = `${lockPath}.${createHash('sha256').update(token).digest('hex')}.${randomUUID()}.cleanup`;
   try {
-    if (!fs.statSync(lockPath).isDirectory()) {
-      fs.unlinkSync(lockPath);
-      return true;
+    fs.renameSync(lockPath, claimedPath);
+    if (!lockHasToken(claimedPath, token)) {
+      if (!fs.existsSync(lockPath)) fs.renameSync(claimedPath, lockPath);
+      return false;
     }
-    for (const entry of fs.readdirSync(lockPath)) {
-      const heartbeat = /^\.heartbeat-[a-f0-9]{64}$/i.test(entry);
-      if ((!/^\.owner-[a-f0-9-]+\.tmp$/i.test(entry) && !heartbeat) || !lockHasToken(lockPath, token)) continue;
-      try { fs.unlinkSync(path.join(lockPath, entry)); } catch (error) {
-        if (errorCode(error) !== 'ENOENT') throw error;
-      }
-    }
-    if (!lockHasToken(lockPath, token)) return false;
-    fs.unlinkSync(path.join(lockPath, 'owner.json'));
-    fs.rmdirSync(lockPath);
+    fs.rmSync(claimedPath, { recursive: true });
     return true;
   } catch (error) {
     if (errorCode(error) === 'ENOENT') return false;
     throw error;
+  }
+}
+
+function removePublicationLock(lockPath: string, token: string): boolean {
+  const coordinationPath = `${lockPath}.recovery`;
+  const coordinationToken = acquireRecoveryLock(coordinationPath);
+  if (!coordinationToken) return false;
+  try {
+    return removeClaimedPublicationLock(lockPath, token);
+  } finally {
+    removeClaimedPublicationLock(coordinationPath, coordinationToken);
   }
 }
 
@@ -976,6 +980,7 @@ function publicationOwnerState(snapshot: PublicationOwnerSnapshot): 'alive' | 'l
     } catch (error) {
       if (errorCode(error) !== 'EPERM') return 'dead';
     }
+    if (currentIdentity === undefined) return 'alive';
     const leaseExpiresAt = publicationLeaseDeadline(snapshot);
     return Date.now() < leaseExpiresAt ? 'leased' : 'dead';
   } catch {
@@ -1171,6 +1176,76 @@ function publishWithoutHardLinks(temporaryFile: string, file: string, lockPath: 
   throw new Error('Could not recover batch summary publication');
 }
 
+function publishReceiptWithoutHardLinks(
+  temporaryFile: string,
+  receiptFile: string,
+  lockPath: string,
+  readReceipt: () => BatchSummaryReceipt,
+): BatchSummaryReceipt {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const publicationToken = acquirePublicationLock(lockPath);
+    if (!publicationToken) {
+      try {
+        return readReceipt();
+      } catch {}
+      let observed = readPublicationOwner(lockPath);
+      if (!observed) continue;
+      const state = publicationOwnerState(observed);
+      if (state === 'alive') throw new Error('Batch summary receipt reservation is already in progress');
+      if (state === 'leased') {
+        waitForCoordinationLease(lockPath, observed);
+        observed = readPublicationOwner(lockPath);
+        if (!observed) continue;
+        if (publicationOwnerState(observed) !== 'dead') {
+          throw new Error('Batch summary receipt reservation is already in progress');
+        }
+      }
+      const recoveryToken = takeOverPublicationLock(lockPath, observed);
+      if (!recoveryToken) throw new Error('Batch summary receipt ownership changed concurrently');
+      try {
+        try {
+          return readReceipt();
+        } catch {
+          try { fs.unlinkSync(receiptFile); } catch (error) {
+            if (errorCode(error) !== 'ENOENT') throw error;
+          }
+        }
+      } finally {
+        removePublicationLock(lockPath, recoveryToken);
+      }
+      continue;
+    }
+    try {
+      try {
+        return readReceipt();
+      } catch {
+        try { fs.unlinkSync(receiptFile); } catch (error) {
+          if (errorCode(error) !== 'ENOENT') throw error;
+        }
+      }
+      try {
+        fs.copyFileSync(temporaryFile, receiptFile, fs.constants.COPYFILE_EXCL);
+        const descriptor = fs.openSync(receiptFile, 'r');
+        try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+        return readReceipt();
+      } catch (error) {
+        if (errorCode(error) === 'EEXIST') {
+          try { return readReceipt(); } catch {}
+        }
+        if (lockHasToken(lockPath, publicationToken)) {
+          try { readReceipt(); } catch {
+            try { fs.unlinkSync(receiptFile); } catch {}
+          }
+        }
+        throw error;
+      }
+    } finally {
+      removePublicationLock(lockPath, publicationToken);
+    }
+  }
+  throw new Error('Could not recover batch summary receipt reservation');
+}
+
 function reserveBatchSummaryReceipt(batchId: string, root: string, batchLabel: string, receiptDir: string): BatchSummaryReceipt {
   ensureDir(receiptDir);
   const receiptFile = batchSummaryReceiptFile(batchId, receiptDir);
@@ -1185,17 +1260,22 @@ function reserveBatchSummaryReceipt(batchId: string, root: string, batchLabel: s
   };
   try {
     return readReceipt();
-  } catch (error) {
-    if (!(error instanceof Error && 'code' in error && error.code === 'ENOENT')) throw error;
-  }
+  } catch {}
 
   const temporaryFile = path.join(receiptDir, `.${batchSlug}.${process.pid}.${randomUUID()}.tmp`);
+  const lockPath = path.join(receiptDir, `.${batchSlug}.lock`);
   try {
     fs.writeFileSync(temporaryFile, JSON.stringify({ root, summaryName: batchSummaryName(batchId, batchLabel) }), { encoding: 'utf8', flag: 'wx' });
     try {
       fs.linkSync(temporaryFile, receiptFile);
     } catch (error) {
-      if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
+      const code = errorCode(error);
+      if (code === 'EEXIST') {
+        try { return readReceipt(); } catch {}
+      } else if (!code || !HARD_LINK_UNAVAILABLE_CODES.has(code)) {
+        throw error;
+      }
+      return publishReceiptWithoutHardLinks(temporaryFile, receiptFile, lockPath, readReceipt);
     }
   } finally {
     try { fs.unlinkSync(temporaryFile); } catch { /* ignore */ }
@@ -1255,7 +1335,7 @@ export function writeBatchSummary(
   ensureDir(dir);
   const batchSlug = batchSummaryId(batchId);
   const legacyFile = path.join(dir, `TubeVault batch - ${batchSlug}.txt`);
-  if (fs.existsSync(legacyFile)) return wslToWindowsPath(legacyFile);
+  if (hasValidSummaryIntegrity(legacyFile)) return wslToWindowsPath(legacyFile);
 
   const existingName = fs.readdirSync(dir).sort().find((name) => isBatchSummaryName(batchId, name));
   const summaryName = existingName || reservedName || batchSummaryName(batchId, batchLabel);

@@ -4,6 +4,7 @@ Status: **shipped**.
 
 This file summarizes the UX overhaul completed during the June 2026 review cycle.
 It is retained as historical product context rather than a list of current tasks.
+See [README.md](README.md) for current features, product behavior, and backlog.
 
 ## Shipped Work
 
@@ -24,22 +25,3 @@ It is retained as historical product context rather than a list of current tasks
 - Added SponsorBlock modes for chapter marking and explicit segment removal.
 - Added optional concurrent fragments for faster individual media downloads.
 - Added local history retention, batch summaries, and strictly serial queue recovery.
-
-## Product Decisions That Remain Current
-
-- The Support tab stays removed.
-- Duration and views remain the default supplemental metadata in batch selection.
-- Batch rows remain virtualized so large playlists do not create an unbounded DOM or image load.
-- Completion folder auto-opening remains limited to single videos.
-- SponsorBlock defaults to off.
-- SponsorBlock chapter marking is the safer non-destructive mode.
-- SponsorBlock segment removal remains an explicit opt-in because it cuts media.
-- Multi-video work stays serial to reduce rate limiting.
-- Concurrent fragments accelerate a single media download without introducing multi-video parallelism.
-
-## Backlog
-
-- Browser-cookie support through `--cookies-from-browser` remains backlog.
-It can unlock age-restricted, members-only, or private content, but it needs clear consent and robust cookie-lock handling.
-- Multi-video parallelism remains backlog.
-Any future implementation must preserve cancellation correctness, deterministic queue state, and conservative rate-limit behavior.

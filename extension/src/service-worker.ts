@@ -16,7 +16,7 @@ const settings = {
   historyRetentionDays: 0,
 };
 
-const settingsReady = new Promise<void>((resolve) => chrome.storage.local.get({
+const settingsReady = getLocalValues({
   outputRoot: '',
   autoOpenFolder: false,
   notifyOnDone: true,
@@ -25,10 +25,9 @@ const settingsReady = new Promise<void>((resolve) => chrome.storage.local.get({
   collectHistory: true,
   historyRetentionDays: 0,
   ...namingStorageDefaults,
-}, (values) => {
+}).then((values) => {
   applySettings(values);
-  resolve();
-}));
+});
 
 function applySettings(values: Record<string, unknown>): void {
   if ('outputRoot' in values) settings.outputRoot = typeof values.outputRoot === 'string' ? values.outputRoot : '';
@@ -54,6 +53,17 @@ function sendNative(payload: Record<string, unknown>): Promise<NativeResponse | 
   }));
 }
 
+function getLocalValues(keys: Record<string, unknown> | string[]): Promise<Record<string, unknown>> {
+  return new Promise((resolve, reject) => chrome.storage.local.get(keys, (values) => {
+    const error = chrome.runtime.lastError;
+    if (error) {
+      reject(new Error(error.message || 'Failed to read TubeVault data'));
+      return;
+    }
+    resolve(values);
+  }));
+}
+
 function setLocalValues(values: Record<string, unknown>): Promise<void> {
   return new Promise((resolve, reject) => chrome.storage.local.set(values, () => {
     const error = chrome.runtime.lastError;
@@ -74,9 +84,9 @@ function coordinatorFailure(error: unknown): { ok: false; error: string } {
 
 const coordinator = new JobCoordinator({
   storage: {
-    getJobs: () => new Promise((resolve) => chrome.storage.local.get({ [JOBS_KEY]: [] }, (values) => resolve(values[JOBS_KEY] as Job[]))),
+    getJobs: () => getLocalValues({ [JOBS_KEY]: [] }).then((values) => values[JOBS_KEY] as Job[]),
     setJobs: (jobs) => setLocalValues({ [JOBS_KEY]: jobs }),
-    getValues: (keys) => new Promise((resolve) => chrome.storage.local.get(keys, resolve)),
+    getValues: (keys) => getLocalValues(keys),
     setValues: setLocalValues,
   },
   sendNative,
@@ -105,7 +115,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       const defaultRoot = typeof response.defaultRoot === 'string' ? response.defaultRoot : '';
       await coordinator.seedOutputRoot(defaultRoot);
       sendResponse({ ok: true, version: response.version, platform: response.platform, defaultRoot });
-    });
+    }).catch((error) => sendResponse(coordinatorFailure(error)));
     return true;
   }
 
@@ -141,6 +151,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   void coordinatorReady.then(() => {
     const payload = { ...message.payload, options: { outputRoot: settings.outputRoot } };
     return sendNative(payload);
-  }).then((response) => sendResponse(response ?? { ok: false, error: 'Native helper failed' }));
+  }).then(
+    (response) => sendResponse(response ?? { ok: false, error: 'Native helper failed' }),
+    (error) => sendResponse(coordinatorFailure(error)),
+  );
   return true;
 });

@@ -155,4 +155,112 @@ describe('service worker startup', () => {
 
     expect(nativeCalls).toEqual([]);
   });
+
+  it('reports settings read failures to ping callers', async () => {
+    let messageListener: ((message: Record<string, unknown>, sender: unknown, sendResponse: (response: unknown) => void) => boolean) | undefined;
+    const runtime = {
+      sendNativeMessage: vi.fn(),
+      onMessage: { addListener: vi.fn((listener) => { messageListener = listener; }) },
+      lastError: undefined as { message?: string } | undefined,
+    };
+    const chromeStub = {
+      storage: {
+        local: {
+          get: vi.fn((_defaults: Record<string, unknown> | string[], callback: (values: Record<string, unknown>) => void) => {
+            runtime.lastError = { message: 'Settings unavailable' };
+            callback({});
+            runtime.lastError = undefined;
+          }),
+          set: vi.fn(),
+        },
+        onChanged: { addListener: vi.fn() },
+      },
+      runtime,
+      notifications: { create: vi.fn() },
+    };
+    vi.stubGlobal('chrome', chromeStub);
+
+    await import('./service-worker');
+    const response = await new Promise<unknown>((resolve) => {
+      messageListener?.({ type: 'TUBE_VAULT_PING' }, {}, resolve);
+    });
+
+    expect(response).toEqual({ ok: false, error: 'Settings unavailable' });
+    expect(runtime.sendNativeMessage).not.toHaveBeenCalled();
+  });
+
+  it('reports output-root storage failures to ping callers', async () => {
+    let messageListener: ((message: Record<string, unknown>, sender: unknown, sendResponse: (response: unknown) => void) => boolean) | undefined;
+    const runtime = {
+      sendNativeMessage: vi.fn((_host: string, _payload: Record<string, unknown>, callback: (response: unknown) => void) => {
+        callback({ ok: true, defaultRoot: 'C:\\TubeVault' });
+      }),
+      onMessage: { addListener: vi.fn((listener) => { messageListener = listener; }) },
+      lastError: undefined as { message?: string } | undefined,
+    };
+    const chromeStub = {
+      storage: {
+        local: {
+          get: vi.fn((defaults: Record<string, unknown> | string[], callback: (values: Record<string, unknown>) => void) => {
+            callback(Array.isArray(defaults) ? {} : defaults);
+          }),
+          set: vi.fn((_values: Record<string, unknown>, callback: () => void) => {
+            runtime.lastError = { message: 'Output root unavailable' };
+            callback();
+            runtime.lastError = undefined;
+          }),
+        },
+        onChanged: { addListener: vi.fn() },
+      },
+      runtime,
+      notifications: { create: vi.fn() },
+    };
+    vi.stubGlobal('chrome', chromeStub);
+
+    await import('./service-worker');
+    const response = await new Promise<unknown>((resolve) => {
+      messageListener?.({ type: 'TUBE_VAULT_PING' }, {}, resolve);
+    });
+
+    expect(response).toEqual({ ok: false, error: 'Output root unavailable' });
+  });
+
+  it('reports coordinator storage read failures to native request callers', async () => {
+    let messageListener: ((message: Record<string, unknown>, sender: unknown, sendResponse: (response: unknown) => void) => boolean) | undefined;
+    let readCount = 0;
+    const runtime = {
+      sendNativeMessage: vi.fn(),
+      onMessage: { addListener: vi.fn((listener) => { messageListener = listener; }) },
+      lastError: undefined as { message?: string } | undefined,
+    };
+    const chromeStub = {
+      storage: {
+        local: {
+          get: vi.fn((defaults: Record<string, unknown> | string[], callback: (values: Record<string, unknown>) => void) => {
+            readCount += 1;
+            if (readCount === 1) {
+              callback(defaults as Record<string, unknown>);
+              return;
+            }
+            runtime.lastError = { message: 'Jobs unavailable' };
+            callback({});
+            runtime.lastError = undefined;
+          }),
+          set: vi.fn(),
+        },
+        onChanged: { addListener: vi.fn() },
+      },
+      runtime,
+      notifications: { create: vi.fn() },
+    };
+    vi.stubGlobal('chrome', chromeStub);
+
+    await import('./service-worker');
+    const response = await new Promise<unknown>((resolve) => {
+      messageListener?.({ type: 'TUBE_VAULT_REQUEST', payload: { action: 'diagnostics' } }, {}, resolve);
+    });
+
+    expect(response).toEqual({ ok: false, error: 'Jobs unavailable' });
+    expect(runtime.sendNativeMessage).not.toHaveBeenCalled();
+  });
 });

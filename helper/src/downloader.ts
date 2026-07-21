@@ -890,6 +890,13 @@ function removePublicationLock(lockPath: string, token: string): boolean {
       fs.unlinkSync(lockPath);
       return true;
     }
+    for (const entry of fs.readdirSync(lockPath)) {
+      if (!/^\.owner-[a-f0-9-]+\.tmp$/i.test(entry) || !lockHasToken(lockPath, token)) continue;
+      try { fs.unlinkSync(path.join(lockPath, entry)); } catch (error) {
+        if (errorCode(error) !== 'ENOENT') throw error;
+      }
+    }
+    if (!lockHasToken(lockPath, token)) return false;
     fs.unlinkSync(path.join(lockPath, 'owner.json'));
     fs.rmdirSync(lockPath);
     return true;
@@ -963,22 +970,62 @@ function waitForPublicationLease(file: string, lockPath: string, snapshot: Publi
   return false;
 }
 
-function takeOverPublicationLock(lockPath: string, observed: PublicationOwnerSnapshot): string | undefined {
-  const recoveryFile = `${lockPath}.recovery`;
-  const recoveryToken = randomUUID();
-  let recovery: number;
+function waitForCoordinationLease(lockPath: string, snapshot: PublicationOwnerSnapshot): void {
+  const deadline = typeof snapshot.owner?.leaseExpiresAt === 'number'
+    ? snapshot.owner.leaseExpiresAt
+    : snapshot.modifiedAt + PUBLICATION_LEASE_MS;
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  while (Date.now() < deadline) {
+    const current = readPublicationOwner(lockPath);
+    if (!current || current.contents !== snapshot.contents) return;
+    Atomics.wait(signal, 0, 0, Math.min(50, deadline - Date.now()));
+  }
+}
+
+function discardAbandonedPublicationLock(lockPath: string, observed: PublicationOwnerSnapshot): boolean {
+  const claimedPath = `${lockPath}.${randomUUID()}.abandoned`;
   try {
-    recovery = fs.openSync(recoveryFile, 'wx');
+    fs.renameSync(lockPath, claimedPath);
   } catch (error) {
-    if (errorCode(error) === 'EEXIST') return undefined;
+    if (errorCode(error) === 'ENOENT' || errorCode(error) === 'EEXIST') return false;
     throw error;
   }
-  try {
-    fs.writeFileSync(recovery, recoveryToken, 'utf8');
-    fs.fsyncSync(recovery);
-  } finally {
-    fs.closeSync(recovery);
+  const claimed = readPublicationOwner(claimedPath);
+  if (!claimed || claimed.contents !== observed.contents || publicationOwnerState(claimed) !== 'dead') {
+    try {
+      if (!fs.existsSync(lockPath)) fs.renameSync(claimedPath, lockPath);
+    } catch {}
+    throw new Error('Batch summary recovery ownership changed concurrently');
   }
+  fs.rmSync(claimedPath, { recursive: true });
+  return true;
+}
+
+function acquireRecoveryLock(lockPath: string): string | undefined {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const token = acquirePublicationLock(lockPath);
+    if (token) return token;
+    let observed = readPublicationOwner(lockPath);
+    if (!observed) continue;
+    let state = publicationOwnerState(observed);
+    if (state === 'alive') return undefined;
+    if (state === 'leased') {
+      waitForCoordinationLease(lockPath, observed);
+      const current = readPublicationOwner(lockPath);
+      if (!current || current.contents !== observed.contents) continue;
+      observed = current;
+      state = publicationOwnerState(observed);
+      if (state !== 'dead') return undefined;
+    }
+    if (discardAbandonedPublicationLock(lockPath, observed)) continue;
+  }
+  return undefined;
+}
+
+function takeOverPublicationLock(lockPath: string, observed: PublicationOwnerSnapshot): string | undefined {
+  const recoveryFile = `${lockPath}.recovery`;
+  const recoveryToken = acquireRecoveryLock(recoveryFile);
+  if (!recoveryToken) return undefined;
   try {
     const current = readPublicationOwner(lockPath);
     if (!current || current.contents !== observed.contents) return undefined;
@@ -990,21 +1037,23 @@ function takeOverPublicationLock(lockPath: string, observed: PublicationOwnerSna
       return acquired;
     }
     const replacement = path.join(lockPath, `.owner-${token}.tmp`);
-    const descriptor = fs.openSync(replacement, 'wx');
     try {
-      fs.writeFileSync(descriptor, JSON.stringify(publicationOwner(token)), 'utf8');
-      fs.fsyncSync(descriptor);
+      const descriptor = fs.openSync(replacement, 'wx');
+      try {
+        fs.writeFileSync(descriptor, JSON.stringify(publicationOwner(token)), 'utf8');
+        fs.fsyncSync(descriptor);
+      } finally {
+        fs.closeSync(descriptor);
+      }
+      fs.renameSync(replacement, ownerFile);
     } finally {
-      fs.closeSync(descriptor);
+      try { fs.unlinkSync(replacement); } catch (error) {
+        if (errorCode(error) !== 'ENOENT') throw error;
+      }
     }
-    fs.renameSync(replacement, ownerFile);
     return token;
   } finally {
-    try {
-      if (fs.readFileSync(recoveryFile, 'utf8') === recoveryToken) fs.unlinkSync(recoveryFile);
-    } catch (error) {
-      if (errorCode(error) !== 'ENOENT') throw error;
-    }
+    removePublicationLock(recoveryFile, recoveryToken);
   }
 }
 

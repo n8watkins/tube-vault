@@ -82,6 +82,7 @@ interface BatchSummaryRetry {
   attempts: number;
   outputRoot?: string;
   receiptCleanupPending?: 'written' | 'exhausted';
+  clearHistoryPending?: boolean;
 }
 
 export class JobCoordinator {
@@ -192,7 +193,16 @@ export class JobCoordinator {
   }
 
   async clearHistory(): Promise<void> {
-    await this.mutateJobs(() => ({ changed: true, value: undefined }), { clearHistory: true });
+    await this.withJobsLock(async () => {
+      const jobs = await this.effects.storage.getJobs();
+      const pendingTerminalBatches = new Set(jobs.flatMap((job) => (
+        job.batchId && !isActive(job) && !job.summaryWritten && !job.summaryExhausted
+          ? [job.batchId]
+          : []
+      )));
+      await this.markSummaryHistoryClearPending(pendingTerminalBatches);
+      await this.setJobsLocked(jobs, { clearHistory: true });
+    });
   }
 
   async seedOutputRoot(defaultRoot: string): Promise<void> {
@@ -339,7 +349,10 @@ export class JobCoordinator {
     });
   }
 
-  private trim(jobs: Job[], options: { clearHistory?: boolean; finalizedBatchId?: string } = {}): Job[] {
+  private trim(
+    jobs: Job[],
+    options: { clearHistory?: boolean; finalizedBatchId?: string; discardBatchId?: string } = {},
+  ): Job[] {
     const settings = this.effects.getSettings();
     const protectedBatchIds = new Set(jobs.flatMap((job) => (
       job.batchId && job.batchId !== options.finalizedBatchId
@@ -349,6 +362,9 @@ export class JobCoordinator {
     )));
     const isProtected = (job: Job) => !!job.batchId && protectedBatchIds.has(job.batchId);
     let result = jobs;
+    if (options.discardBatchId) {
+      result = result.filter((job) => job.batchId !== options.discardBatchId || isActive(job));
+    }
     if (options.clearHistory || !settings.collectHistory) {
       result = result.filter((job) => isActive(job) || isProtected(job));
     } else if (settings.historyRetentionDays > 0) {
@@ -366,7 +382,7 @@ export class JobCoordinator {
 
   private async setJobsLocked(
     jobs: Job[],
-    options: boolean | { clearHistory?: boolean; finalizedBatchId?: string } = false,
+    options: boolean | { clearHistory?: boolean; finalizedBatchId?: string; discardBatchId?: string } = false,
     persistUntilStored = false,
   ): Promise<void> {
     const preserveAllFinished = options === true;
@@ -389,10 +405,10 @@ export class JobCoordinator {
     mutation: (jobs: Job[]) => {
       changed: boolean;
       value: T;
-      options?: boolean | { clearHistory?: boolean; finalizedBatchId?: string };
+      options?: boolean | { clearHistory?: boolean; finalizedBatchId?: string; discardBatchId?: string };
       persistUntilStored?: boolean;
     },
-    options: boolean | { clearHistory?: boolean; finalizedBatchId?: string } = false,
+    options: boolean | { clearHistory?: boolean; finalizedBatchId?: string; discardBatchId?: string } = false,
   ): Promise<T> {
     return this.withJobsLock(async () => {
       const jobs = await this.effects.storage.getJobs();
@@ -493,7 +509,9 @@ export class JobCoordinator {
   }
 
   private async finalizeBatchJobs(batchId: string, outcome: 'written' | 'exhausted'): Promise<void> {
-    await this.mutateJobs((jobs) => {
+    await this.withJobsLock(async () => {
+      const retry = await this.getSummaryRetry(batchId);
+      const jobs = await this.effects.storage.getJobs();
       let changed = false;
       for (const job of jobs) {
         if (job.batchId !== batchId) continue;
@@ -502,7 +520,12 @@ export class JobCoordinator {
         job.summaryReceiptCleaned = false;
         changed = true;
       }
-      return { changed, value: undefined, options: { finalizedBatchId: batchId } };
+      if (changed) {
+        await this.setJobsLocked(jobs, {
+          finalizedBatchId: batchId,
+          ...(retry.clearHistoryPending ? { discardBatchId: batchId } : {}),
+        });
+      }
     });
   }
 
@@ -534,14 +557,17 @@ export class JobCoordinator {
       const attempts = (entry as { attempts?: unknown }).attempts;
       const outputRoot = (entry as { outputRoot?: unknown }).outputRoot;
       const receiptCleanupPending = (entry as { receiptCleanupPending?: unknown }).receiptCleanupPending;
+      const clearHistoryPending = (entry as { clearHistoryPending?: unknown }).clearHistoryPending;
       if (typeof attempts !== 'number' || !Number.isInteger(attempts) || attempts < 0) continue;
       if (outputRoot !== undefined && typeof outputRoot !== 'string') continue;
       if (receiptCleanupPending !== undefined
         && receiptCleanupPending !== 'written' && receiptCleanupPending !== 'exhausted') continue;
+      if (clearHistoryPending !== undefined && clearHistoryPending !== true) continue;
       state[batchId] = {
         attempts,
         ...(typeof outputRoot === 'string' ? { outputRoot } : {}),
         ...(receiptCleanupPending ? { receiptCleanupPending } : {}),
+        ...(clearHistoryPending ? { clearHistoryPending: true } : {}),
       };
     }
     return state;
@@ -556,7 +582,23 @@ export class JobCoordinator {
   private async setSummaryRetry(batchId: string, retry: BatchSummaryRetry): Promise<void> {
     await this.withSummaryStateLock(async () => {
       const state = await this.readSummaryAttemptState();
-      state[batchId] = retry;
+      state[batchId] = {
+        ...retry,
+        ...((retry.clearHistoryPending || state[batchId]?.clearHistoryPending)
+          ? { clearHistoryPending: true }
+          : {}),
+      };
+      await this.effects.storage.setValues({ [SUMMARY_ATTEMPTS_KEY]: state });
+    });
+  }
+
+  private async markSummaryHistoryClearPending(batchIds: Set<string>): Promise<void> {
+    if (batchIds.size === 0) return;
+    await this.withSummaryStateLock(async () => {
+      const state = await this.readSummaryAttemptState();
+      for (const batchId of batchIds) {
+        state[batchId] = { ...(state[batchId] ?? { attempts: 0 }), clearHistoryPending: true };
+      }
       await this.effects.storage.setValues({ [SUMMARY_ATTEMPTS_KEY]: state });
     });
   }

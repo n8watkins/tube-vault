@@ -270,6 +270,70 @@ test('writeBatchSummary immediately recovers a fresh lock owned by a dead proces
   }
 });
 
+test('writeBatchSummary recovers an abandoned recovery marker', (context) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-stale-recovery-'));
+  const summaries = path.join(dir, 'TubeVault Summaries');
+  try {
+    const batchId = 'stale-recovery-batch';
+    const created = writeBatchSummary(dir, batchId, 'Stale recovery', undefined, []);
+    const stableId = path.basename(created).match(/[a-f0-9]{16}(?=\.txt$)/)?.[0] as string;
+    const lockPath = path.join(summaries, `.tv-${stableId}.lock`);
+    fs.writeFileSync(created, 'incomplete');
+    for (const ownerPath of [lockPath, `${lockPath}.recovery`]) {
+      fs.mkdirSync(ownerPath);
+      fs.writeFileSync(path.join(ownerPath, 'owner.json'), JSON.stringify({
+        token: `dead-${path.basename(ownerPath)}`,
+        pid: 2_147_483_647,
+      }));
+    }
+    context.mock.method(fs, 'linkSync', () => {
+      const error = new Error('Hard links unavailable') as NodeJS.ErrnoException;
+      error.code = 'EXDEV';
+      throw error;
+    });
+
+    const recovered = writeBatchSummary(dir, batchId, 'Stale recovery', undefined, []);
+
+    assert.equal(recovered, created);
+    assert.match(fs.readFileSync(recovered, 'utf8'), /\nIntegrity: SHA-256 [a-f0-9]{64}\n$/);
+    assert.equal(fs.existsSync(lockPath), false);
+    assert.equal(fs.existsSync(`${lockPath}.recovery`), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('writeBatchSummary cleans an abandoned owner temporary during takeover', (context) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-owner-temp-'));
+  const summaries = path.join(dir, 'TubeVault Summaries');
+  try {
+    const batchId = 'owner-temp-batch';
+    const created = writeBatchSummary(dir, batchId, 'Owner temporary', undefined, []);
+    const stableId = path.basename(created).match(/[a-f0-9]{16}(?=\.txt$)/)?.[0] as string;
+    const lockPath = path.join(summaries, `.tv-${stableId}.lock`);
+    fs.writeFileSync(created, 'incomplete');
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({
+      token: 'dead-owner',
+      pid: 2_147_483_647,
+    }));
+    fs.writeFileSync(path.join(lockPath, '.owner-12345678-abcd.tmp'), 'abandoned');
+    context.mock.method(fs, 'linkSync', () => {
+      const error = new Error('Hard links unavailable') as NodeJS.ErrnoException;
+      error.code = 'EXDEV';
+      throw error;
+    });
+
+    const recovered = writeBatchSummary(dir, batchId, 'Owner temporary', undefined, []);
+
+    assert.equal(recovered, created);
+    assert.match(fs.readFileSync(recovered, 'utf8'), /\nIntegrity: SHA-256 [a-f0-9]{64}\n$/);
+    assert.equal(fs.existsSync(lockPath), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('writeBatchSummary does not displace a live fallback publisher', (context) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-live-owner-'));
   const summaries = path.join(dir, 'TubeVault Summaries');

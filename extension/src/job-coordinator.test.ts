@@ -746,6 +746,48 @@ describe('JobCoordinator', () => {
     });
   });
 
+  it('durably clears history after an in-flight batch summary succeeds', async () => {
+    const summary = deferred<NativeResponse>();
+    const test = harness({
+      jobs: [job('one', 'done', { batchId: 'batch' }), job('two', 'failed', { batchId: 'batch' })],
+      settings: { collectHistory: true },
+      native: async (payload) => payload.action === 'batch_summary' ? summary.promise : { ok: true },
+    });
+    const finalization = test.coordinator.cancelBatch('batch');
+    await vi.waitFor(() => expect(test.calls.some((call) => call.action === 'batch_summary')).toBe(true));
+
+    await test.coordinator.clearHistory();
+
+    expect(test.jobs.map((item) => item.id)).toEqual(['one', 'two']);
+    expect(test.values.tvBatchSummaryAttempts).toEqual({
+      batch: { attempts: 1, outputRoot: '/videos', clearHistoryPending: true },
+    });
+
+    summary.resolve({ ok: true });
+    await finalization;
+
+    expect(test.jobs).toEqual([]);
+    expect(test.values.tvBatchSummaryAttempts).toEqual({});
+  });
+
+  it('durably clears history after in-flight batch summary attempts are exhausted', async () => {
+    const firstAttempt = deferred<NativeResponse>();
+    const test = harness({
+      jobs: [job('one', 'done', { batchId: 'batch' })],
+      settings: { collectHistory: true },
+      native: async (payload) => payload.action === 'batch_summary' ? firstAttempt.promise : { ok: true },
+    });
+    const finalization = test.coordinator.cancelBatch('batch');
+    await vi.waitFor(() => expect(test.calls.some((call) => call.action === 'batch_summary')).toBe(true));
+    await test.coordinator.clearHistory();
+    firstAttempt.resolve({ ok: false });
+    await finalization;
+
+    expect(test.calls.filter((call) => call.action === 'batch_summary')).toHaveLength(3);
+    expect(test.jobs).toEqual([]);
+    expect(test.values.tvBatchSummaryAttempts).toEqual({});
+  });
+
   it('deduplicates concurrent successful batch summary requests', async () => {
     const summary = deferred<NativeResponse>();
     const test = harness({

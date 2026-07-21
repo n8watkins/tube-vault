@@ -273,6 +273,18 @@ async function linkDurably(existingPath, newPath) {
   ));
 }
 
+async function installWithoutOverwrite(staged, destination) {
+  try {
+    await linkDurably(staged, destination);
+  } catch (error) {
+    if (error?.code === 'EEXIST') {
+      throw new Error(`Sync target artifact appeared concurrently: ${destination}`, { cause: error });
+    }
+    throw error;
+  }
+  await unlinkDurably(staged);
+}
+
 async function renameDurably(existingPath, newPath) {
   await mutateDurably([existingPath, newPath], ([anchoredExistingPath, anchoredNewPath]) => (
     rename(anchoredExistingPath, anchoredNewPath)
@@ -634,7 +646,8 @@ export async function syncArtifacts(sourceRoot, target, files = SYNC_FILES, hook
             }
             await requireSafeTargetPath(target, entry.relativePath);
             await requireSafeTransactionPath(transactionRoot, `files/${entry.relativePath}`);
-            await renameDurably(staged, destination);
+            if (entry.existed) await renameDurably(staged, destination);
+            else await installWithoutOverwrite(staged, destination);
           }
         } catch (error) {
           try {
@@ -688,13 +701,16 @@ export async function validateTarget(requestedTarget) {
   return target;
 }
 
-export async function main(argv = process.argv.slice(2), environment = process.env) {
+export async function main(argv = process.argv.slice(2), environment = process.env, operations = {}) {
   const target = await validateTarget(targetArgument(argv) ?? environment.TUBE_VAULT_WINDOWS_REPO);
-  run('npm', ['run', 'build']);
-  await syncArtifacts(repoRoot, target);
-  for (const relativePath of SYNC_FILES) {
-    console.log(`Copied ${relativePath}`);
-  }
+  await withMutationRoot(target, async () => {
+    await validateTarget(target);
+    await (operations.build ?? (() => run('npm', ['run', 'build'])))();
+    await syncArtifacts(repoRoot, target);
+    for (const relativePath of SYNC_FILES) {
+      console.log(`Copied ${relativePath}`);
+    }
+  });
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === scriptPath) {

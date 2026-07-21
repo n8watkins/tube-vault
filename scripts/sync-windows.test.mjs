@@ -4,7 +4,7 @@ import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
-import { readProcessIdentity, syncArtifacts, targetArgument, validateTarget } from './sync-windows.mjs';
+import { main, readProcessIdentity, syncArtifacts, targetArgument, validateTarget } from './sync-windows.mjs';
 
 async function makeTarget({ git = true, validIdentity = true } = {}) {
   const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-test-'));
@@ -88,6 +88,24 @@ test('rolls back every artifact when installation fails partway through', async 
   assert.equal(await readFile(join(target, files[0]), 'utf8'), `old ${files[0]}\n`);
   assert.equal(await readFile(join(target, files[1]), 'utf8'), `old ${files[1]}\n`);
   await assert.rejects(readFile(join(target, files[2]), 'utf8'), /ENOENT/);
+  assert.deepEqual((await readdir(target)).filter((name) => name.startsWith('.tube-vault-sync-')), []);
+});
+
+test('preserves an artifact created concurrently after staging', async () => {
+  const source = await mkdtemp(join(tmpdir(), 'tube-vault-sync-source-'));
+  const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));
+  const relativePath = 'extension/manifest.json';
+  await mkdir(join(source, 'extension'), { recursive: true });
+  await mkdir(join(target, 'extension'), { recursive: true });
+  await writeFile(join(source, relativePath), 'new\n');
+
+  await assert.rejects(syncArtifacts(source, target, [relativePath], {
+    beforeInstall: async () => {
+      await writeFile(join(target, relativePath), 'concurrent\n');
+    },
+  }), /appeared concurrently/);
+
+  assert.equal(await readFile(join(target, relativePath), 'utf8'), 'concurrent\n');
   assert.deepEqual((await readdir(target)).filter((name) => name.startsWith('.tube-vault-sync-')), []);
 });
 
@@ -354,6 +372,25 @@ test('anchors mutations when the target path is replaced concurrently', async ()
     assert.equal(await readFile(join(outside, 'marker.txt'), 'utf8'), 'preserved\n');
   } finally {
     await unlink(target).catch(() => undefined);
+    await rename(displacedTarget, target).catch(() => undefined);
+  }
+});
+
+test('keeps the validated target identity anchored across the build', async () => {
+  const testRoot = await mkdtemp(join(tmpdir(), 'tube-vault-sync-build-anchor-test-'));
+  const target = await makeTarget();
+  const displacedTarget = join(testRoot, 'displaced-target');
+  const replacementTarget = await makeTarget();
+
+  try {
+    await assert.rejects(main(['--target', target], {}, {
+      build: async () => {
+        await rename(target, displacedTarget);
+        await rename(replacementTarget, target);
+      },
+    }), /changed concurrently/);
+  } finally {
+    await rm(target, { recursive: true, force: true });
     await rename(displacedTarget, target).catch(() => undefined);
   }
 });

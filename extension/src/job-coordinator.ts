@@ -73,6 +73,11 @@ const SUMMARY_ATTEMPTS_KEY = 'tvBatchSummaryAttempts';
 const MAX_SUMMARY_ATTEMPTS = 3;
 const isActive = (job: Job) => job.status === 'queued' || job.status === 'probing' || job.status === 'running';
 
+interface BatchSummaryRetry {
+  attempts: number;
+  outputRoot?: string;
+}
+
 export class JobCoordinator {
   private pumpPromise: Promise<void> | null = null;
   private pumpRequested = false;
@@ -370,19 +375,21 @@ export class JobCoordinator {
       return;
     }
     const first = members[0];
+    const retry = await this.getSummaryRetry(batchId);
+    const outputRoot = retry.outputRoot ?? this.effects.getSettings().outputRoot;
     const payload = {
       action: 'batch_summary',
       batchId,
       batchLabel: first.batchLabel,
       category: first.category,
       items: members.map((job) => ({ title: job.label, folder: job.folder, status: job.status })),
-      options: { outputRoot: this.effects.getSettings().outputRoot },
+      options: { outputRoot },
     };
 
-    let attempts = await this.getSummaryAttempts(batchId);
+    let attempts = retry.attempts;
     while (attempts < MAX_SUMMARY_ATTEMPTS) {
       attempts += 1;
-      await this.setSummaryAttempts(batchId, attempts);
+      await this.setSummaryRetry(batchId, { attempts, outputRoot });
       const response = await this.safeNative(payload);
       if (response?.ok) {
         await this.mutateJobs((latestJobs) => {
@@ -414,22 +421,35 @@ export class JobCoordinator {
     }
   }
 
-  private async readSummaryAttemptState(): Promise<Record<string, number>> {
+  private async readSummaryAttemptState(): Promise<Record<string, BatchSummaryRetry>> {
     const value = (await this.effects.storage.getValues([SUMMARY_ATTEMPTS_KEY]))[SUMMARY_ATTEMPTS_KEY];
     if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
-    return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, number] => (
-      typeof entry[1] === 'number' && Number.isInteger(entry[1]) && entry[1] >= 0
-    )));
+    const state: Record<string, BatchSummaryRetry> = {};
+    for (const [batchId, entry] of Object.entries(value)) {
+      if (typeof entry === 'number' && Number.isInteger(entry) && entry >= 0) {
+        state[batchId] = { attempts: entry };
+        continue;
+      }
+      if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+      const attempts = (entry as { attempts?: unknown }).attempts;
+      const outputRoot = (entry as { outputRoot?: unknown }).outputRoot;
+      if (typeof attempts !== 'number' || !Number.isInteger(attempts) || attempts < 0) continue;
+      if (outputRoot !== undefined && typeof outputRoot !== 'string') continue;
+      state[batchId] = { attempts, ...(typeof outputRoot === 'string' ? { outputRoot } : {}) };
+    }
+    return state;
   }
 
-  private async getSummaryAttempts(batchId: string): Promise<number> {
-    return this.withSummaryStateLock(async () => (await this.readSummaryAttemptState())[batchId] ?? 0);
+  private async getSummaryRetry(batchId: string): Promise<BatchSummaryRetry> {
+    return this.withSummaryStateLock(async () => (
+      (await this.readSummaryAttemptState())[batchId] ?? { attempts: 0 }
+    ));
   }
 
-  private async setSummaryAttempts(batchId: string, attempts: number): Promise<void> {
+  private async setSummaryRetry(batchId: string, retry: BatchSummaryRetry): Promise<void> {
     await this.withSummaryStateLock(async () => {
       const state = await this.readSummaryAttemptState();
-      state[batchId] = attempts;
+      state[batchId] = retry;
       await this.effects.storage.setValues({ [SUMMARY_ATTEMPTS_KEY]: state });
     });
   }

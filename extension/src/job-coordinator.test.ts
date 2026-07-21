@@ -37,6 +37,7 @@ function harness(options: {
   native?: (payload: Record<string, unknown>) => Promise<NativeResponse | null>;
   values?: Record<string, unknown>;
   beforeGetValues?: () => Promise<void>;
+  beforeSetJobs?: () => Promise<void>;
   afterGetJobs?: (jobs: Job[], readCount: number) => Promise<void>;
 } = {}) {
   let jobs = structuredClone(options.jobs ?? []);
@@ -56,7 +57,10 @@ function harness(options: {
         await options.afterGetJobs?.(snapshot, ++jobsReadCount);
         return snapshot;
       },
-      setJobs: async (next) => { jobs = structuredClone(next); },
+      setJobs: async (next) => {
+        await options.beforeSetJobs?.();
+        jobs = structuredClone(next);
+      },
       getValues: async (keys) => {
         await options.beforeGetValues?.();
         return Object.fromEntries(keys.map((key) => [key, values[key]]));
@@ -200,10 +204,12 @@ describe('JobCoordinator', () => {
       test.coordinator.enqueue({ items: [{ url: 'new', bytes: 1 }] }),
     ]);
 
-    expect(test.jobs.map(({ id, status }) => ({ id, status }))).toEqual([
-      { id: 'queued', status: 'cancelled' },
-      { id: 'id-1', status: 'running' },
-    ]);
+    await vi.waitFor(() => {
+      expect(test.jobs.map(({ id, status }) => ({ id, status }))).toEqual([
+        { id: 'queued', status: 'cancelled' },
+        { id: 'id-1', status: 'running' },
+      ]);
+    });
     download.resolve({ ok: true });
     await test.coordinator.whenIdle();
   });
@@ -276,7 +282,7 @@ describe('JobCoordinator', () => {
     expect(test.jobs).toHaveLength(101);
     expect(test.jobs.some((item) => item.id === 'expired')).toBe(false);
     expect(test.jobs.some((item) => item.id === 'recent-0')).toBe(false);
-    expect(test.values.tvBatchSummaryAttempts).toEqual({ 'recent-batch-1': 3 });
+    expect(test.values.tvBatchSummaryAttempts).toEqual({ 'recent-batch-1': { attempts: 3 } });
     download.resolve({ ok: true });
     await test.coordinator.whenIdle();
   });
@@ -292,7 +298,7 @@ describe('JobCoordinator', () => {
     });
     await test.coordinator.clearHistory();
     expect(test.jobs.map((item) => item.id)).toEqual(['active']);
-    expect(test.values.tvBatchSummaryAttempts).toEqual({ 'active-batch': 1 });
+    expect(test.values.tvBatchSummaryAttempts).toEqual({ 'active-batch': { attempts: 1 } });
   });
 
   it('preserves settled members of an active batch during enqueue and clear history', async () => {
@@ -416,6 +422,34 @@ describe('JobCoordinator', () => {
     expect(afterRestart.jobs.every((item) => item.summaryWritten)).toBe(true);
   });
 
+  it('reuses the original output root when settings change after an unmarked write', async () => {
+    const terminalJobs = [job('one', 'done', { batchId: 'batch', batchLabel: 'Restarted batch' })];
+    const beforeCrash = harness({
+      jobs: terminalJobs,
+      settings: { outputRoot: '/root-a' },
+      beforeSetJobs: async () => { throw new Error('Worker stopped before marking'); },
+    });
+    await beforeCrash.coordinator.initialize();
+    await vi.waitFor(() => expect(beforeCrash.values.tvBatchSummaryAttempts).toEqual({
+      batch: { attempts: 1, outputRoot: '/root-a' },
+    }));
+
+    const afterRestart = harness({
+      jobs: beforeCrash.jobs,
+      settings: { outputRoot: '/root-b' },
+      values: structuredClone(beforeCrash.values),
+    });
+    await afterRestart.coordinator.initialize();
+    await vi.waitFor(() => expect(afterRestart.jobs.every((item) => item.summaryWritten)).toBe(true));
+
+    expect(beforeCrash.calls.filter((call) => call.action === 'batch_summary')).toEqual([
+      expect.objectContaining({ options: { outputRoot: '/root-a' } }),
+    ]);
+    expect(afterRestart.calls.filter((call) => call.action === 'batch_summary')).toEqual([
+      expect.objectContaining({ options: { outputRoot: '/root-a' } }),
+    ]);
+  });
+
   it('does not exceed the persisted summary attempt bound after restart', async () => {
     const test = harness({
       jobs: [job('one', 'done', { batchId: 'batch' })],
@@ -448,7 +482,7 @@ describe('JobCoordinator', () => {
 
     await vi.waitFor(() => {
       expect(test.calls.filter((call) => call.action === 'batch_summary')).toHaveLength(3);
-      expect(test.values.tvBatchSummaryAttempts).toEqual({ batch: 3 });
+      expect(test.values.tvBatchSummaryAttempts).toEqual({ batch: { attempts: 3, outputRoot: '/videos' } });
     });
   });
 

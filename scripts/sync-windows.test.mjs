@@ -286,3 +286,53 @@ test('does not reclaim a replacement lock from a new owner', async () => {
   assert.deepEqual(JSON.parse(await readFile(lockPath, 'utf8')), replacementOwner);
   assert.equal(await readFile(join(target, relativePath), 'utf8'), 'old\n');
 });
+
+test('blocks a third sync while restoring a claimed replacement lock', async () => {
+  const source = await mkdtemp(join(tmpdir(), 'tube-vault-sync-source-'));
+  const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));
+  const relativePath = 'extension/manifest.json';
+  const lockPath = join(target, '.tube-vault-sync.lock');
+  const replacementOwner = {
+    pid: process.pid,
+    hostname: hostname(),
+    token: 'replacement-owner',
+    processIdentity: await readProcessIdentity(process.pid),
+  };
+  await mkdir(join(source, 'extension'), { recursive: true });
+  await mkdir(join(target, 'extension'), { recursive: true });
+  await writeFile(join(source, relativePath), 'new\n');
+  await writeFile(join(target, relativePath), 'old\n');
+  await writeFile(lockPath, JSON.stringify({
+    pid: 2_147_483_647,
+    hostname: hostname(),
+    token: 'dead-owner',
+  }));
+
+  let continueReclaim;
+  const reclaimPaused = new Promise((resolve) => {
+    continueReclaim = resolve;
+  });
+  let markClaimed;
+  const lockClaimed = new Promise((resolve) => {
+    markClaimed = resolve;
+  });
+  const reclaimingSync = syncArtifacts(source, target, [relativePath], {
+    beforeReclaim: async () => {
+      await rm(lockPath);
+      await writeFile(lockPath, JSON.stringify(replacementOwner));
+    },
+    afterReclaimClaim: async () => {
+      markClaimed();
+      await reclaimPaused;
+    },
+  });
+  await lockClaimed;
+
+  await assert.rejects(syncArtifacts(source, target, [relativePath]), /Another sync is already running/);
+  continueReclaim();
+  await assert.rejects(reclaimingSync, /Another sync is already running/);
+
+  assert.deepEqual(JSON.parse(await readFile(lockPath, 'utf8')), replacementOwner);
+  assert.equal(await readFile(join(target, relativePath), 'utf8'), 'old\n');
+  assert.deepEqual((await readdir(target)).filter((name) => name.includes('.intent-')), []);
+});

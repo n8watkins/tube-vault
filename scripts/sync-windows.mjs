@@ -11,6 +11,7 @@ const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const TRANSACTION_PREFIX = '.tube-vault-sync-';
 const LOCK_NAME = '.tube-vault-sync.lock';
+const LOCK_INTENT_PREFIX = `${LOCK_NAME}.intent-`;
 const DIRECTORY_SYNC_UNAVAILABLE_CODES = new Set(['EACCES', 'EPERM', 'EINVAL', 'EBADF', 'EISDIR', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
 
 export const SYNC_FILES = [
@@ -309,6 +310,28 @@ async function restoreClaimedLock(claimPath, lockPath) {
   await unlink(claimPath);
 }
 
+async function ownerIsAlive(owner, localOwner) {
+  if (owner.hostname !== localOwner.hostname) return true;
+  const existingIdentity = await readProcessIdentity(owner.pid);
+  return typeof owner.processIdentity === 'string' && existingIdentity !== undefined
+    ? owner.processIdentity === existingIdentity
+    : processIsAlive(owner.pid);
+}
+
+async function claimLockIntent(target, ownerPath, owner) {
+  const ownerName = ownerPath.slice(target.length + 1);
+  for (const name of await readdir(target)) {
+    if (!name.startsWith(LOCK_INTENT_PREFIX) || name === ownerName) continue;
+    const contenderPath = join(target, name);
+    const contender = await readLockOwner(contenderPath);
+    if (await ownerIsAlive(contender, owner)) {
+      throw new Error(`Another sync is already running for target: ${target}`);
+    }
+    const confirmedContender = await readLockOwner(contenderPath);
+    if (confirmedContender.token === contender.token) await unlink(contenderPath);
+  }
+}
+
 async function acquireSyncLock(target, hooks = {}) {
   const lockPath = join(target, LOCK_NAME);
   const token = randomUUID();
@@ -318,35 +341,39 @@ async function acquireSyncLock(target, hooks = {}) {
     token,
     processIdentity: await readProcessIdentity(process.pid),
   };
-  const ownerPath = join(target, `${LOCK_NAME}.${token}`);
+  const ownerPath = join(target, `${LOCK_INTENT_PREFIX}${token}`);
   let ownerHandle;
+  let acquired = false;
   try {
     ownerHandle = await open(ownerPath, 'wx');
     await ownerHandle.writeFile(`${JSON.stringify(owner)}\n`);
     await ownerHandle.sync();
     await ownerHandle.close();
     ownerHandle = undefined;
+    await syncDirectory(target);
+    await claimLockIntent(target, ownerPath, owner);
 
     while (true) {
       try {
         await link(ownerPath, lockPath);
-        await unlink(ownerPath);
         await syncDirectory(target);
+        acquired = true;
         return async () => {
-          const currentOwner = await readLockOwner(lockPath).catch(() => null);
-          if (currentOwner?.token === token) {
-            await unlink(lockPath);
+          try {
+            const currentOwner = await readLockOwner(lockPath).catch(() => null);
+            if (currentOwner?.token === token) {
+              await unlink(lockPath);
+              await syncDirectory(target);
+            }
+          } finally {
+            await rm(ownerPath, { force: true });
             await syncDirectory(target);
           }
         };
       } catch (error) {
         if (error?.code !== 'EEXIST') throw error;
         const existingOwner = await readLockOwner(lockPath);
-        const existingIdentity = await readProcessIdentity(existingOwner.pid);
-        const ownerIsAlive = typeof existingOwner.processIdentity === 'string' && existingIdentity !== undefined
-          ? existingOwner.processIdentity === existingIdentity
-          : processIsAlive(existingOwner.pid);
-        if (existingOwner.hostname !== owner.hostname || ownerIsAlive) {
+        if (await ownerIsAlive(existingOwner, owner)) {
           throw new Error(`Another sync is already running for target: ${target}`);
         }
         const confirmedOwner = await readLockOwner(lockPath);
@@ -359,6 +386,7 @@ async function acquireSyncLock(target, hooks = {}) {
           if (claimError?.code === 'ENOENT') continue;
           throw claimError;
         }
+        await hooks.afterReclaimClaim?.(existingOwner);
         const claimedOwner = await readLockOwner(claimPath).catch(() => null);
         if (claimedOwner?.token !== existingOwner.token) {
           await restoreClaimedLock(claimPath, lockPath);
@@ -369,7 +397,7 @@ async function acquireSyncLock(target, hooks = {}) {
     }
   } finally {
     if (ownerHandle) await ownerHandle.close();
-    await rm(ownerPath, { force: true });
+    if (!acquired) await rm(ownerPath, { force: true });
   }
 }
 

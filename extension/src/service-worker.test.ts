@@ -60,6 +60,7 @@ describe('service worker startup', () => {
 
     await vi.waitFor(() => expect(nativeCalls).toEqual([
       expect.objectContaining({ action: 'batch_summary', batchId: 'batch' }),
+      { action: 'batch_summary_finalize', batchId: 'batch' },
     ]));
     await vi.waitFor(() => expect(jobs).toEqual([]));
   });
@@ -149,7 +150,11 @@ describe('service worker startup', () => {
 
     await import('./service-worker');
     await vi.waitFor(() => expect(chromeStub.storage.local.set).toHaveBeenCalledWith(
-      expect.objectContaining({ tvBatchSummaryAttempts: { batch: 1 } }),
+      expect.objectContaining({
+        tvBatchSummaryAttempts: {
+          batch: { attempts: 1, outputRoot: '' },
+        },
+      }),
       expect.any(Function),
     ));
 

@@ -915,7 +915,7 @@ function readPublicationOwner(lockPath: string): PublicationOwnerSnapshot | unde
     const ownerFile = publicationLockOwnerFile(lockPath);
     const contents = fs.readFileSync(ownerFile, 'utf8');
     let owner: Partial<PublicationOwner> | undefined;
-    try { owner = JSON.parse(contents) as Partial<PublicationOwner>; } catch {}
+    try { owner = JSON.parse(contents) as Partial<PublicationOwner>; } catch { /* malformed owners are handled as unknown */ }
     const modifiedAt = fs.statSync(ownerFile).mtimeMs;
     let heartbeatAt: number | undefined;
     if (ownerFile !== lockPath && typeof owner?.token === 'string') {
@@ -1072,7 +1072,7 @@ function discardAbandonedPublicationLock(lockPath: string, observed: Publication
   if (!claimed || claimed.contents !== observed.contents || publicationOwnerState(claimed) !== 'dead') {
     try {
       if (!fs.existsSync(lockPath)) fs.renameSync(claimedPath, lockPath);
-    } catch {}
+    } catch { /* best-effort restoration before reporting lost ownership */ }
     throw new Error('Batch summary recovery ownership changed concurrently');
   }
   fs.rmSync(claimedPath, { recursive: true });
@@ -1126,6 +1126,8 @@ function takeOverPublicationLock(lockPath: string, observed: PublicationOwnerSna
       fs.renameSync(replacement, ownerFile);
     } finally {
       try { fs.unlinkSync(replacement); } catch (error) {
+        // Cleanup failure must remain visible even when the protected operation failed.
+        // eslint-disable-next-line no-unsafe-finally
         if (errorCode(error) !== 'ENOENT') throw error;
       }
     }
@@ -1202,7 +1204,7 @@ function publishWithoutHardLinks(temporaryFile: string, file: string, lockPath: 
         return;
       } catch (error) {
         if (lockHasToken(lockPath, publicationToken) && !hasValidSummaryIntegrity(file) && fs.existsSync(file)) {
-          try { fs.unlinkSync(file); } catch {}
+          try { fs.unlinkSync(file); } catch { /* preserve the publication error */ }
         }
         throw error;
       }
@@ -1278,7 +1280,7 @@ function publishReceiptWithoutHardLinks(
         if (lockHasToken(lockPath, publicationToken)) {
           try { readReceipt(); } catch (readError) {
             if (!canRecoverReceiptRead(readError)) throw readError;
-            try { fs.unlinkSync(receiptFile); } catch {}
+            try { fs.unlinkSync(receiptFile); } catch { /* preserve the reservation error */ }
           }
         }
         throw error;

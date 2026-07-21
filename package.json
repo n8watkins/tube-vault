@@ -8,7 +8,9 @@
     "lint": "eslint .",
     "test": "node --test scripts/*.test.mjs && npm test --prefix extension && npm test --prefix helper",
     "test:e2e": "npm run build && playwright test",
-    "check": "npm run lint && npm run typecheck && npm test && npm run build",
+    "changelog": "node scripts/generate-changelog.mjs",
+    "changelog:check": "node scripts/generate-changelog.mjs --check",
+    "check": "npm run lint && npm run typecheck && npm test && npm run changelog:check && npm run build",
     "sync:windows": "node scripts/sync-windows.mjs",
     "release:patch": "node scripts/release-patch.mjs"
   },

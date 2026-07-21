@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 export const VERSION_FILES = ['extension/package.json', 'extension/manifest.json', 'extension/package-lock.json'];
+export const RELEASE_FILES = [...VERSION_FILES, 'CHANGELOG.md'];
 
 function run(command, args, cwd = repoRoot) {
   const result = spawnSync(command, args, { cwd, stdio: 'inherit' });
@@ -50,11 +51,13 @@ export async function releasePatch({
   const packagePath = resolve(root, 'extension/package.json');
   const manifestPath = resolve(root, 'extension/manifest.json');
   const lockfilePath = resolve(root, 'extension/package-lock.json');
+  const changelogPath = resolve(root, 'CHANGELOG.md');
   if (!cleanCheck(['diff', '--quiet']) || !cleanCheck(['diff', '--cached', '--quiet'])) {
     throw new Error('Release requires no tracked or staged changes. Untracked files are allowed.');
   }
 
-  const originalContents = await Promise.all([packagePath, manifestPath, lockfilePath].map((file) => readFile(file, 'utf8')));
+  const releasePaths = [packagePath, manifestPath, lockfilePath, changelogPath];
+  const originalContents = await Promise.all(releasePaths.map((file) => readFile(file, 'utf8')));
   const extensionPackage = JSON.parse(originalContents[0]);
   const manifest = JSON.parse(originalContents[1]);
   const lockfile = JSON.parse(originalContents[2]);
@@ -63,24 +66,25 @@ export async function releasePatch({
 
   const version = nextPatchVersion(extensionPackage.version);
   setVersion(extensionPackage, manifest, lockfile, version);
-  let versionFilesChanged = false;
+  let releaseFilesChanged = false;
   try {
-    versionFilesChanged = true;
+    releaseFilesChanged = true;
     await Promise.all([
       writeFile(packagePath, `${JSON.stringify(extensionPackage, null, 2)}\n`),
       writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`),
       writeFile(lockfilePath, `${JSON.stringify(lockfile, null, 2)}\n`),
     ]);
 
+    runCommand('npm', ['run', 'changelog', '--', '--version', version]);
     runCommand('npm', ['run', 'build']);
-    runCommand('git', ['add', '--', ...VERSION_FILES]);
+    runCommand('git', ['add', '--', ...RELEASE_FILES]);
     runCommand('git', ['commit', '-m', `build(tube-vault): v${version}`]);
   } catch (error) {
-    if (versionFilesChanged) {
+    if (releaseFilesChanged) {
       await restoreVersionFiles(
-        [packagePath, manifestPath, lockfilePath],
+        releasePaths,
         originalContents,
-        () => runCommand('git', ['add', '--', ...VERSION_FILES]),
+        () => runCommand('git', ['add', '--', ...RELEASE_FILES]),
       );
     }
     throw error;

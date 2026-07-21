@@ -31,6 +31,7 @@ npm run build
 npm run typecheck
 npm run lint
 npm test
+npm run changelog:check
 npm run check
 ```
 
@@ -72,6 +73,7 @@ npm run release:patch
 ```
 
 See [README.md](README.md) for the release validation, rollback, commit, and publication contract.
+The release command regenerates and stages `CHANGELOG.md`; never edit that generated file manually.
 
 ## Key Files
 

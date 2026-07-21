@@ -18,6 +18,7 @@ See [README.md](README.md) for current features and backlog.
 - The options Downloads tab contains status filters, grouped history, folder actions, JSON export, and history clearing.
 - History can be disabled, retained for a configured number of days, and is capped at 100 finished jobs.
 - A batch overview is requested after its final member settles, with successful writes deduplicated and each write attempted up to three times.
+- Matching date-named batch summaries from v0.3.80 are reused so an upgrade does not create a duplicate summary.
 - Finished private-history batch details are removed after summary success or retry exhaustion.
 - The helper implements probing, video listing, per-video custom downloads, cancellation, and batch summaries.
 - Playlist and channel confirmation dialogs support per-video selection, thumbnails, expected size, duration, views, and duplicate detection.

@@ -51,6 +51,8 @@ npm run sync:windows -- --target /mnt/c/Users/<you>/Projects/tube-vault
 
 Select that checkout's `extension` directory in Chrome.
 The target can also be supplied through `TUBE_VAULT_WINDOWS_REPO`.
+Sync publication is transactional and restores the previous allowlisted artifacts if publication fails.
+The next sync recovers an interrupted transaction before publishing new artifacts.
 
 ## Register the Native Messaging Host
 

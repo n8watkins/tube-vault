@@ -97,7 +97,9 @@ You can set `TUBE_VAULT_WINDOWS_REPO` instead of passing `--target`.
 The CLI argument takes precedence when both are present.
 The destination must be the absolute root of an existing Git repository with TubeVault extension and helper package identities.
 The command copies only the extension manifest, HTML, icons, bundles, helper bundles, and helper package metadata.
-It never deletes destination files.
+The copy is transactional: a failed publication restores every replaced allowlisted file and removes only newly installed allowlisted files.
+The next sync also recovers an interrupted transaction before publishing new artifacts.
+Files outside the allowlist are never deleted.
 
 Reload the unpacked extension at `chrome://extensions` after syncing.
 
@@ -111,6 +113,7 @@ npm run release:patch
 
 The release command requires clean tracked and staged files, while unrelated untracked files are allowed.
 It verifies matching package, manifest, and lockfile versions, runs the full check, increments all four version records across those three files, rebuilds, stages those files, and commits `build(tube-vault): vX.Y.Z`.
+If rebuilding, staging, or committing fails after the version change, the command restores the original version files and Git index.
 It does not sync to Windows or push.
 
 ## Options Page

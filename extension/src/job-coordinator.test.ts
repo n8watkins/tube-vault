@@ -255,6 +255,7 @@ describe('JobCoordinator', () => {
     await test.coordinator.whenIdle();
 
     expect(test.calls.map((call) => call.action)).toEqual(['probe', 'custom']);
+    expect(test.calls[0]).toMatchObject({ action: 'probe', jobId: 'id-1' });
     expect(test.jobs[0]).toMatchObject({ status: 'done', label: 'Probed once', folder: '/videos/once' });
   });
 
@@ -454,6 +455,7 @@ describe('JobCoordinator', () => {
     const test = harness({ native: async (payload) => payload.action === 'probe' && payload.url === 'one' ? probe.promise : { ok: true } });
     await test.coordinator.enqueue({ items: [{ url: 'one' }, { url: 'two', bytes: 1 }] });
     await vi.waitFor(() => expect(test.jobs[0].status).toBe('probing'));
+    expect(test.calls[0]).toMatchObject({ action: 'probe', jobId: test.jobs[0].id });
     await test.coordinator.cancelJob(test.jobs[0].id);
     probe.resolve({ ok: true });
     await test.coordinator.whenIdle();

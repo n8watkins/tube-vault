@@ -7,7 +7,10 @@ import { spawn } from 'node:child_process';
 import test from 'node:test';
 import { readProcessIdentity } from './downloader';
 
-const jobsDirectory = path.join(os.tmpdir(), 'tube-vault-jobs');
+const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tube-vault-index-test-'));
+const jobsDirectory = path.join(testRoot, 'jobs');
+
+test.after(() => fs.rmSync(testRoot, { recursive: true, force: true }));
 
 function isAlive(pid: number): boolean {
   try {
@@ -23,7 +26,11 @@ async function nativeRequest(payload: Record<string, unknown>): Promise<Record<s
     '-r',
     'ts-node/register/transpile-only',
     path.join(__dirname, 'index.ts'),
-  ], { cwd: path.join(__dirname, '..'), stdio: ['pipe', 'pipe', 'inherit'] });
+  ], {
+    cwd: path.join(__dirname, '..'),
+    env: { ...process.env, NODE_ENV: 'test', TUBE_VAULT_TEST_JOBS_DIR: jobsDirectory },
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
   const body = Buffer.from(JSON.stringify(payload));
   const header = Buffer.alloc(4);
   header.writeUInt32LE(body.length);
@@ -62,8 +69,9 @@ test('native cancellation rejects a reused PID and preserves its owner record', 
   const jobId = `stale-${process.pid}`;
   const file = ownerFile(jobId);
   try {
-    fs.mkdirSync(jobsDirectory, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ pid: victim.pid, processIdentity: 'wrong-incarnation' }));
+    fs.mkdirSync(jobsDirectory, { recursive: true, mode: 0o700 });
+    fs.chmodSync(jobsDirectory, 0o700);
+    fs.writeFileSync(file, JSON.stringify({ pid: victim.pid, processIdentity: 'wrong-incarnation' }), { mode: 0o600 });
     const response = await nativeRequest({ action: 'cancel', jobId });
     assert.deepEqual(response, { ok: false, status: 'failed', error: 'Job not found or already finished' });
     assert.equal(isAlive(victim.pid as number), true);
@@ -85,8 +93,9 @@ test('native cancellation terminates only the matching process incarnation', asy
     return;
   }
   try {
-    fs.mkdirSync(jobsDirectory, { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ pid: victim.pid, processIdentity: identity }));
+    fs.mkdirSync(jobsDirectory, { recursive: true, mode: 0o700 });
+    fs.chmodSync(jobsDirectory, 0o700);
+    fs.writeFileSync(file, JSON.stringify({ pid: victim.pid, processIdentity: identity }), { mode: 0o600 });
     const exited = once(victim, 'exit');
     const response = await nativeRequest({ action: 'cancel', jobId });
     await exited;
@@ -96,5 +105,53 @@ test('native cancellation terminates only the matching process incarnation', asy
   } finally {
     if (isAlive(victim.pid as number)) victim.kill('SIGKILL');
     fs.rmSync(file, { force: true });
+  }
+});
+
+test('native cancellation rejects an unsafe registry directory', async () => {
+  const victim = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
+  const jobId = `unsafe-${process.pid}`;
+  const file = ownerFile(jobId);
+  const identity = readProcessIdentity(victim.pid as number);
+  if (!identity) {
+    victim.kill('SIGKILL');
+    return;
+  }
+  try {
+    fs.mkdirSync(jobsDirectory, { recursive: true, mode: 0o700 });
+    fs.chmodSync(jobsDirectory, 0o777);
+    fs.writeFileSync(file, JSON.stringify({ pid: victim.pid, processIdentity: identity }), { mode: 0o600 });
+    const response = await nativeRequest({ action: 'cancel', jobId });
+    assert.deepEqual(response, { ok: false, status: 'failed', error: 'Job not found or already finished' });
+    assert.equal(isAlive(victim.pid as number), true);
+    assert.equal(fs.existsSync(file), true);
+  } finally {
+    victim.kill('SIGKILL');
+    fs.rmSync(jobsDirectory, { recursive: true, force: true });
+  }
+});
+
+test('native cancellation rejects a symlinked registry directory', async () => {
+  const victim = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
+  const jobId = `symlink-${process.pid}`;
+  const controlledDirectory = path.join(testRoot, 'controlled');
+  const file = path.join(controlledDirectory, `${jobId}.pid`);
+  const identity = readProcessIdentity(victim.pid as number);
+  if (!identity) {
+    victim.kill('SIGKILL');
+    return;
+  }
+  try {
+    fs.mkdirSync(controlledDirectory, { mode: 0o700 });
+    fs.writeFileSync(file, JSON.stringify({ pid: victim.pid, processIdentity: identity }), { mode: 0o600 });
+    fs.symlinkSync(controlledDirectory, jobsDirectory, 'dir');
+    const response = await nativeRequest({ action: 'cancel', jobId });
+    assert.deepEqual(response, { ok: false, status: 'failed', error: 'Job not found or already finished' });
+    assert.equal(isAlive(victim.pid as number), true);
+    assert.equal(fs.existsSync(file), true);
+  } finally {
+    victim.kill('SIGKILL');
+    fs.rmSync(jobsDirectory, { force: true });
+    fs.rmSync(controlledDirectory, { recursive: true, force: true });
   }
 });

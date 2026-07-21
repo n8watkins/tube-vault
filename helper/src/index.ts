@@ -29,38 +29,72 @@ const ALLOWED_ACTIONS: Action[] = [
 ];
 
 // A running download writes its node pid here keyed by jobId, so a separate
-// `cancel` invocation can signal it. Lives in the shared WSL tmp dir.
-const JOBS_DIR = path.join(os.tmpdir(), 'tube-vault-jobs');
+// `cancel` invocation can signal it.
+const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+const defaultJobsDirectory = path.join(os.tmpdir(), `tube-vault-jobs-${uid ?? os.userInfo().username}`);
+const JOBS_DIR = process.env.NODE_ENV === 'test' && process.env.TUBE_VAULT_TEST_JOBS_DIR
+  ? process.env.TUBE_VAULT_TEST_JOBS_DIR
+  : defaultJobsDirectory;
 const pidFile = (jobId: string) => path.join(JOBS_DIR, `${jobId}.pid`);
 interface JobOwner { pid: number; processIdentity: string; }
 
-function writePid(jobId: string): string | undefined {
+function assertPrivatePath(target: string, kind: 'directory' | 'file'): void {
+  const stats = fs.lstatSync(target);
+  if (kind === 'directory' ? !stats.isDirectory() : !stats.isFile()) throw new Error(`Unsafe job ${kind}`);
+  if (uid !== undefined && stats.uid !== uid) throw new Error(`Unsafe job ${kind} owner`);
+  if (process.platform !== 'win32' && (stats.mode & 0o077) !== 0) throw new Error(`Unsafe job ${kind} permissions`);
+}
+
+function ensureJobsDirectory(): void {
+  try {
+    fs.mkdirSync(JOBS_DIR, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  }
+  assertPrivatePath(JOBS_DIR, 'directory');
+}
+
+function writePid(jobId: string): string {
   const processIdentity = readProcessIdentity(process.pid);
-  if (!processIdentity) return undefined;
+  if (!processIdentity) throw new Error('Process identity is unavailable');
   const contents = JSON.stringify({ pid: process.pid, processIdentity });
   const temporaryFile = path.join(JOBS_DIR, `.${jobId}.${randomUUID()}.tmp`);
   try {
-    fs.mkdirSync(JOBS_DIR, { recursive: true, mode: 0o700 });
+    ensureJobsDirectory();
     fs.writeFileSync(temporaryFile, contents, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
     fs.renameSync(temporaryFile, pidFile(jobId));
     return contents;
-  } catch {
+  } catch (error) {
     try { fs.unlinkSync(temporaryFile); } catch { /* ignore */ }
-    return undefined;
+    throw error;
   }
 }
 function clearPid(jobId: string, expectedContents: string): void {
   try {
+    ensureJobsDirectory();
+    assertPrivatePath(pidFile(jobId), 'file');
     if (fs.readFileSync(pidFile(jobId), 'utf8') === expectedContents) fs.unlinkSync(pidFile(jobId));
   } catch { /* ignore */ }
 }
 function readJobOwner(jobId: string): { owner: JobOwner; contents: string } {
+  ensureJobsDirectory();
+  assertPrivatePath(pidFile(jobId), 'file');
   const contents = fs.readFileSync(pidFile(jobId), 'utf8');
   const owner = JSON.parse(contents) as Partial<JobOwner>;
   if (!Number.isInteger(owner.pid) || (owner.pid as number) <= 0 || typeof owner.processIdentity !== 'string') {
     throw new Error('Invalid job owner');
   }
   return { owner: owner as JobOwner, contents };
+}
+
+async function withJobOwner<T>(jobId: string | undefined, operation: () => Promise<T>): Promise<T> {
+  if (!jobId) return operation();
+  const ownerContents = writePid(jobId);
+  try {
+    return await operation();
+  } finally {
+    clearPid(jobId, ownerContents);
+  }
 }
 
 // When cancelled, kill our yt-dlp children and exit. The pending sendNativeMessage
@@ -133,8 +167,16 @@ readMessages(async (raw) => {
   if (req.action === 'probe') {
     const url = req.url as string;
     if (!isValidYouTubeUrl(url)) { writeMessage({ ok: false, status: 'failed', error: 'Invalid URL' }); return; }
-    const p = await probeVideo(url, req.components as DownloadComponents | undefined);
-    writeMessage({ ok: true, status: 'ok', title: p.title, bytes: p.bytes, duration: p.duration, views: p.views });
+    if (req.jobId !== undefined && !isValidJobId(req.jobId)) {
+      writeMessage({ ok: false, status: 'failed', error: 'Invalid job ID' });
+      return;
+    }
+    try {
+      const p = await withJobOwner(req.jobId, () => probeVideo(url, req.components as DownloadComponents | undefined));
+      writeMessage({ ok: true, status: 'ok', title: p.title, bytes: p.bytes, duration: p.duration, views: p.views });
+    } catch (error) {
+      writeMessage({ ok: false, status: 'failed', error: error instanceof Error ? error.message : 'Probe failed' });
+    }
     return;
   }
 
@@ -182,11 +224,10 @@ readMessages(async (raw) => {
     return;
   }
   const jobId = req.jobId;
-  const ownerContents = jobId ? writePid(jobId) : undefined;
   try {
-    const res = await handle(req as unknown as DownloadRequest);
+    const res = await withJobOwner(jobId, () => handle(req as unknown as DownloadRequest));
     writeMessage(res);
-  } finally {
-    if (jobId && ownerContents) clearPid(jobId, ownerContents);
+  } catch (error) {
+    writeMessage({ ok: false, status: 'failed', error: error instanceof Error ? error.message : 'Download failed' });
   }
 });

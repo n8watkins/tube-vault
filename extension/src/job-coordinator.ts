@@ -282,7 +282,12 @@ export class JobCoordinator {
     let job = originalJob;
     if (job.estBytes === undefined) {
       if (!(await this.updateJob(job.id, { status: 'probing' }))) return;
-      const probe = await this.safeNative({ action: 'probe', url: job.videoUrl, components: job.components });
+      const probe = await this.safeNative({
+        action: 'probe',
+        url: job.videoUrl,
+        components: job.components,
+        jobId: job.id,
+      });
       const patch: Partial<Job> = {
         status: 'running',
         estBytes: probe?.ok && typeof probe.bytes === 'number' ? probe.bytes : 0,

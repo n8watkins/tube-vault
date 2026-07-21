@@ -56,6 +56,44 @@ test('rejects symlinked artifact paths before publishing', async () => {
   assert.equal(await readFile(join(outside, 'content-script.js'), 'utf8'), 'preserved\n');
 });
 
+test('rejects an existing artifact directory without moving or deleting it', async () => {
+  const testRoot = await mkdtemp(join(tmpdir(), 'tube-vault-sync-directory-test-'));
+  const source = join(testRoot, 'source');
+  const target = join(testRoot, 'target');
+  const relativePath = 'extension/manifest.json';
+  await mkdir(join(source, 'extension'), { recursive: true });
+  await mkdir(join(target, relativePath), { recursive: true });
+  await writeFile(join(source, relativePath), 'new\n');
+  await writeFile(join(target, relativePath, 'preserved.txt'), 'preserved\n');
+
+  await assert.rejects(syncArtifacts(source, target, [relativePath]), /not a regular file/);
+
+  assert.equal(await readFile(join(target, relativePath, 'preserved.txt'), 'utf8'), 'preserved\n');
+  assert.deepEqual((await readdir(target)).filter((name) => name.startsWith('.tube-vault-sync-')), []);
+});
+
+test('preserves an artifact directory that appears before backup', async () => {
+  const testRoot = await mkdtemp(join(tmpdir(), 'tube-vault-sync-concurrent-directory-test-'));
+  const source = join(testRoot, 'source');
+  const target = join(testRoot, 'target');
+  const relativePath = 'extension/manifest.json';
+  const destination = join(target, relativePath);
+  await mkdir(join(source, 'extension'), { recursive: true });
+  await mkdir(join(target, 'extension'), { recursive: true });
+  await writeFile(join(source, relativePath), 'new\n');
+  await writeFile(destination, 'old\n');
+
+  await assert.rejects(syncArtifacts(source, target, [relativePath], {
+    beforeInstall: async () => {
+      await rm(destination);
+      await mkdir(destination);
+      await writeFile(join(destination, 'preserved.txt'), 'preserved\n');
+    },
+  }));
+
+  assert.equal(await readFile(join(destination, 'preserved.txt'), 'utf8'), 'preserved\n');
+});
+
 test('does not follow a staged destination symlink created concurrently', async () => {
   const testRoot = await mkdtemp(join(tmpdir(), 'tube-vault-sync-staging-symlink-test-'));
   const source = join(testRoot, 'source');

@@ -117,7 +117,19 @@ async function requireSafeTransactionPath(transactionRoot, relativePath = '') {
 }
 
 async function requireSafeArtifactPaths(target, entries) {
-  for (const { relativePath } of entries) await requireSafeTargetPath(target, relativePath);
+  for (const { relativePath } of entries) {
+    await requireSafeTargetPath(target, relativePath);
+    await readTargetArtifact(join(target, relativePath));
+  }
+}
+
+async function readTargetArtifact(path) {
+  const info = await lstat(path, { bigint: true }).catch((error) => {
+    if (error?.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (info && !info.isFile()) throw new Error(`Sync target artifact is not a regular file: ${path}`);
+  return info;
 }
 
 async function syncDirectory(path) {
@@ -621,7 +633,7 @@ async function restoreTransaction(target, transactionRoot, entries) {
       throw error;
     });
     let claimed;
-    if (await pathExists(destination)) {
+    if (await readTargetArtifact(destination)) {
       const claimRoot = await createTemporaryDirectoryDurably(join(transactionRoot, '.rollback-'));
       const claimPath = join(claimRoot, 'artifact');
       try {
@@ -701,10 +713,7 @@ export async function syncArtifacts(sourceRoot, target, files = SYNC_FILES, hook
           await copyFileDurably(join(sourceRoot, relativePath), staged);
           await syncFile(staged);
           await syncDirectory(dirname(staged));
-          const destinationInfo = await lstat(join(target, relativePath), { bigint: true }).catch((error) => {
-            if (error?.code === 'ENOENT') return null;
-            throw error;
-          });
+          const destinationInfo = await readTargetArtifact(join(target, relativePath));
           entries.push({
             relativePath,
             existed: Boolean(destinationInfo),
@@ -725,6 +734,10 @@ export async function syncArtifacts(sourceRoot, target, files = SYNC_FILES, hook
               await mkdirDurably(resolve(backup, '..'));
               await requireSafeTargetPath(target, entry.relativePath);
               await requireSafeTransactionPath(transactionRoot, `backups/${entry.relativePath}`);
+              const currentInfo = await readTargetArtifact(destination);
+              if (!currentInfo || !hasFileIdentity(currentInfo, entry.identity)) {
+                throw new Error(`Sync target artifact changed concurrently before backup: ${destination}`);
+              }
               await syncFile(destination);
               await renameDurably(destination, backup);
               const backupInfo = await lstat(backup, { bigint: true });

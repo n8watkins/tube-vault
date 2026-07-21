@@ -1,6 +1,6 @@
 import { constants } from 'node:fs';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { cp, link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, unlink } from 'node:fs/promises';
+import { link, lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rename, rm, stat, unlink } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { isAbsolute as isWindowsAbsolute } from 'node:path/win32';
@@ -267,7 +267,35 @@ async function writeFileExclusivelyDurably(path, contents) {
 }
 
 async function copyFileDurably(source, destination) {
-  await mutateDurably([destination], ([anchoredDestination]) => cp(source, anchoredDestination));
+  const sourceHandle = await open(source, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const sourceInfo = await sourceHandle.stat();
+    if (!sourceInfo.isFile()) throw new Error(`Sync source artifact is not a regular file: ${source}`);
+    await mutateDurably([destination], async ([anchoredDestination]) => {
+      const destinationHandle = await open(
+        anchoredDestination,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+        sourceInfo.mode,
+      );
+      try {
+        const buffer = Buffer.allocUnsafe(64 * 1024);
+        let bytesRead;
+        do {
+          ({ bytesRead } = await sourceHandle.read(buffer, 0, buffer.length));
+          let bytesWritten = 0;
+          while (bytesWritten < bytesRead) {
+            const result = await destinationHandle.write(buffer, bytesWritten, bytesRead - bytesWritten);
+            bytesWritten += result.bytesWritten;
+          }
+        } while (bytesRead > 0);
+        await destinationHandle.sync();
+      } finally {
+        await destinationHandle.close();
+      }
+    });
+  } finally {
+    await sourceHandle.close();
+  }
 }
 
 async function removeDurably(path, options = {}) {
@@ -666,9 +694,10 @@ export async function syncArtifacts(sourceRoot, target, files = SYNC_FILES, hook
       const entries = [];
       let removeTransaction = false;
       try {
-        for (const { relativePath } of requestedEntries) {
+        for (const [index, { relativePath }] of requestedEntries.entries()) {
           const staged = join(transactionRoot, 'files', relativePath);
           await mkdirDurably(resolve(staged, '..'));
+          await hooks.beforeStageCopy?.(relativePath, index, staged);
           await copyFileDurably(join(sourceRoot, relativePath), staged);
           await syncFile(staged);
           await syncDirectory(dirname(staged));

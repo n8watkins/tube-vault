@@ -56,6 +56,26 @@ test('rejects symlinked artifact paths before publishing', async () => {
   assert.equal(await readFile(join(outside, 'content-script.js'), 'utf8'), 'preserved\n');
 });
 
+test('does not follow a staged destination symlink created concurrently', async () => {
+  const testRoot = await mkdtemp(join(tmpdir(), 'tube-vault-sync-staging-symlink-test-'));
+  const source = join(testRoot, 'source');
+  const target = join(testRoot, 'target');
+  const outside = join(testRoot, 'outside.txt');
+  const relativePath = 'extension/manifest.json';
+  await mkdir(join(source, 'extension'), { recursive: true });
+  await mkdir(join(target, 'extension'), { recursive: true });
+  await writeFile(join(source, relativePath), 'new\n');
+  await writeFile(outside, 'preserved\n');
+
+  await assert.rejects(syncArtifacts(source, target, [relativePath], {
+    beforeStageCopy: async (_relativePath, _index, staged) => {
+      await symlink(outside, staged, 'file');
+    },
+  }), /EEXIST/);
+
+  assert.equal(await readFile(outside, 'utf8'), 'preserved\n');
+});
+
 test('rolls back every artifact when installation fails partway through', async () => {
   const source = await mkdtemp(join(tmpdir(), 'tube-vault-sync-source-'));
   const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));

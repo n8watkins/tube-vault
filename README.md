@@ -13,9 +13,9 @@ A local Node.js native messaging helper runs `yt-dlp` and `ffmpeg` without a Tub
 - Keeps downloads and queue-time probes serial, while planning and visible-row probes use bounded concurrency.
 - Supports SponsorBlock chapter marking or explicit segment removal.
 - Supports concurrent media fragments for faster individual downloads.
-- Shows active work, queued batches, recent results, and cancellation controls in the popup.
+- Shows active work, queued batches, recent results, and acknowledged cancellation controls in the popup.
 - Stores optional local download history with retention controls, export, and a 100-item cap.
-- Recovers safely when Chrome restarts the extension service worker during a queue.
+- On restart, durably cancels interrupted native work before marking it interrupted or cancelled and resuming the queue.
 - Uses a cross-platform helper on Windows with WSL, macOS, and Linux.
 - Resolves a platform-appropriate default output folder without hardcoded usernames.
 

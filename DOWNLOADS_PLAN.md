@@ -12,8 +12,8 @@ See [README.md](README.md) for current features and backlog.
 - Playlist and channel jobs share a batch ID, label, category, sequential index, and selected total.
 - Jobs with unknown sizes are probed immediately before download, refreshing the title when available.
 - Downloads and queue-time probes run through one strictly serial queue, while planning and visible-row probes use bounded concurrency.
-- Individual jobs and complete batches can be cancelled.
-- Interrupted probing or running jobs become failed with an `Interrupted` error after a service-worker restart.
+- Individual jobs and complete batches enter a cancelling state until the helper acknowledges a durable cancellation request.
+- After a service-worker restart, interrupted probing or running jobs become failed with an `Interrupted` error, while interrupted cancellations become cancelled, only after the helper acknowledges cancellation.
 - The popup shows active work, grouped queued batches, recent results, and inline cancellation.
 - The options Downloads tab contains status filters, grouped history, folder actions, JSON export, and history clearing.
 - History can be disabled, retained for a configured number of days, and is capped at 100 finished jobs.

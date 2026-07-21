@@ -28,8 +28,8 @@ const ALLOWED_ACTIONS: Action[] = [
   'diagnostics',
 ];
 
-// A running download writes its node pid here keyed by jobId, so a separate
-// `cancel` invocation can signal it.
+// A cancellable probe or download records its owner here by jobId so a separate
+// `cancel` invocation can durably request cancellation and signal the right process.
 const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
 const defaultJobsDirectory = path.join(os.tmpdir(), `tube-vault-jobs-${uid ?? os.userInfo().username}`);
 const JOBS_DIR = process.env.NODE_ENV === 'test' && process.env.TUBE_VAULT_TEST_JOBS_DIR
@@ -136,8 +136,8 @@ async function waitForOwnerExit(owner: JobOwner): Promise<boolean> {
   return readProcessIdentity(owner.pid) !== owner.processIdentity;
 }
 
-// When cancelled, kill our yt-dlp children and exit. The pending sendNativeMessage
-// in the service worker then resolves with a closed port → treated as cancelled.
+// When cancelled, kill our yt-dlp children and exit. The separate cancel invocation
+// waits for this process to exit before acknowledging cancellation.
 process.on('SIGTERM', () => { killActive(); process.exit(0); });
 
 // Open a folder in the OS file manager. Under WSL we hand a Windows path to Explorer

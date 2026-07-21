@@ -192,7 +192,9 @@ describe('JobCoordinator', () => {
     expect(test.jobs[1].status).toBe('queued');
     firstDownload.resolve({ ok: true });
     await test.coordinator.whenIdle();
-    expect(test.calls.map((call) => call.action)).toEqual(['probe', 'custom', 'probe', 'custom', 'batch_summary']);
+    expect(test.calls.map((call) => call.action)).toEqual([
+      'probe', 'custom', 'probe', 'custom', 'batch_summary', 'batch_summary_finalize',
+    ]);
   });
 
   it('records native download failures and continues with the queue', async () => {
@@ -281,11 +283,14 @@ describe('JobCoordinator', () => {
 
   it('applies age retention and the 100-item finished history cap', async () => {
     const day = 86_400_000;
-    const old = job('expired', 'done', { batchId: 'expired-batch', finishedAt: 1, summaryWritten: true });
+    const old = job('expired', 'done', {
+      batchId: 'expired-batch', finishedAt: 1, summaryWritten: true, summaryReceiptCleaned: true,
+    });
     const recent = Array.from({ length: 101 }, (_, index) => job(`recent-${index}`, 'done', {
       batchId: `recent-batch-${index}`,
       finishedAt: 20 * day + index,
       summaryWritten: true,
+      summaryReceiptCleaned: true,
     }));
     const download = deferred<NativeResponse>();
     const test = harness({
@@ -313,7 +318,9 @@ describe('JobCoordinator', () => {
   it('clears summary attempt state only for batches removed from history', async () => {
     const test = harness({
       jobs: [
-        job('finished', 'done', { batchId: 'finished-batch', summaryWritten: true }),
+        job('finished', 'done', {
+          batchId: 'finished-batch', summaryWritten: true, summaryReceiptCleaned: true,
+        }),
         job('active', 'queued', { batchId: 'active-batch', estBytes: 1 }),
       ],
       native: async () => deferred<NativeResponse>().promise,
@@ -330,7 +337,9 @@ describe('JobCoordinator', () => {
       jobs: [
         job('settled', 'done', { batchId: 'batch', finishedAt: 1 }),
         job('active', 'running', { batchId: 'batch' }),
-        job('completed', 'done', { batchId: 'completed', summaryWritten: true }),
+        job('completed', 'done', {
+          batchId: 'completed', summaryWritten: true, summaryReceiptCleaned: true,
+        }),
       ],
       settings: { collectHistory: false },
       native: async (payload) => payload.action === 'custom' ? activeDownload.promise : { ok: true },
@@ -352,6 +361,7 @@ describe('JobCoordinator', () => {
       batchId: `completed-batch-${index}`,
       finishedAt: 20 * day + index,
       summaryWritten: true,
+      summaryReceiptCleaned: true,
     }));
     const test = harness({ jobs: [...protectedJobs, ...completed], settings: { historyRetentionDays: 10 } });
     test.setNow(25 * day);
@@ -479,8 +489,9 @@ describe('JobCoordinator', () => {
       values: { tvBatchSummaryAttempts: { batch: 3 } },
     });
     await test.coordinator.initialize();
-    expect(test.calls).toEqual([]);
-    expect(test.values.tvBatchSummaryAttempts).toEqual({ batch: 3 });
+    await vi.waitFor(() => expect(test.calls).toContainEqual({ action: 'batch_summary_finalize', batchId: 'batch' }));
+    expect(test.calls.filter((call) => call.action === 'batch_summary')).toEqual([]);
+    expect(test.values.tvBatchSummaryAttempts).toEqual({});
   });
 
   it('serializes attempt increments with retry-state reconciliation', async () => {
@@ -505,7 +516,8 @@ describe('JobCoordinator', () => {
 
     await vi.waitFor(() => {
       expect(test.calls.filter((call) => call.action === 'batch_summary')).toHaveLength(3);
-      expect(test.values.tvBatchSummaryAttempts).toEqual({ batch: { attempts: 3, outputRoot: '/videos' } });
+      expect(test.calls.filter((call) => call.action === 'batch_summary_finalize')).toHaveLength(1);
+      expect(test.values.tvBatchSummaryAttempts).toEqual({});
     });
   });
 
@@ -516,6 +528,54 @@ describe('JobCoordinator', () => {
     await test.coordinator.cancelBatch('id-1');
     expect(test.calls.filter((call) => call.action === 'batch_summary')).toHaveLength(1);
     expect(test.jobs.every((item) => item.summaryWritten)).toBe(true);
+    expect(test.jobs.every((item) => item.summaryReceiptCleaned)).toBe(true);
+  });
+
+  it('removes a receipt only after durably marking summary success', async () => {
+    let test!: ReturnType<typeof harness>;
+    test = harness({
+      jobs: [job('one', 'done', { batchId: 'batch' })],
+      native: async (payload) => {
+        if (payload.action === 'batch_summary_finalize') {
+          expect(test.jobs).toEqual([
+            expect.objectContaining({ batchId: 'batch', summaryWritten: true, summaryReceiptCleaned: false }),
+          ]);
+        }
+        return { ok: true };
+      },
+    });
+
+    await test.coordinator.cancelBatch('batch');
+
+    expect(test.calls.map((call) => call.action)).toEqual(['batch_summary', 'batch_summary_finalize']);
+    expect(test.jobs[0]).toMatchObject({ summaryWritten: true, summaryReceiptCleaned: true });
+  });
+
+  it('retains cleanup-pending private history and resumes receipt removal after restart', async () => {
+    const beforeRestart = harness({
+      jobs: [job('one', 'done', { batchId: 'batch' })],
+      settings: { collectHistory: false },
+      native: async (payload) => ({ ok: payload.action !== 'batch_summary_finalize' }),
+    });
+    await beforeRestart.coordinator.cancelBatch('batch');
+
+    expect(beforeRestart.jobs).toEqual([
+      expect.objectContaining({ summaryWritten: true, summaryReceiptCleaned: false }),
+    ]);
+    expect(beforeRestart.values.tvBatchSummaryAttempts).toEqual({
+      batch: { attempts: 1, outputRoot: '/videos' },
+    });
+
+    const afterRestart = harness({
+      jobs: beforeRestart.jobs,
+      settings: { collectHistory: false },
+      values: structuredClone(beforeRestart.values),
+    });
+    await afterRestart.coordinator.initialize();
+    await vi.waitFor(() => expect(afterRestart.jobs).toEqual([]));
+
+    expect(afterRestart.calls.map((call) => call.action)).toEqual(['batch_summary_finalize']);
+    expect(afterRestart.values.tvBatchSummaryAttempts).toEqual({});
   });
 
   it('deduplicates concurrent successful batch summary requests', async () => {
@@ -591,6 +651,7 @@ describe('JobCoordinator', () => {
     await test.coordinator.enqueue({ items: [{ url: 'one', bytes: 1 }, { url: 'two', bytes: 1 }], batchLabel: 'Private failed batch' });
     await test.coordinator.whenIdle();
     expect(test.calls.filter((call) => call.action === 'batch_summary')).toHaveLength(3);
+    expect(test.calls.filter((call) => call.action === 'batch_summary_finalize')).toHaveLength(1);
     expect(test.jobs).toEqual([]);
     expect(test.values.tvBatchSummaryAttempts).toEqual({});
   });

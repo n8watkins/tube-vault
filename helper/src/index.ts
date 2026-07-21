@@ -1,5 +1,5 @@
 import { readMessages, writeMessage } from './protocol';
-import { handle, killActive, probeVideo, listVideos, createBatchSummary, defaultOutputRoot, type DownloadRequest, type Action, type DownloadComponents, type BatchSummaryItem } from './downloader';
+import { handle, killActive, probeVideo, listVideos, createBatchSummary, removeBatchSummaryReceipt, defaultOutputRoot, type DownloadRequest, type Action, type DownloadComponents, type BatchSummaryItem } from './downloader';
 import { isValidYouTubeUrl, wslToWindowsPath, IS_WSL } from './sanitize';
 import { spawn } from 'child_process';
 import * as fs from 'fs';
@@ -114,6 +114,11 @@ readMessages(async (raw) => {
     const rawRoot = (req.options as { outputRoot?: string } | undefined)?.outputRoot;
     const items = (req.items as BatchSummaryItem[]) ?? [];
     writeMessage(createBatchSummary(rawRoot, req.batchId as string, req.batchLabel as string, req.category as string | undefined, items));
+    return;
+  }
+
+  if (req.action === 'batch_summary_finalize') {
+    writeMessage(removeBatchSummaryReceipt(req.batchId as string));
     return;
   }
 

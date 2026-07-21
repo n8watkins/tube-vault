@@ -747,10 +747,16 @@ function batchSummaryReceiptDir(): string {
   return path.join(base, 'tube-vault', 'batch-summary-receipts');
 }
 
+function batchSummaryReceiptFile(batchId: string, receiptDir: string): string {
+  if (typeof batchId !== 'string' || !batchId) throw new Error('Batch ID is required');
+  const batchSlug = createHash('sha256').update(batchId).digest('hex');
+  return path.join(receiptDir, `${batchSlug}.json`);
+}
+
 function reserveBatchSummaryRoot(batchId: string, root: string, receiptDir: string): string {
   ensureDir(receiptDir);
-  const batchSlug = createHash('sha256').update(batchId).digest('hex');
-  const receiptFile = path.join(receiptDir, `${batchSlug}.json`);
+  const receiptFile = batchSummaryReceiptFile(batchId, receiptDir);
+  const batchSlug = path.basename(receiptFile, '.json');
   const readReceipt = (): BatchSummaryReceipt => {
     const receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8')) as Partial<BatchSummaryReceipt>;
     if (typeof receipt.root !== 'string' || !receipt.root) throw new Error('Invalid batch summary receipt');
@@ -796,6 +802,21 @@ export function createBatchSummary(
     return { ok: true, status: 'ok', summaryPath: writeBatchSummary(root, batchId, batchLabel, category, items) };
   } catch (error) {
     return { ok: false, status: 'failed', error: error instanceof Error ? error.message : 'Could not write batch summary' };
+  }
+}
+
+export function removeBatchSummaryReceipt(
+  batchId: string,
+  receiptDir = batchSummaryReceiptDir(),
+): { ok: boolean; status: string; error?: string } {
+  try {
+    fs.unlinkSync(batchSummaryReceiptFile(batchId, receiptDir));
+    return { ok: true, status: 'ok' };
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
+      return { ok: true, status: 'ok' };
+    }
+    return { ok: false, status: 'failed', error: error instanceof Error ? error.message : 'Could not remove batch summary receipt' };
   }
 }
 

@@ -5,7 +5,7 @@ import * as os from 'os';
 import * as path from 'path';
 import {
   buildBase, parseCapture, videoFormatFlag, mediaFormatFlag, sizeForComponents,
-  createBatchSummary, resolveBatchSummaryRoot, writeBatchSummary,
+  createBatchSummary, removeBatchSummaryReceipt, resolveBatchSummaryRoot, writeBatchSummary,
   type DownloadRequest, type NamingOptions,
 } from './downloader';
 
@@ -137,6 +137,23 @@ test('createBatchSummary reuses the reserved root when a blank-root fallback cha
   } finally {
     fs.rmSync(firstRoot, { recursive: true, force: true });
     fs.rmSync(secondRoot, { recursive: true, force: true });
+    fs.rmSync(receipts, { recursive: true, force: true });
+  }
+});
+
+test('removeBatchSummaryReceipt deletes a receipt idempotently after finalization', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-cleanup-root-'));
+  const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-cleanup-receipts-'));
+  try {
+    const created = createBatchSummary(root, 'cleanup-batch', 'Cleanup batch', undefined, [], undefined, receipts);
+    assert.equal(created.ok, true);
+    assert.equal(fs.readdirSync(receipts).length, 1);
+
+    assert.deepEqual(removeBatchSummaryReceipt('cleanup-batch', receipts), { ok: true, status: 'ok' });
+    assert.deepEqual(removeBatchSummaryReceipt('cleanup-batch', receipts), { ok: true, status: 'ok' });
+    assert.deepEqual(fs.readdirSync(receipts), []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
     fs.rmSync(receipts, { recursive: true, force: true });
   }
 });

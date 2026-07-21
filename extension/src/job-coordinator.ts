@@ -20,6 +20,7 @@ export interface Job {
   finishedAt?: number;
   summaryWritten?: boolean;
   summaryExhausted?: boolean;
+  summaryReceiptCleaned?: boolean;
 }
 
 export interface CoordinatorSettings {
@@ -305,7 +306,7 @@ export class JobCoordinator {
     const settings = this.effects.getSettings();
     const protectedBatchIds = new Set(jobs.flatMap((job) => (
       job.batchId && job.batchId !== options.finalizedBatchId
-        && (isActive(job) || (!job.summaryWritten && !job.summaryExhausted))
+        && (isActive(job) || job.summaryReceiptCleaned !== true)
         ? [job.batchId]
         : []
     )));
@@ -371,6 +372,18 @@ export class JobCoordinator {
     const members = jobs.filter((job) => job.batchId === batchId);
     if (members.length === 0 || members.some(isActive)) return;
     if (members.some((job) => job.summaryWritten)) {
+      if (members.some((job) => job.summaryReceiptCleaned !== true)) {
+        if (await this.cleanupBatchSummaryReceipt(batchId)) await this.clearSummaryAttempts(batchId);
+        return;
+      }
+      await this.clearSummaryAttempts(batchId);
+      return;
+    }
+    if (members.some((job) => job.summaryExhausted)) {
+      if (members.some((job) => job.summaryReceiptCleaned !== true)) {
+        if (await this.cleanupBatchSummaryReceipt(batchId)) await this.clearSummaryAttempts(batchId);
+        return;
+      }
       await this.clearSummaryAttempts(batchId);
       return;
     }
@@ -397,11 +410,12 @@ export class JobCoordinator {
           for (const job of latestJobs) {
             if (job.batchId !== batchId) continue;
             job.summaryWritten = true;
+            job.summaryReceiptCleaned = false;
             changed = true;
           }
-          return { changed, value: undefined };
-        });
-        await this.clearSummaryAttempts(batchId);
+          return { changed, value: undefined, options: true };
+        }, true);
+        if (await this.cleanupBatchSummaryReceipt(batchId)) await this.clearSummaryAttempts(batchId);
         return;
       }
       if (attempts < MAX_SUMMARY_ATTEMPTS) await this.effects.delay(100 * attempts);
@@ -412,13 +426,27 @@ export class JobCoordinator {
       for (const job of exhaustedJobs) {
         if (job.batchId !== batchId) continue;
         job.summaryExhausted = true;
+        job.summaryReceiptCleaned = false;
         changed = true;
       }
-      return { changed, value: undefined };
-    }, { finalizedBatchId: batchId });
-    if (!(await this.effects.storage.getJobs()).some((job) => job.batchId === batchId)) {
-      await this.clearSummaryAttempts(batchId);
-    }
+      return { changed, value: undefined, options: true };
+    }, true);
+    if (await this.cleanupBatchSummaryReceipt(batchId)) await this.clearSummaryAttempts(batchId);
+  }
+
+  private async cleanupBatchSummaryReceipt(batchId: string): Promise<boolean> {
+    const response = await this.safeNative({ action: 'batch_summary_finalize', batchId });
+    if (!response?.ok) return false;
+    await this.mutateJobs((jobs) => {
+      let changed = false;
+      for (const job of jobs) {
+        if (job.batchId !== batchId || job.summaryReceiptCleaned === true) continue;
+        job.summaryReceiptCleaned = true;
+        changed = true;
+      }
+      return { changed, value: undefined, options: { finalizedBatchId: batchId } };
+    });
+    return true;
   }
 
   private async readSummaryAttemptState(): Promise<Record<string, BatchSummaryRetry>> {

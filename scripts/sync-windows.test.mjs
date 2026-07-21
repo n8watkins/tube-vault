@@ -127,6 +127,31 @@ test('rejects transaction journal paths outside the artifact allowlist', async (
   await rm(outside);
 });
 
+test('rejects symlinks in recovered transaction artifact trees', async (context) => {
+  for (const tree of ['files', 'backups']) {
+    await context.test(tree, async () => {
+      const testRoot = await mkdtemp(join(tmpdir(), 'tube-vault-sync-transaction-symlink-test-'));
+      const target = join(testRoot, 'target');
+      const transaction = join(target, '.tube-vault-sync-crafted');
+      const outside = join(testRoot, 'outside');
+      const relativePath = 'extension/manifest.json';
+      await mkdir(join(target, 'extension'), { recursive: true });
+      await mkdir(join(transaction, tree), { recursive: true });
+      await mkdir(outside, { recursive: true });
+      await writeFile(join(target, relativePath), 'partially installed\n');
+      await writeFile(join(outside, 'manifest.json'), 'preserved\n');
+      await symlink(outside, join(transaction, tree, 'extension'), 'dir');
+      await writeFile(join(transaction, 'journal.json'), JSON.stringify({
+        entries: [{ relativePath, existed: tree === 'backups' }],
+      }));
+
+      await assert.rejects(syncArtifacts(target, target, []), /Sync transaction path cannot contain a symbolic link/);
+      assert.equal(await readFile(join(outside, 'manifest.json'), 'utf8'), 'preserved\n');
+      assert.equal((await readdir(target)).includes('.tube-vault-sync-crafted'), true);
+    });
+  }
+});
+
 test('preserves transaction backups when rollback fails', async () => {
   const source = await mkdtemp(join(tmpdir(), 'tube-vault-sync-source-'));
   const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));

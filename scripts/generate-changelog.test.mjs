@@ -9,6 +9,7 @@ const commits = parseGitLog([
   '4444444\t2026-01-04\tfix: repair publication',
   '5555555\t2026-01-04\tdocs: explain recovery',
   '6666666\t2026-01-04\tdocs(tube-vault): regenerate changelog',
+  '7777777\t2026-01-04\tdocs(tube-vault): refresh changelog',
 ].join('\n'));
 
 test('collectReleases uses release commits as boundaries and skips empty releases', () => {

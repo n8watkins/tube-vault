@@ -7,7 +7,10 @@ const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const releasePattern = /^build\(tube-vault\): v(\d+\.\d+\.\d+)$/;
 const versionPattern = /^\d+\.\d+\.\d+$/;
-const ignoredSubjects = new Set(['docs(tube-vault): regenerate changelog']);
+const ignoredSubjects = new Set([
+  'docs(tube-vault): regenerate changelog',
+  'docs(tube-vault): refresh changelog',
+]);
 
 const categoryByType = new Map([
   ['feat', 'Added'],

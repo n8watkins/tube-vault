@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 import test from 'node:test';
-import { assertMatchingVersions, nextPatchVersion, restoreVersionFiles, setVersion, VERSION_FILES } from './release-patch.mjs';
+import { assertMatchingVersions, nextPatchVersion, releasePatch, restoreVersionFiles, setVersion, VERSION_FILES } from './release-patch.mjs';
 
 function records(version = '1.2.3') {
   return [{ version }, { version }, { version, packages: { '': { version } } }];
@@ -44,4 +45,41 @@ test('restores original version files before repairing the index', async () => {
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+test('failed release build restores version files and the Git index', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tube-vault-release-integration-'));
+  const extension = join(root, 'extension');
+  await mkdir(extension);
+  const [extensionPackage, manifest, lockfile] = records('0.3.81');
+  const contents = [extensionPackage, manifest, lockfile].map((value) => `${JSON.stringify(value, null, 2)}\n`);
+  const paths = VERSION_FILES.map((relativePath) => join(root, relativePath));
+  await Promise.all(paths.map((file, index) => writeFile(file, contents[index])));
+  await writeFile(join(root, 'unrelated.txt'), 'preserve me\n');
+
+  const git = (args, stdio = 'ignore') => {
+    const result = spawnSync('git', args, { cwd: root, stdio });
+    if (result.status !== 0) throw new Error(`git ${args.join(' ')} failed`);
+    return result;
+  };
+  git(['init', '--quiet']);
+  git(['config', 'user.name', 'TubeVault Test']);
+  git(['config', 'user.email', 'tube-vault@example.invalid']);
+  git(['add', '--', ...VERSION_FILES]);
+  git(['commit', '--quiet', '-m', 'fixture']);
+
+  await assert.rejects(releasePatch({
+    root,
+    runCommand: (command, args) => {
+      if (command === 'npm' && args[1] === 'check') return;
+      if (command === 'npm' && args[1] === 'build') throw new Error('simulated build failure');
+      if (command === 'git') git(args);
+    },
+  }), /simulated build failure/);
+
+  assert.deepEqual(await Promise.all(paths.map((file) => readFile(file, 'utf8'))), contents);
+  assert.equal(git(['diff', '--quiet']).status, 0);
+  assert.equal(git(['diff', '--cached', '--quiet']).status, 0);
+  assert.equal(await readFile(join(root, 'unrelated.txt'), 'utf8'), 'preserve me\n');
+  await rm(root, { recursive: true, force: true });
 });

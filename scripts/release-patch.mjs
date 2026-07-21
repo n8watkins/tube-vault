@@ -5,18 +5,15 @@ import { spawnSync } from 'node:child_process';
 
 const scriptPath = fileURLToPath(import.meta.url);
 const repoRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
-const packagePath = resolve(repoRoot, 'extension/package.json');
-const manifestPath = resolve(repoRoot, 'extension/manifest.json');
-const lockfilePath = resolve(repoRoot, 'extension/package-lock.json');
 export const VERSION_FILES = ['extension/package.json', 'extension/manifest.json', 'extension/package-lock.json'];
 
-function run(command, args) {
-  const result = spawnSync(command, args, { cwd: repoRoot, stdio: 'inherit' });
+function run(command, args, cwd = repoRoot) {
+  const result = spawnSync(command, args, { cwd, stdio: 'inherit' });
   if (result.status !== 0) throw new Error(`${command} exited with status ${result.status ?? 1}`);
 }
 
-function isClean(args) {
-  return spawnSync('git', args, { cwd: repoRoot, stdio: 'ignore' }).status === 0;
+function isClean(args, cwd = repoRoot) {
+  return spawnSync('git', args, { cwd, stdio: 'ignore' }).status === 0;
 }
 
 export function assertMatchingVersions(extensionPackage, manifest, lockfile) {
@@ -45,8 +42,15 @@ export async function restoreVersionFiles(paths, contents, stageFiles) {
   stageFiles();
 }
 
-export async function main() {
-  if (!isClean(['diff', '--quiet']) || !isClean(['diff', '--cached', '--quiet'])) {
+export async function releasePatch({
+  root = repoRoot,
+  runCommand = (command, args) => run(command, args, root),
+  cleanCheck = (args) => isClean(args, root),
+} = {}) {
+  const packagePath = resolve(root, 'extension/package.json');
+  const manifestPath = resolve(root, 'extension/manifest.json');
+  const lockfilePath = resolve(root, 'extension/package-lock.json');
+  if (!cleanCheck(['diff', '--quiet']) || !cleanCheck(['diff', '--cached', '--quiet'])) {
     throw new Error('Release requires no tracked or staged changes. Untracked files are allowed.');
   }
 
@@ -55,7 +59,7 @@ export async function main() {
   const manifest = JSON.parse(originalContents[1]);
   const lockfile = JSON.parse(originalContents[2]);
   assertMatchingVersions(extensionPackage, manifest, lockfile);
-  run('npm', ['run', 'check']);
+  runCommand('npm', ['run', 'check']);
 
   const version = nextPatchVersion(extensionPackage.version);
   setVersion(extensionPackage, manifest, lockfile, version);
@@ -68,19 +72,23 @@ export async function main() {
       writeFile(lockfilePath, `${JSON.stringify(lockfile, null, 2)}\n`),
     ]);
 
-    run('npm', ['run', 'build']);
-    run('git', ['add', '--', ...VERSION_FILES]);
-    run('git', ['commit', '-m', `build(tube-vault): v${version}`]);
+    runCommand('npm', ['run', 'build']);
+    runCommand('git', ['add', '--', ...VERSION_FILES]);
+    runCommand('git', ['commit', '-m', `build(tube-vault): v${version}`]);
   } catch (error) {
     if (versionFilesChanged) {
       await restoreVersionFiles(
         [packagePath, manifestPath, lockfilePath],
         originalContents,
-        () => run('git', ['add', '--', ...VERSION_FILES]),
+        () => runCommand('git', ['add', '--', ...VERSION_FILES]),
       );
     }
     throw error;
   }
+}
+
+export async function main() {
+  await releasePatch();
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === scriptPath) {

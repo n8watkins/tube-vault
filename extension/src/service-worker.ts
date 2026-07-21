@@ -108,7 +108,9 @@ const coordinator = new JobCoordinator({
 });
 
 chrome.alarms?.onAlarm.addListener((alarm) => {
-  if (alarm.name === QUEUE_WAKE_ALARM) coordinator.wakeQueue();
+  if (alarm.name === QUEUE_WAKE_ALARM) {
+    void ensureCoordinatorReady().then(() => coordinator.wakeQueue()).catch(() => undefined);
+  }
 });
 
 let coordinatorReady: Promise<void> | null = null;

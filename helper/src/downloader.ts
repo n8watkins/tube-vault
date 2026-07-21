@@ -809,9 +809,18 @@ function hasValidSummaryIntegrity(file: string): boolean {
     const body = content.slice(0, markerStart + 1);
     const digest = content.slice(markerStart + 1 + SUMMARY_INTEGRITY_PREFIX.length, -1);
     return /^[a-f0-9]{64}$/.test(digest) && createHash('sha256').update(body).digest('hex') === digest;
-  } catch {
-    return false;
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return false;
+    throw error;
   }
+}
+
+class InvalidBatchSummaryReceiptError extends Error {}
+
+function canRecoverReceiptRead(error: unknown): boolean {
+  return errorCode(error) === 'ENOENT'
+    || error instanceof SyntaxError
+    || error instanceof InvalidBatchSummaryReceiptError;
 }
 
 function publicationLockOwnerFile(lockPath: string): string {
@@ -999,7 +1008,7 @@ function waitForPublicationLease(file: string, lockPath: string, snapshot: Publi
   const signal = new Int32Array(new SharedArrayBuffer(4));
   let deadline = publicationLeaseDeadline(snapshot);
   while (Date.now() < deadline) {
-    if (fs.existsSync(file) && hasValidSummaryIntegrity(file)) return true;
+    if (hasValidSummaryIntegrity(file)) return true;
     const current = readPublicationOwner(lockPath);
     if (!current || current.contents !== snapshot.contents) return false;
     snapshot = current;
@@ -1097,7 +1106,7 @@ function takeOverPublicationLock(lockPath: string, observed: PublicationOwnerSna
 }
 
 function recoverInterruptedPublication(file: string, lockPath: string): boolean {
-  if (fs.existsSync(file) && hasValidSummaryIntegrity(file)) {
+  if (hasValidSummaryIntegrity(file)) {
     const published = fs.openSync(file, 'r');
     try { fs.fsyncSync(published); } finally { fs.closeSync(published); }
     return true;
@@ -1116,7 +1125,7 @@ function recoverInterruptedPublication(file: string, lockPath: string): boolean 
   const recoveryToken = takeOverPublicationLock(lockPath, observed);
   if (!recoveryToken) throw new Error('Batch summary publication ownership changed concurrently');
   try {
-    if (fs.existsSync(file) && hasValidSummaryIntegrity(file)) return true;
+    if (hasValidSummaryIntegrity(file)) return true;
     try { fs.unlinkSync(file); } catch (error) {
       if (errorCode(error) !== 'ENOENT') throw error;
     }
@@ -1134,10 +1143,8 @@ function publishWithoutHardLinks(temporaryFile: string, file: string, lockPath: 
       continue;
     }
     try {
+      if (hasValidSummaryIntegrity(file)) return;
       if (fs.existsSync(file)) {
-        if (hasValidSummaryIntegrity(file)) {
-          return;
-        }
         fs.unlinkSync(file);
       }
       try {
@@ -1164,7 +1171,7 @@ function publishWithoutHardLinks(temporaryFile: string, file: string, lockPath: 
         if (!hasValidSummaryIntegrity(file)) throw new Error('Batch summary publication was incomplete');
         return;
       } catch (error) {
-        if (lockHasToken(lockPath, publicationToken) && fs.existsSync(file) && !hasValidSummaryIntegrity(file)) {
+        if (lockHasToken(lockPath, publicationToken) && !hasValidSummaryIntegrity(file) && fs.existsSync(file)) {
           try { fs.unlinkSync(file); } catch {}
         }
         throw error;
@@ -1187,7 +1194,9 @@ function publishReceiptWithoutHardLinks(
     if (!publicationToken) {
       try {
         return readReceipt();
-      } catch {}
+      } catch (error) {
+        if (!canRecoverReceiptRead(error)) throw error;
+      }
       let observed = readPublicationOwner(lockPath);
       if (!observed) continue;
       const state = publicationOwnerState(observed);
@@ -1205,7 +1214,8 @@ function publishReceiptWithoutHardLinks(
       try {
         try {
           return readReceipt();
-        } catch {
+        } catch (error) {
+          if (!canRecoverReceiptRead(error)) throw error;
           try { fs.unlinkSync(receiptFile); } catch (error) {
             if (errorCode(error) !== 'ENOENT') throw error;
           }
@@ -1218,7 +1228,8 @@ function publishReceiptWithoutHardLinks(
     try {
       try {
         return readReceipt();
-      } catch {
+      } catch (error) {
+        if (!canRecoverReceiptRead(error)) throw error;
         try { fs.unlinkSync(receiptFile); } catch (error) {
           if (errorCode(error) !== 'ENOENT') throw error;
         }
@@ -1230,10 +1241,13 @@ function publishReceiptWithoutHardLinks(
         return readReceipt();
       } catch (error) {
         if (errorCode(error) === 'EEXIST') {
-          try { return readReceipt(); } catch {}
+          try { return readReceipt(); } catch (readError) {
+            if (!canRecoverReceiptRead(readError)) throw readError;
+          }
         }
         if (lockHasToken(lockPath, publicationToken)) {
-          try { readReceipt(); } catch {
+          try { readReceipt(); } catch (readError) {
+            if (!canRecoverReceiptRead(readError)) throw readError;
             try { fs.unlinkSync(receiptFile); } catch {}
           }
         }
@@ -1252,15 +1266,17 @@ function reserveBatchSummaryReceipt(batchId: string, root: string, batchLabel: s
   const batchSlug = path.basename(receiptFile, '.json');
   const readReceipt = (): BatchSummaryReceipt => {
     const receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8')) as Partial<BatchSummaryReceipt>;
-    if (typeof receipt.root !== 'string' || !receipt.root) throw new Error('Invalid batch summary receipt');
+    if (typeof receipt.root !== 'string' || !receipt.root) throw new InvalidBatchSummaryReceiptError('Invalid batch summary receipt');
     if (receipt.summaryName !== undefined && (typeof receipt.summaryName !== 'string' || !isBatchSummaryName(batchId, receipt.summaryName))) {
-      throw new Error('Invalid batch summary receipt');
+      throw new InvalidBatchSummaryReceiptError('Invalid batch summary receipt');
     }
     return { root: receipt.root, summaryName: receipt.summaryName };
   };
   try {
     return readReceipt();
-  } catch {}
+  } catch (error) {
+    if (!canRecoverReceiptRead(error)) throw error;
+  }
 
   const temporaryFile = path.join(receiptDir, `.${batchSlug}.${process.pid}.${randomUUID()}.tmp`);
   const lockPath = path.join(receiptDir, `.${batchSlug}.lock`);
@@ -1271,7 +1287,9 @@ function reserveBatchSummaryReceipt(batchId: string, root: string, batchLabel: s
     } catch (error) {
       const code = errorCode(error);
       if (code === 'EEXIST') {
-        try { return readReceipt(); } catch {}
+        try { return readReceipt(); } catch (readError) {
+          if (!canRecoverReceiptRead(readError)) throw readError;
+        }
       } else if (!code || !HARD_LINK_UNAVAILABLE_CODES.has(code)) {
         throw error;
       }

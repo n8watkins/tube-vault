@@ -65,6 +65,64 @@ describe('service worker startup', () => {
     await vi.waitFor(() => expect(jobs).toEqual([]));
   });
 
+  it('waits for coordinator readiness before handling a queue alarm', async () => {
+    let settingsCallback: ((values: Record<string, unknown>) => void) | undefined;
+    let alarmListener: ((alarm: { name: string }) => void) | undefined;
+    const nativeCalls: Record<string, unknown>[] = [];
+    let jobs = [{
+      id: 'queued',
+      videoUrl: 'https://youtube.test/queued',
+      label: 'Queued',
+      components: {},
+      status: 'queued',
+      createdAt: 1,
+    }];
+    const chromeStub = {
+      storage: {
+        local: {
+          get: vi.fn((defaults: Record<string, unknown> | string[], callback: (values: Record<string, unknown>) => void) => {
+            if (!Array.isArray(defaults) && 'collectHistory' in defaults) {
+              settingsCallback = callback;
+              return;
+            }
+            callback(Array.isArray(defaults) ? {} : { tvJobs: structuredClone(jobs) });
+          }),
+          set: vi.fn((values: Record<string, unknown>, callback: () => void) => {
+            if (Array.isArray(values.tvJobs)) jobs = structuredClone(values.tvJobs) as typeof jobs;
+            callback();
+          }),
+        },
+        onChanged: { addListener: vi.fn() },
+      },
+      runtime: {
+        sendNativeMessage: vi.fn((_host: string, payload: Record<string, unknown>, callback: (response: unknown) => void) => {
+          nativeCalls.push(payload);
+          callback({ ok: true });
+        }),
+        onMessage: { addListener: vi.fn() },
+        lastError: undefined,
+      },
+      alarms: {
+        create: vi.fn(),
+        onAlarm: { addListener: vi.fn((listener) => { alarmListener = listener; }) },
+      },
+      notifications: { create: vi.fn() },
+    };
+    vi.stubGlobal('chrome', chromeStub);
+
+    await import('./service-worker');
+    alarmListener?.({ name: 'tube-vault-queue-wake' });
+    await Promise.resolve();
+    expect(nativeCalls).toEqual([]);
+
+    settingsCallback?.({ outputRoot: '/configured/root' });
+    await vi.waitFor(() => expect(nativeCalls).toContainEqual(expect.objectContaining({
+      action: 'custom',
+      options: expect.objectContaining({ outputRoot: '/configured/root' }),
+    })));
+    expect(nativeCalls.filter((call) => call.action === 'custom')).toHaveLength(1);
+  });
+
   it('reports enqueue storage failures without acknowledging or running the job', async () => {
     let messageListener: ((message: Record<string, unknown>, sender: unknown, sendResponse: (response: unknown) => void) => boolean) | undefined;
     const nativeCalls: Record<string, unknown>[] = [];

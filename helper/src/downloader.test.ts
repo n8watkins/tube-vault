@@ -629,6 +629,32 @@ test('createBatchSummary rejects a corrupt opaque legacy summary', () => {
   }
 });
 
+test('writeBatchSummary preserves a confirmed summary on operational read failure', (context) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-read-error-'));
+  try {
+    const batchId = 'summary-read-error';
+    const created = writeBatchSummary(dir, batchId, 'Stable summary', undefined, []);
+    const original = fs.readFileSync(created, 'utf8');
+    const readFileSync = fs.readFileSync.bind(fs);
+    context.mock.method(fs, 'readFileSync', ((target: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+      if (String(target) === created) {
+        const error = new Error('Summary storage unavailable') as NodeJS.ErrnoException;
+        error.code = 'EIO';
+        throw error;
+      }
+      return (readFileSync as (...parameters: unknown[]) => unknown)(target, ...args);
+    }) as typeof fs.readFileSync);
+
+    assert.throws(
+      () => writeBatchSummary(dir, batchId, 'Changed summary', undefined, []),
+      /Summary storage unavailable/,
+    );
+    assert.equal(readFileSync(created, 'utf8'), original);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('createBatchSummary reserves receipts when hard links are unavailable', (context) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-portable-receipt-'));
   const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-portable-receipts-'));
@@ -679,6 +705,38 @@ test('createBatchSummary recovers a partial portable receipt from a dead owner',
     assert.equal(fs.existsSync(lockPath), false);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(receipts, { recursive: true, force: true });
+  }
+});
+
+test('createBatchSummary preserves a receipt on operational read failure', (context) => {
+  const firstRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-receipt-read-root-'));
+  const secondRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-receipt-read-other-'));
+  const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-receipt-read-error-'));
+  try {
+    const batchId = 'receipt-read-error';
+    const created = createBatchSummary(firstRoot, batchId, 'Stable receipt', undefined, [], undefined, receipts);
+    assert.equal(created.ok, true);
+    const receiptFile = path.join(receipts, fs.readdirSync(receipts).find((entry) => entry.endsWith('.json')) as string);
+    const readFileSync = fs.readFileSync.bind(fs);
+    const original = readFileSync(receiptFile, 'utf8');
+    context.mock.method(fs, 'readFileSync', ((target: fs.PathOrFileDescriptor, ...args: unknown[]) => {
+      if (String(target) === receiptFile) {
+        const error = new Error('Receipt storage unavailable') as NodeJS.ErrnoException;
+        error.code = 'EACCES';
+        throw error;
+      }
+      return (readFileSync as (...parameters: unknown[]) => unknown)(target, ...args);
+    }) as typeof fs.readFileSync);
+
+    const replay = createBatchSummary(secondRoot, batchId, 'Changed receipt', undefined, [], undefined, receipts);
+    assert.equal(replay.ok, false);
+    assert.match(replay.error || '', /Receipt storage unavailable/);
+    assert.equal(readFileSync(receiptFile, 'utf8'), original);
+    assert.equal(fs.existsSync(path.join(secondRoot, 'TubeVault Summaries')), false);
+  } finally {
+    fs.rmSync(firstRoot, { recursive: true, force: true });
+    fs.rmSync(secondRoot, { recursive: true, force: true });
     fs.rmSync(receipts, { recursive: true, force: true });
   }
 });

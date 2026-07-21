@@ -8,6 +8,10 @@
 
 - Finalize durable cancellation state.
 
+### Changed
+
+- Update changelog for durable cancellation.
+
 ## v0.3.100
 
 ### Documentation

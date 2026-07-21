@@ -568,8 +568,48 @@ describe('JobCoordinator', () => {
     const test = harness({ jobs: [job('stale', 'running'), job('next', 'queued', { estBytes: 1 })] });
     await test.coordinator.initialize();
     await test.coordinator.whenIdle();
+    expect(test.calls[0]).toEqual({ action: 'cancel', jobId: 'stale' });
     expect(test.jobs[0]).toMatchObject({ status: 'failed', error: 'Interrupted' });
     expect(test.jobs[1].status).toBe('done');
+  });
+
+  it('cancels every interrupted native owner before resuming the queue', async () => {
+    const cancelled: string[] = [];
+    const test = harness({
+      jobs: [job('probe', 'probing'), job('download', 'running'), job('next', 'queued', { estBytes: 1 })],
+      native: async (payload) => {
+        if (payload.action === 'cancel') {
+          cancelled.push(payload.jobId as string);
+          return { ok: true };
+        }
+        expect(cancelled).toEqual(['probe', 'download']);
+        return { ok: true, folderPath: '/videos/item' };
+      },
+    });
+
+    await test.coordinator.initialize();
+    await test.coordinator.whenIdle();
+
+    expect(test.jobs.map(({ id, status }) => ({ id, status }))).toEqual([
+      { id: 'probe', status: 'failed' },
+      { id: 'download', status: 'failed' },
+      { id: 'next', status: 'done' },
+    ]);
+  });
+
+  it('does not resume the queue when interrupted native cancellation fails', async () => {
+    const test = harness({
+      jobs: [job('stale', 'running'), job('next', 'queued', { estBytes: 1 })],
+      native: async (payload) => payload.action === 'cancel' ? { ok: false } : { ok: true },
+    });
+
+    await expect(test.coordinator.initialize()).rejects.toThrow('Could not cancel interrupted native jobs');
+
+    expect(test.jobs.map(({ id, status }) => ({ id, status }))).toEqual([
+      { id: 'stale', status: 'running' },
+      { id: 'next', status: 'queued' },
+    ]);
+    expect(test.calls).toEqual([{ action: 'cancel', jobId: 'stale' }]);
   });
 
   it('recovers legacy terminal batches whose summary write was interrupted', async () => {

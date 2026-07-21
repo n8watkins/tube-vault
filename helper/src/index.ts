@@ -38,6 +38,10 @@ const JOBS_DIR = process.env.NODE_ENV === 'test' && process.env.TUBE_VAULT_TEST_
 const pidFile = (jobId: string) => path.join(JOBS_DIR, `${jobId}.pid`);
 interface JobOwner { pid: number; processIdentity: string; }
 
+function errorCode(error: unknown): string | undefined {
+  return error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
+}
+
 function assertPrivatePath(target: string, kind: 'directory' | 'file'): void {
   const stats = fs.lstatSync(target);
   if (kind === 'directory' ? !stats.isDirectory() : !stats.isFile()) throw new Error(`Unsafe job ${kind}`);
@@ -144,8 +148,12 @@ readMessages(async (raw) => {
       process.kill(owner.pid, 'SIGTERM');
       clearPid(jobId, contents);
       writeMessage({ ok: true, status: 'cancelled' });
-    } catch {
-      writeMessage({ ok: false, status: 'failed', error: 'Job not found or already finished' });
+    } catch (error) {
+      if (errorCode(error) === 'ENOENT') {
+        writeMessage({ ok: true, status: 'already_finished' });
+      } else {
+        writeMessage({ ok: false, status: 'failed', error: 'Job cancellation failed' });
+      }
     }
     return;
   }

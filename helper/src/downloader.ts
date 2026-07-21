@@ -187,6 +187,18 @@ function ensureDir(p: string): void {
   fs.mkdirSync(p, { recursive: true });
 }
 
+function assertPrivatePath(target: string, kind: 'directory' | 'file'): void {
+  const stats = fs.lstatSync(target);
+  if (kind === 'directory' ? !stats.isDirectory() : !stats.isFile()) throw new Error(`Unsafe private ${kind}`);
+  if (typeof process.getuid === 'function' && stats.uid !== process.getuid()) throw new Error(`Unsafe private ${kind} owner`);
+  if (process.platform !== 'win32' && (stats.mode & 0o077) !== 0) throw new Error(`Unsafe private ${kind} permissions`);
+}
+
+function ensurePrivateDir(p: string): void {
+  fs.mkdirSync(p, { recursive: true, mode: 0o700 });
+  assertPrivatePath(p, 'directory');
+}
+
 // Strip yt-dlp template variables so we return a real path to the user.
 // e.g. /mnt/c/.../%(uploader)s/... → /mnt/c/...
 function resolvedFolder(templatePath: string): string {
@@ -1028,7 +1040,7 @@ function lockHasToken(lockPath: string, token: string): boolean {
 function refreshPublicationLease(lockPath: string, token: string): void {
   if (!lockHasToken(lockPath, token)) throw new Error('Batch summary publication ownership changed concurrently');
   const heartbeat = publicationHeartbeatFile(lockPath, token);
-  const descriptor = fs.openSync(heartbeat, 'a');
+  const descriptor = fs.openSync(heartbeat, 'a', 0o600);
   try {
     if (!lockHasToken(lockPath, token)) throw new Error('Batch summary publication ownership changed concurrently');
     const now = new Date();
@@ -1070,10 +1082,10 @@ function removePublicationLock(lockPath: string, token: string): boolean {
 function acquirePublicationLock(lockPath: string): string | undefined {
   const token = randomUUID();
   const preparedLock = `${lockPath}.${process.pid}.${randomUUID()}.tmp`;
-  fs.mkdirSync(preparedLock);
+  fs.mkdirSync(preparedLock, { mode: 0o700 });
   try {
     const ownerFile = path.join(preparedLock, 'owner.json');
-    const owner = fs.openSync(ownerFile, 'wx');
+    const owner = fs.openSync(ownerFile, 'wx', 0o600);
     try {
       fs.writeFileSync(owner, JSON.stringify(publicationOwner(token)), 'utf8');
       fs.fsyncSync(owner);
@@ -1205,7 +1217,7 @@ function takeOverPublicationLock(lockPath: string, observed: PublicationOwnerSna
     }
     const replacement = path.join(lockPath, `.owner-${token}.tmp`);
     try {
-      const descriptor = fs.openSync(replacement, 'wx');
+      const descriptor = fs.openSync(replacement, 'wx', 0o600);
       try {
         fs.writeFileSync(descriptor, JSON.stringify(publicationOwner(token)), 'utf8');
         fs.fsyncSync(descriptor);
@@ -1383,10 +1395,11 @@ function publishReceiptWithoutHardLinks(
 }
 
 function reserveBatchSummaryReceipt(batchId: string, root: string, batchLabel: string, receiptDir: string): BatchSummaryReceipt {
-  ensureDir(receiptDir);
+  ensurePrivateDir(receiptDir);
   const receiptFile = batchSummaryReceiptFile(batchId, receiptDir);
   const batchSlug = path.basename(receiptFile, '.json');
   const readReceipt = (): BatchSummaryReceipt => {
+    assertPrivatePath(receiptFile, 'file');
     const receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8')) as Partial<BatchSummaryReceipt>;
     if (typeof receipt.root !== 'string' || !receipt.root) throw new InvalidBatchSummaryReceiptError('Invalid batch summary receipt');
     if (receipt.summaryName !== undefined && (typeof receipt.summaryName !== 'string' || !isBatchSummaryName(batchId, receipt.summaryName))) {
@@ -1405,7 +1418,11 @@ function reserveBatchSummaryReceipt(batchId: string, root: string, batchLabel: s
   const temporaryFile = path.join(receiptDir, `.${batchSlug}.${process.pid}.${randomUUID()}.tmp`);
   const lockPath = path.join(receiptDir, `.${batchSlug}.lock`);
   try {
-    fs.writeFileSync(temporaryFile, JSON.stringify({ root, summaryName: batchSummaryName(batchId, batchLabel) }), { encoding: 'utf8', flag: 'wx' });
+    fs.writeFileSync(temporaryFile, JSON.stringify({ root, summaryName: batchSummaryName(batchId, batchLabel) }), {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    });
     try {
       fs.linkSync(temporaryFile, receiptFile);
       syncPublishedFile(receiptFile);

@@ -105,7 +105,13 @@ export class JobCoordinator {
 
   async initialize(): Promise<void> {
     await this.migrateLegacyTerminalBatches();
-    const jobs = await this.mutateJobs((currentJobs) => {
+    const jobs = await this.withJobsLock(async () => {
+      const currentJobs = await this.effects.storage.getJobs();
+      const interruptedJobs = currentJobs.filter((job) => job.status === 'running' || job.status === 'probing');
+      const cancellations = await Promise.all(interruptedJobs.map((job) => (
+        this.effects.sendNative({ action: 'cancel', jobId: job.id })
+      )));
+      if (cancellations.some((response) => !response?.ok)) throw new Error('Could not cancel interrupted native jobs');
       let changed = false;
       for (const job of currentJobs) {
         if (job.status === 'running' || job.status === 'probing') {
@@ -115,8 +121,9 @@ export class JobCoordinator {
           changed = true;
         }
       }
-      return { changed, value: currentJobs };
-    }, true);
+      if (changed) await this.setJobsLocked(currentJobs, true);
+      return currentJobs;
+    });
     const terminalBatchIds = new Set(jobs
       .filter((job) => job.batchId && !isActive(job))
       .map((job) => job.batchId as string));

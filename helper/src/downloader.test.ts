@@ -765,6 +765,41 @@ test('createBatchSummary reserves receipts when hard links are unavailable', (co
   }
 });
 
+test('createBatchSummary keeps receipt state private', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-private-root-'));
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-private-parent-'));
+  const receipts = path.join(parent, 'receipts');
+  const originalUmask = process.umask(0);
+  try {
+    const created = createBatchSummary(dir, 'private-receipt', 'Private receipt', undefined, [], undefined, receipts);
+
+    assert.equal(created.ok, true);
+    assert.equal(fs.statSync(receipts).mode & 0o777, 0o700);
+    const receiptFile = path.join(receipts, fs.readdirSync(receipts).find((entry) => entry.endsWith('.json')) as string);
+    assert.equal(fs.statSync(receiptFile).mode & 0o777, 0o600);
+  } finally {
+    process.umask(originalUmask);
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test('createBatchSummary rejects an unsafe receipt directory', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-unsafe-root-'));
+  const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-unsafe-receipts-'));
+  try {
+    fs.chmodSync(receipts, 0o755);
+    const created = createBatchSummary(dir, 'unsafe-receipt', 'Unsafe receipt', undefined, [], undefined, receipts);
+
+    assert.equal(created.ok, false);
+    assert.match(created.error as string, /Unsafe private directory permissions/);
+    assert.deepEqual(fs.readdirSync(receipts), []);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(receipts, { recursive: true, force: true });
+  }
+});
+
 test('createBatchSummary recovers a partial portable receipt from a dead owner', (context) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-partial-receipt-'));
   const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-partial-receipts-'));
@@ -773,7 +808,7 @@ test('createBatchSummary recovers a partial portable receipt from a dead owner',
     const digest = createHash('sha256').update(batchId).digest('hex');
     const receiptFile = path.join(receipts, `${digest}.json`);
     const lockPath = path.join(receipts, `.${digest}.lock`);
-    fs.writeFileSync(receiptFile, '{"root":');
+    fs.writeFileSync(receiptFile, '{"root":', { mode: 0o600 });
     fs.mkdirSync(lockPath);
     fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({
       token: 'dead-receipt-owner',

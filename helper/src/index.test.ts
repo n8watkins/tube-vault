@@ -64,6 +64,12 @@ test('native cancellation rejects path traversal without touching an outside PID
   }
 });
 
+test('native cancellation treats an absent owner as already finished', async () => {
+  const response = await nativeRequest({ action: 'cancel', jobId: 'already-finished' });
+
+  assert.deepEqual(response, { ok: true, status: 'already_finished' });
+});
+
 test('native cancellation rejects a reused PID and preserves its owner record', async () => {
   const victim = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)']);
   const jobId = `stale-${process.pid}`;
@@ -73,7 +79,7 @@ test('native cancellation rejects a reused PID and preserves its owner record', 
     fs.chmodSync(jobsDirectory, 0o700);
     fs.writeFileSync(file, JSON.stringify({ pid: victim.pid, processIdentity: 'wrong-incarnation' }), { mode: 0o600 });
     const response = await nativeRequest({ action: 'cancel', jobId });
-    assert.deepEqual(response, { ok: false, status: 'failed', error: 'Job not found or already finished' });
+    assert.deepEqual(response, { ok: false, status: 'failed', error: 'Job cancellation failed' });
     assert.equal(isAlive(victim.pid as number), true);
     assert.equal(fs.existsSync(file), true);
   } finally {
@@ -122,7 +128,7 @@ test('native cancellation rejects an unsafe registry directory', async () => {
     fs.chmodSync(jobsDirectory, 0o777);
     fs.writeFileSync(file, JSON.stringify({ pid: victim.pid, processIdentity: identity }), { mode: 0o600 });
     const response = await nativeRequest({ action: 'cancel', jobId });
-    assert.deepEqual(response, { ok: false, status: 'failed', error: 'Job not found or already finished' });
+    assert.deepEqual(response, { ok: false, status: 'failed', error: 'Job cancellation failed' });
     assert.equal(isAlive(victim.pid as number), true);
     assert.equal(fs.existsSync(file), true);
   } finally {
@@ -146,7 +152,7 @@ test('native cancellation rejects a symlinked registry directory', async () => {
     fs.writeFileSync(file, JSON.stringify({ pid: victim.pid, processIdentity: identity }), { mode: 0o600 });
     fs.symlinkSync(controlledDirectory, jobsDirectory, 'dir');
     const response = await nativeRequest({ action: 'cancel', jobId });
-    assert.deepEqual(response, { ok: false, status: 'failed', error: 'Job not found or already finished' });
+    assert.deepEqual(response, { ok: false, status: 'failed', error: 'Job cancellation failed' });
     assert.equal(isAlive(victim.pid as number), true);
     assert.equal(fs.existsSync(file), true);
   } finally {

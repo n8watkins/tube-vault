@@ -16,18 +16,18 @@ const settings = {
   historyRetentionDays: 0,
 };
 
-const settingsReady = getLocalValues({
-  outputRoot: '',
-  autoOpenFolder: false,
-  notifyOnDone: true,
-  sponsorblock: 'off',
-  fasterDownloads: true,
-  collectHistory: true,
-  historyRetentionDays: 0,
-  ...namingStorageDefaults,
-}).then((values) => {
-  applySettings(values);
-});
+function loadSettings(): Promise<void> {
+  return getLocalValues({
+    outputRoot: '',
+    autoOpenFolder: false,
+    notifyOnDone: true,
+    sponsorblock: 'off',
+    fasterDownloads: true,
+    collectHistory: true,
+    historyRetentionDays: 0,
+    ...namingStorageDefaults,
+  }).then(applySettings);
+}
 
 function applySettings(values: Record<string, unknown>): void {
   if ('outputRoot' in values) settings.outputRoot = typeof values.outputRoot === 'string' ? values.outputRoot : '';
@@ -103,11 +103,24 @@ const coordinator = new JobCoordinator({
   getSettings: () => settings,
 });
 
-const coordinatorReady = settingsReady.then(() => coordinator.initialize());
+let coordinatorReady: Promise<void> | null = null;
+
+function ensureCoordinatorReady(): Promise<void> {
+  if (coordinatorReady) return coordinatorReady;
+  const initializing = loadSettings().then(() => coordinator.initialize());
+  const ready = initializing.catch((error) => {
+    if (coordinatorReady === ready) coordinatorReady = null;
+    throw error;
+  });
+  coordinatorReady = ready;
+  return ready;
+}
+
+void ensureCoordinatorReady().catch(() => undefined);
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === 'TUBE_VAULT_PING') {
-    void coordinatorReady.then(() => sendNative({ action: 'ping' })).then(async (response) => {
+    void ensureCoordinatorReady().then(() => sendNative({ action: 'ping' })).then(async (response) => {
       if (!response?.ok) {
         sendResponse({ ok: false, error: response?.error });
         return;
@@ -120,35 +133,35 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === 'TUBE_VAULT_CANCEL') {
-    void coordinatorReady.then(() => coordinator.cancelJob(message.jobId)).then(
+    void ensureCoordinatorReady().then(() => coordinator.cancelJob(message.jobId)).then(
       () => sendResponse({ ok: true }),
       (error) => sendResponse(coordinatorFailure(error)),
     );
     return true;
   }
   if (message.type === 'TUBE_VAULT_CANCEL_BATCH') {
-    void coordinatorReady.then(() => coordinator.cancelBatch(message.batchId)).then(
+    void ensureCoordinatorReady().then(() => coordinator.cancelBatch(message.batchId)).then(
       () => sendResponse({ ok: true }),
       (error) => sendResponse(coordinatorFailure(error)),
     );
     return true;
   }
   if (message.type === 'TUBE_VAULT_CLEAR_HISTORY') {
-    void coordinatorReady.then(() => coordinator.clearHistory()).then(
+    void ensureCoordinatorReady().then(() => coordinator.clearHistory()).then(
       () => sendResponse({ ok: true }),
       (error) => sendResponse(coordinatorFailure(error)),
     );
     return true;
   }
   if (message.type === 'TUBE_VAULT_ENQUEUE') {
-    void coordinatorReady.then(() => coordinator.enqueue(message)).then(sendResponse, (error) => {
+    void ensureCoordinatorReady().then(() => coordinator.enqueue(message)).then(sendResponse, (error) => {
       sendResponse(coordinatorFailure(error));
     });
     return true;
   }
   if (message.type !== 'TUBE_VAULT_REQUEST') return false;
 
-  void coordinatorReady.then(() => {
+  void ensureCoordinatorReady().then(() => {
     const payload = { ...message.payload, options: { outputRoot: settings.outputRoot } };
     return sendNative(payload);
   }).then(

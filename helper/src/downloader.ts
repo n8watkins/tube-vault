@@ -741,6 +741,7 @@ const BATCH_SUMMARY_ID_LENGTH = 16;
 const MAX_FILENAME_BYTES = 255;
 const SUMMARY_INTEGRITY_PREFIX = 'Integrity: SHA-256 ';
 const HARD_LINK_UNAVAILABLE_CODES = new Set(['EACCES', 'EPERM', 'EXDEV', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
+const PROCESS_IDENTITY = readProcessIdentity(process.pid);
 
 function errorCode(error: unknown): string | undefined {
   return error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
@@ -780,7 +781,7 @@ function batchSummaryId(batchId: string): string {
 
 function batchSummaryName(batchId: string, batchLabel: string): string {
   const sanitized = (sanitizeFilename(batchLabel || 'Download') || 'Download').replace(/[. ]+$/g, '') || 'Download';
-  const safeLabel = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(sanitized) ? `_${sanitized}` : sanitized;
+  const safeLabel = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(sanitized) ? `_${sanitized}` : sanitized;
   const suffix = ` - ${batchSummaryId(batchId).slice(0, BATCH_SUMMARY_ID_LENGTH)}.txt`;
   const readableLabel = truncateUtf8(safeLabel, MAX_FILENAME_BYTES - Buffer.byteLength(suffix, 'utf8')) || 'Download';
   return `${readableLabel}${suffix}`;
@@ -820,6 +821,17 @@ function publicationLockOwnerFile(lockPath: string): string {
   }
 }
 
+function readProcessIdentity(pid: number): string | undefined {
+  if (process.platform !== 'linux') return undefined;
+  try {
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    return fields[19];
+  } catch {
+    return undefined;
+  }
+}
+
 function removePublicationLock(lockPath: string): void {
   try {
     if (!fs.statSync(lockPath).isDirectory()) {
@@ -842,7 +854,7 @@ function acquirePublicationLock(lockPath: string): boolean {
     const ownerFile = path.join(preparedLock, 'owner.json');
     const owner = fs.openSync(ownerFile, 'wx');
     try {
-      fs.writeFileSync(owner, JSON.stringify({ pid: process.pid }), 'utf8');
+      fs.writeFileSync(owner, JSON.stringify({ pid: process.pid, processIdentity: PROCESS_IDENTITY }), 'utf8');
       fs.fsyncSync(owner);
     } finally {
       fs.closeSync(owner);
@@ -861,9 +873,16 @@ function acquirePublicationLock(lockPath: string): boolean {
 
 function publicationOwnerIsAlive(lockPath: string): boolean | undefined {
   try {
-    const owner = JSON.parse(fs.readFileSync(publicationLockOwnerFile(lockPath), 'utf8')) as { pid?: unknown };
+    const owner = JSON.parse(fs.readFileSync(publicationLockOwnerFile(lockPath), 'utf8')) as {
+      pid?: unknown;
+      processIdentity?: unknown;
+    };
     if (typeof owner.pid !== 'number' || !Number.isInteger(owner.pid) || owner.pid <= 0) return undefined;
-    if (owner.pid === process.pid) return true;
+    const currentIdentity = readProcessIdentity(owner.pid);
+    if (typeof owner.processIdentity === 'string' && currentIdentity !== undefined) {
+      return owner.processIdentity === currentIdentity;
+    }
+    if (owner.pid === process.pid) return owner.processIdentity === undefined || owner.processIdentity === PROCESS_IDENTITY;
     try {
       process.kill(owner.pid, 0);
       return true;
@@ -882,8 +901,6 @@ function recoverInterruptedPublication(file: string, lockPath: string): boolean 
     return true;
   }
   if (!fs.existsSync(lockPath)) return false;
-  const ownerIsAlive = publicationOwnerIsAlive(lockPath);
-  if (ownerIsAlive === true) throw new Error('Batch summary publication is already in progress');
   const claimedLock = `${lockPath}.recover.${process.pid}.${randomUUID()}`;
   try {
     fs.renameSync(lockPath, claimedLock);
@@ -893,11 +910,13 @@ function recoverInterruptedPublication(file: string, lockPath: string): boolean 
   }
   let ownsRecoveryLock = false;
   try {
-    ownsRecoveryLock = acquirePublicationLock(lockPath);
-    if (!ownsRecoveryLock) {
-      if (fs.existsSync(file) && hasValidSummaryIntegrity(file)) return true;
+    if (publicationOwnerIsAlive(claimedLock) === true) {
+      if (fs.existsSync(lockPath)) throw new Error('Batch summary publication ownership changed concurrently');
+      fs.renameSync(claimedLock, lockPath);
       throw new Error('Batch summary publication is already in progress');
     }
+    ownsRecoveryLock = acquirePublicationLock(lockPath);
+    if (!ownsRecoveryLock) throw new Error('Batch summary publication is already in progress');
     if (fs.existsSync(file) && hasValidSummaryIntegrity(file)) return true;
     try { fs.unlinkSync(file); } catch (error) {
       if (errorCode(error) !== 'ENOENT') throw error;

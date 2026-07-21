@@ -75,6 +75,7 @@ const MAX_SUMMARY_ATTEMPTS = 3;
 const MAX_QUEUE_PUMP_RETRIES = 3;
 const QUEUE_WRITE_RETRY_DELAY_MS = 100;
 const MAX_QUEUE_WRITE_RETRY_DELAY_MS = 1_000;
+const MAX_SUMMARY_BACKGROUND_RETRIES = 3;
 const isActive = (job: Job) => job.status === 'queued' || job.status === 'probing' || job.status === 'running';
 
 interface BatchSummaryRetry {
@@ -88,6 +89,7 @@ export class JobCoordinator {
   private pumpRequested = false;
   private pumpWakeVersion = 0;
   private readonly summaryPromises = new Map<string, Promise<void>>();
+  private readonly summaryRetryCounts = new Map<string, number>();
   private jobsTail = Promise.resolve();
   private summaryTail = Promise.resolve();
   private summaryStateTail = Promise.resolve();
@@ -255,13 +257,12 @@ export class JobCoordinator {
     if (job.estBytes === undefined) {
       if (!(await this.updateJob(job.id, { status: 'probing' }))) return;
       const probe = await this.safeNative({ action: 'probe', url: job.videoUrl, components: job.components });
-      if (await this.isCancelled(job.id)) return;
       const patch: Partial<Job> = {
         status: 'running',
         estBytes: probe?.ok && typeof probe.bytes === 'number' ? probe.bytes : 0,
       };
       if (probe?.ok && typeof probe.title === 'string' && probe.title) patch.label = probe.title;
-      if (!(await this.updateJob(job.id, patch, true))) return;
+      if (!(await this.persistCompletedTransition(job.id, patch))) return;
       job = { ...job, ...patch };
     } else {
       if (!(await this.updateJob(job.id, { status: 'running' }))) return;
@@ -283,28 +284,26 @@ export class JobCoordinator {
         fasterDownloads: settings.fasterDownloads,
       },
     });
-    if (await this.isCancelled(job.id)) {
+    const terminalPatch: Partial<Job> = !response?.ok ? {
+      status: 'failed',
+      error: typeof response?.error === 'string' ? response.error : 'Download failed',
+      finishedAt: this.effects.now(),
+    } : {
+      status: 'done',
+      folder: typeof response.windowsFolderPath === 'string'
+        ? response.windowsFolderPath
+        : typeof response.folderPath === 'string' ? response.folderPath : '',
+      finishedAt: this.effects.now(),
+      ...(typeof response.bytes === 'number' && response.bytes > 0 ? { estBytes: response.bytes } : {}),
+    };
+    const completed = await this.persistCompletedTransition(job.id, terminalPatch);
+    if (!completed) {
       await this.maybeWriteBatchSummary(job.batchId).catch(() => undefined);
       return;
     }
 
-    if (!response?.ok) {
-      await this.updateJob(job.id, {
-        status: 'failed',
-        error: typeof response?.error === 'string' ? response.error : 'Download failed',
-        finishedAt: this.effects.now(),
-      }, true);
-    } else {
-      const folder = typeof response.windowsFolderPath === 'string'
-        ? response.windowsFolderPath
-        : typeof response.folderPath === 'string' ? response.folderPath : '';
-      const completed = await this.updateJob(job.id, {
-        status: 'done',
-        folder,
-        finishedAt: this.effects.now(),
-        ...(typeof response.bytes === 'number' && response.bytes > 0 ? { estBytes: response.bytes } : {}),
-      }, true);
-      if (!completed) return;
+    if (response?.ok) {
+      const folder = terminalPatch.folder as string;
       if (settings.notifyOnDone) this.effects.notify(job.label, folder);
       if (settings.autoOpenFolder && folder && !job.batchId) await this.effects.openFolder(folder);
     }
@@ -319,10 +318,16 @@ export class JobCoordinator {
     }
   }
 
-  private async isCancelled(id: string): Promise<boolean> {
-    return this.withJobsLock(async () => (
-      (await this.effects.storage.getJobs()).find((job) => job.id === id)?.status === 'cancelled'
-    ));
+  private async persistCompletedTransition(id: string, patch: Partial<Job>): Promise<boolean> {
+    let failures = 0;
+    while (true) {
+      try {
+        return await this.updateJob(id, patch, true);
+      } catch {
+        failures += 1;
+        await this.effects.delay(Math.min(QUEUE_WRITE_RETRY_DELAY_MS * failures, MAX_QUEUE_WRITE_RETRY_DELAY_MS));
+      }
+    }
   }
 
   private async updateJob(id: string, patch: Partial<Job>, persistUntilStored = false): Promise<boolean> {
@@ -403,12 +408,28 @@ export class JobCoordinator {
     const inFlight = this.summaryPromises.get(batchId);
     if (inFlight) return inFlight;
 
-    const operation = this.summaryTail.then(() => this.finalizeBatchSummary(batchId)).finally(() => {
+    let failed = false;
+    const operation = this.summaryTail.then(() => this.finalizeBatchSummary(batchId)).then(() => {
+      this.summaryRetryCounts.delete(batchId);
+    }).catch((error) => {
+      failed = true;
+      throw error;
+    }).finally(() => {
       this.summaryPromises.delete(batchId);
+      if (failed) this.scheduleBatchSummaryRetry(batchId);
     });
     this.summaryTail = operation.catch(() => undefined);
     this.summaryPromises.set(batchId, operation);
     return operation;
+  }
+
+  private scheduleBatchSummaryRetry(batchId: string): void {
+    const retryCount = (this.summaryRetryCounts.get(batchId) ?? 0) + 1;
+    if (retryCount > MAX_SUMMARY_BACKGROUND_RETRIES) return;
+    this.summaryRetryCounts.set(batchId, retryCount);
+    void this.effects.delay(QUEUE_WRITE_RETRY_DELAY_MS * retryCount).then(() => {
+      void this.maybeWriteBatchSummary(batchId).catch(() => undefined);
+    });
   }
 
   private async finalizeBatchSummary(batchId: string): Promise<void> {

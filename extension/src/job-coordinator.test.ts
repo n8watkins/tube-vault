@@ -223,6 +223,58 @@ describe('JobCoordinator', () => {
     expect(test.delays).toEqual([100, 200, 300, 400, 500, 600, 700, 800, 900, 1_000, 1_000, 1_000]);
   });
 
+  it('retains probe and download results through post-native read failures', async () => {
+    let pendingResult: string | undefined;
+    const failures = new Map<string, number>();
+    const test = harness({
+      native: async (payload) => {
+        pendingResult = payload.action as string;
+        return payload.action === 'probe'
+          ? { ok: true, bytes: 25, title: 'Probed once' }
+          : { ok: true, folderPath: '/videos/once' };
+      },
+      beforeGetJobs: async () => {
+        if (!pendingResult) return;
+        const count = failures.get(pendingResult) ?? 0;
+        if (count >= 4) {
+          pendingResult = undefined;
+          return;
+        }
+        failures.set(pendingResult, count + 1);
+        throw new Error('Post-native storage read failed');
+      },
+    });
+
+    await test.coordinator.enqueue({ items: [{ url: 'one' }] });
+    await test.coordinator.whenIdle();
+
+    expect(test.calls.map((call) => call.action)).toEqual(['probe', 'custom']);
+    expect(test.jobs[0]).toMatchObject({ status: 'done', label: 'Probed once', folder: '/videos/once' });
+  });
+
+  it('retries a failed batch-finalization read without consuming a summary attempt', async () => {
+    let failSummaryRead = false;
+    let failed = false;
+    const test = harness({
+      jobs: [job('batch', 'queued', { batchId: 'batch', batchLabel: 'Batch', estBytes: 1 })],
+      beforeSetJobs: async (jobs) => {
+        if (jobs[0]?.status === 'done') failSummaryRead = true;
+      },
+      beforeGetJobs: async () => {
+        if (!failSummaryRead || failed) return;
+        failed = true;
+        throw new Error('Finalization read failed');
+      },
+    });
+
+    await test.coordinator.initialize();
+    await test.coordinator.whenIdle();
+    await vi.waitFor(() => expect(test.calls.filter((call) => call.action === 'batch_summary')).toHaveLength(1));
+
+    expect(test.jobs[0]).toMatchObject({ summaryWritten: true, summaryReceiptCleaned: true });
+    expect(test.delays).toContain(100);
+  });
+
   it('starts a fresh pump when work arrives as the final retry is exhausted', async () => {
     let lateEnqueue: Promise<unknown> | undefined;
     const test = harness({

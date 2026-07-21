@@ -194,6 +194,49 @@ describe('service worker startup', () => {
     expect(runtime.sendNativeMessage).not.toHaveBeenCalled();
   });
 
+  it('retries coordinator initialization after a transient settings failure', async () => {
+    let messageListener: ((message: Record<string, unknown>, sender: unknown, sendResponse: (response: unknown) => void) => boolean) | undefined;
+    let settingsReads = 0;
+    const runtime = {
+      sendNativeMessage: vi.fn((_host: string, _payload: Record<string, unknown>, callback: (response: unknown) => void) => {
+        callback({ ok: true, version: '0.3.81', defaultRoot: '' });
+      }),
+      onMessage: { addListener: vi.fn((listener) => { messageListener = listener; }) },
+      lastError: undefined as { message?: string } | undefined,
+    };
+    const chromeStub = {
+      storage: {
+        local: {
+          get: vi.fn((defaults: Record<string, unknown> | string[], callback: (values: Record<string, unknown>) => void) => {
+            if (!Array.isArray(defaults) && 'collectHistory' in defaults) {
+              settingsReads += 1;
+              if (settingsReads === 1) runtime.lastError = { message: 'Settings unavailable' };
+              callback(defaults);
+              runtime.lastError = undefined;
+              return;
+            }
+            callback(Array.isArray(defaults) ? {} : { tvJobs: [] });
+          }),
+          set: vi.fn((_values: Record<string, unknown>, callback: () => void) => callback()),
+        },
+        onChanged: { addListener: vi.fn() },
+      },
+      runtime,
+      notifications: { create: vi.fn() },
+    };
+    vi.stubGlobal('chrome', chromeStub);
+
+    await import('./service-worker');
+    await vi.waitFor(() => expect(settingsReads).toBe(1));
+    const response = await new Promise<unknown>((resolve) => {
+      messageListener?.({ type: 'TUBE_VAULT_PING' }, {}, resolve);
+    });
+
+    expect(response).toEqual({ ok: true, version: '0.3.81', platform: undefined, defaultRoot: '' });
+    expect(settingsReads).toBe(2);
+    expect(runtime.sendNativeMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('reports output-root storage failures to ping callers', async () => {
     let messageListener: ((message: Record<string, unknown>, sender: unknown, sendResponse: (response: unknown) => void) => boolean) | undefined;
     const runtime = {

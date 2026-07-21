@@ -154,6 +154,21 @@ test('createBatchSummary limits Unicode summary names by UTF-8 bytes', () => {
   }
 });
 
+test('createBatchSummary prefixes Windows reserved device stems with extensions', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-reserved-name-'));
+  const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-reserved-receipts-'));
+  try {
+    for (const [index, label] of ['CON.txt', 'LPT1.backup'].entries()) {
+      const created = createBatchSummary(dir, `reserved-${index}`, label, undefined, [], undefined, receipts);
+      assert.equal(created.ok, true);
+      assert.match(path.basename(created.summaryPath as string), new RegExp(`^_${label.replace('.', '\\.')} - [a-f0-9]{16}\\.txt$`, 'i'));
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(receipts, { recursive: true, force: true });
+  }
+});
+
 test('writeBatchSummary falls back when hard links are unavailable and remains replay-idempotent', (context) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-portable-'));
   try {
@@ -277,6 +292,70 @@ test('writeBatchSummary does not displace a live fallback publisher', (context) 
     );
     assert.equal(fs.readFileSync(created, 'utf8'), 'incomplete');
     assert.equal(fs.existsSync(lockPath), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('writeBatchSummary detects a reused current PID by process incarnation', { skip: process.platform !== 'linux' }, (context) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-reused-pid-'));
+  const summaries = path.join(dir, 'TubeVault Summaries');
+  try {
+    const batchId = 'reused-pid-batch';
+    const created = writeBatchSummary(dir, batchId, 'Reused PID', undefined, []);
+    const stableId = path.basename(created).match(/[a-f0-9]{16}(?=\.txt$)/)?.[0] as string;
+    const lockPath = path.join(summaries, `.tv-${stableId}.lock`);
+    fs.writeFileSync(created, 'incomplete');
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({
+      pid: process.pid,
+      processIdentity: 'different-incarnation',
+    }));
+    context.mock.method(fs, 'linkSync', () => {
+      const error = new Error('Hard links unavailable') as NodeJS.ErrnoException;
+      error.code = 'EXDEV';
+      throw error;
+    });
+
+    const recovered = writeBatchSummary(dir, batchId, 'Reused PID', undefined, []);
+
+    assert.equal(recovered, created);
+    assert.match(fs.readFileSync(recovered, 'utf8'), /\nIntegrity: SHA-256 [a-f0-9]{64}\n$/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('writeBatchSummary preserves a new live lock during concurrent recovery', (context) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-concurrent-recovery-'));
+  const summaries = path.join(dir, 'TubeVault Summaries');
+  try {
+    const batchId = 'concurrent-recovery-batch';
+    const created = writeBatchSummary(dir, batchId, 'Concurrent recovery', undefined, []);
+    const stableId = path.basename(created).match(/[a-f0-9]{16}(?=\.txt$)/)?.[0] as string;
+    const lockPath = path.join(summaries, `.tv-${stableId}.lock`);
+    fs.writeFileSync(created, 'incomplete');
+    fs.mkdirSync(lockPath);
+    fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({ pid: 2_147_483_647 }));
+    const renameSync = fs.renameSync.bind(fs);
+    context.mock.method(fs, 'renameSync', (source: fs.PathLike, destination: fs.PathLike) => {
+      renameSync(source, destination);
+      if (source !== lockPath || !String(destination).includes('.recover.')) return;
+      fs.mkdirSync(lockPath);
+      fs.writeFileSync(path.join(lockPath, 'owner.json'), JSON.stringify({ pid: process.pid }));
+    });
+    context.mock.method(fs, 'linkSync', () => {
+      const error = new Error('Hard links unavailable') as NodeJS.ErrnoException;
+      error.code = 'EXDEV';
+      throw error;
+    });
+
+    assert.throws(
+      () => writeBatchSummary(dir, batchId, 'Concurrent recovery', undefined, []),
+      /publication is already in progress/,
+    );
+    assert.equal(fs.existsSync(lockPath), true);
+    assert.equal(JSON.parse(fs.readFileSync(path.join(lockPath, 'owner.json'), 'utf8')).pid, process.pid);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

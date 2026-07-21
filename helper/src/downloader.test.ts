@@ -619,6 +619,80 @@ test('createBatchSummary reuses an existing opaque summary during receipt recove
   }
 });
 
+test('createBatchSummary reuses a matching v0.3.80 date-named summary', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-date-legacy-'));
+  const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-date-receipts-'));
+  const summaries = path.join(dir, 'TubeVault Summaries');
+  const legacyFile = path.join(summaries, 'Legacy playlist - 2026-07-20 1200.txt');
+  const items = [
+    { title: 'Complete video', folder: 'C:\\Videos\\Complete video', status: 'done' },
+    { title: 'Failed video', status: 'failed' },
+  ];
+  try {
+    fs.mkdirSync(summaries);
+    fs.writeFileSync(legacyFile, [
+      'Legacy playlist',
+      '═'.repeat(48),
+      'Type:        Playlist',
+      'Downloaded:  7/20/2026, 12:00:00 PM',
+      'Videos:      1 of 2 completed',
+      '',
+      'Items:',
+      '  001 ✓ Complete video',
+      '        → C:\\Videos\\Complete video',
+      '  002 ✗ Failed video',
+      '',
+    ].join('\n') + '\n');
+
+    const recovered = createBatchSummary(dir, 'new-batch-id', 'Legacy playlist', 'Playlist', items, undefined, receipts);
+
+    assert.equal(recovered.ok, true);
+    assert.equal(recovered.summaryPath, legacyFile);
+    assert.deepEqual(fs.readdirSync(summaries), [path.basename(legacyFile)]);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(receipts, { recursive: true, force: true });
+  }
+});
+
+test('createBatchSummary does not reuse a date-named summary for different items', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-date-mismatch-'));
+  const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-date-mismatch-receipts-'));
+  const summaries = path.join(dir, 'TubeVault Summaries');
+  const legacyFile = path.join(summaries, 'Legacy playlist - 2026-07-20 1200.txt');
+  try {
+    fs.mkdirSync(summaries);
+    fs.writeFileSync(legacyFile, [
+      'Legacy playlist',
+      '═'.repeat(48),
+      'Type:        Playlist',
+      'Downloaded:  7/20/2026, 12:00:00 PM',
+      'Videos:      1 of 1 completed',
+      '',
+      'Items:',
+      '  001 ✓ Different video',
+      '',
+    ].join('\n') + '\n');
+
+    const recovered = createBatchSummary(
+      dir,
+      'new-batch-id',
+      'Legacy playlist',
+      'Playlist',
+      [{ title: 'Expected video', status: 'done' }],
+      undefined,
+      receipts,
+    );
+
+    assert.equal(recovered.ok, true);
+    assert.notEqual(recovered.summaryPath, legacyFile);
+    assert.equal(fs.readdirSync(summaries).length, 2);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(receipts, { recursive: true, force: true });
+  }
+});
+
 test('createBatchSummary rejects a corrupt opaque legacy summary', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-corrupt-legacy-'));
   const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-corrupt-receipts-'));

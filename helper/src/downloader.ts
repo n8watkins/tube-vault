@@ -886,6 +886,54 @@ function hasValidLegacyBatchSummary(file: string): boolean {
   return itemCount === total && completedCount === completed && completed <= total;
 }
 
+function batchSummaryLines(
+  batchLabel: string,
+  category: string | undefined,
+  items: BatchSummaryItem[],
+  downloaded: string,
+): string[] {
+  const done = items.filter((item) => item.status === 'done').length;
+  const lines = [
+    batchLabel || 'TubeVault download',
+    '═'.repeat(48),
+    `Type:        ${category || 'Batch'}`,
+    `Downloaded:  ${downloaded}`,
+    `Videos:      ${done} of ${items.length} completed`,
+    '',
+    'Items:',
+  ];
+  items.forEach((item, index) => {
+    const number = String(index + 1).padStart(Math.max(3, String(items.length).length), '0');
+    const mark = item.status === 'done' ? '✓' : item.status === 'failed' ? '✗' : item.status === 'cancelled' ? '⊘' : '·';
+    lines.push(`  ${number} ${mark} ${item.title}`);
+    if (item.folder) lines.push(`        → ${item.folder}`);
+  });
+  lines.push('');
+  return lines;
+}
+
+function findMatchingDateNamedLegacySummary(
+  dir: string,
+  batchLabel: string,
+  category: string | undefined,
+  items: BatchSummaryItem[],
+): string | undefined {
+  const fileBase = sanitizeFilename(batchLabel || 'Download') || 'Download';
+  const prefix = `${fileBase} - `;
+  const expected = batchSummaryLines(batchLabel, category, items, '').filter((_line, index) => index !== 3);
+  const candidates = fs.readdirSync(dir)
+    .filter((name) => name.startsWith(prefix) && /^\d{4}-\d{2}-\d{2} \d{4}\.txt$/.test(name.slice(prefix.length)))
+    .sort()
+    .reverse();
+  for (const name of candidates) {
+    const file = path.join(dir, name);
+    if (!hasValidLegacyBatchSummary(file)) continue;
+    const actual = fs.readFileSync(file, 'utf8').slice(0, -1).split('\n').filter((_line, index) => index !== 3);
+    if (actual.length === expected.length && actual.every((line, index) => line === expected[index])) return file;
+  }
+  return undefined;
+}
+
 class InvalidBatchSummaryReceiptError extends Error {}
 
 function canRecoverReceiptRead(error: unknown): boolean {
@@ -1437,6 +1485,11 @@ export function writeBatchSummary(
     syncPublishedFile(legacyFile);
     return wslToWindowsPath(legacyFile);
   }
+  const dateNamedLegacyFile = findMatchingDateNamedLegacySummary(dir, batchLabel, category, items);
+  if (dateNamedLegacyFile) {
+    syncPublishedFile(dateNamedLegacyFile);
+    return wslToWindowsPath(dateNamedLegacyFile);
+  }
 
   const existingName = fs.readdirSync(dir).sort().find((name) => isBatchSummaryName(batchId, name));
   const summaryName = existingName || reservedName || batchSummaryName(batchId, batchLabel);
@@ -1446,23 +1499,7 @@ export function writeBatchSummary(
   if (recoverInterruptedPublication(file, lockFile)) return wslToWindowsPath(file);
 
   const stamp = new Date();
-  const done = items.filter((i) => i.status === 'done').length;
-  const lines = [
-    batchLabel || 'TubeVault download',
-    '═'.repeat(48),
-    `Type:        ${category || 'Batch'}`,
-    `Downloaded:  ${stamp.toLocaleString()}`,
-    `Videos:      ${done} of ${items.length} completed`,
-    '',
-    'Items:',
-  ];
-  items.forEach((it, i) => {
-    const n = String(i + 1).padStart(Math.max(3, String(items.length).length), '0');
-    const mark = it.status === 'done' ? '✓' : it.status === 'failed' ? '✗' : it.status === 'cancelled' ? '⊘' : '·';
-    lines.push(`  ${n} ${mark} ${it.title}`);
-    if (it.folder) lines.push(`        → ${it.folder}`);
-  });
-  lines.push('');
+  const lines = batchSummaryLines(batchLabel, category, items, stamp.toLocaleString());
   const temporaryFile = path.join(dir, `.tv-${batchSlug.slice(0, BATCH_SUMMARY_ID_LENGTH)}-${randomUUID()}.tmp`);
   try {
     fs.writeFileSync(temporaryFile, summaryContent(lines), { encoding: 'utf8', flag: 'wx' });

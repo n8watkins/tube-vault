@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import * as fs from 'fs';
+import fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import {
@@ -134,6 +134,77 @@ test('createBatchSummary sanitizes the readable label without changing its stabl
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
     fs.rmSync(receipts, { recursive: true, force: true });
+  }
+});
+
+test('createBatchSummary limits Unicode summary names by UTF-8 bytes', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-unicode-name-'));
+  const receipts = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-receipts-'));
+  try {
+    const created = createBatchSummary(dir, 'unicode-batch', '🎬'.repeat(200), undefined, [], undefined, receipts);
+
+    assert.equal(created.ok, true);
+    const summaryName = path.basename(created.summaryPath as string);
+    assert.ok(Buffer.byteLength(summaryName, 'utf8') <= 255);
+    assert.match(summaryName, /^🎬+ - [a-f0-9]{16}\.txt$/u);
+    assert.equal(summaryName.includes('�'), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(receipts, { recursive: true, force: true });
+  }
+});
+
+test('writeBatchSummary falls back when hard links are unavailable and remains replay-idempotent', (context) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-portable-'));
+  try {
+    context.mock.method(fs, 'linkSync', () => {
+      const error = new Error('Hard links unavailable') as NodeJS.ErrnoException;
+      error.code = 'EPERM';
+      throw error;
+    });
+    const first = writeBatchSummary(dir, 'portable-batch', 'Portable batch', 'Playlist', [
+      { title: 'One', status: 'done' },
+    ]);
+    const original = fs.readFileSync(first, 'utf8');
+    const replay = writeBatchSummary(dir, 'portable-batch', 'Changed batch', 'Channel', [
+      { title: 'Two', status: 'failed' },
+    ]);
+
+    assert.equal(replay, first);
+    assert.equal(fs.readFileSync(replay, 'utf8'), original);
+    assert.match(original, /\nIntegrity: SHA-256 [a-f0-9]{64}\n$/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('writeBatchSummary cleans an interrupted fallback before retrying', (context) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tv-summary-partial-'));
+  const summaries = path.join(dir, 'TubeVault Summaries');
+  try {
+    const batchId = 'partial-batch';
+    const created = writeBatchSummary(dir, batchId, 'Partial batch', undefined, []);
+    const summaryName = path.basename(created);
+    fs.unlinkSync(created);
+    const stableId = summaryName.match(/[a-f0-9]{16}(?=\.txt$)/)?.[0] as string;
+    const lockFile = path.join(summaries, `.tv-${stableId}.lock`);
+    fs.writeFileSync(created, 'incomplete');
+    fs.writeFileSync(lockFile, '');
+    const stale = new Date(Date.now() - 31_000);
+    fs.utimesSync(lockFile, stale, stale);
+    context.mock.method(fs, 'linkSync', () => {
+      const error = new Error('Hard links unavailable') as NodeJS.ErrnoException;
+      error.code = 'EXDEV';
+      throw error;
+    });
+
+    const recovered = writeBatchSummary(dir, batchId, 'Partial batch', undefined, []);
+
+    assert.equal(recovered, created);
+    assert.notEqual(fs.readFileSync(recovered, 'utf8'), 'incomplete');
+    assert.equal(fs.existsSync(lockFile), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 });
 

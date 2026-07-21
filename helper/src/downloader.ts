@@ -738,6 +738,26 @@ export interface BatchSummaryItem { title: string; folder?: string; status: stri
 interface BatchSummaryReceipt { root: string; summaryName?: string; }
 
 const BATCH_SUMMARY_ID_LENGTH = 16;
+const MAX_FILENAME_BYTES = 255;
+const PUBLICATION_LOCK_STALE_MS = 30_000;
+const SUMMARY_INTEGRITY_PREFIX = 'Integrity: SHA-256 ';
+const HARD_LINK_UNAVAILABLE_CODES = new Set(['EACCES', 'EPERM', 'EXDEV', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
+
+function errorCode(error: unknown): string | undefined {
+  return error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  let result = '';
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character, 'utf8');
+    if (bytes + characterBytes > maxBytes) break;
+    result += character;
+    bytes += characterBytes;
+  }
+  return result;
+}
 
 function batchSummaryReceiptDir(): string {
   const localAppData = process.env.LOCALAPPDATA;
@@ -762,12 +782,97 @@ function batchSummaryId(batchId: string): string {
 function batchSummaryName(batchId: string, batchLabel: string): string {
   const sanitized = (sanitizeFilename(batchLabel || 'Download') || 'Download').replace(/[. ]+$/g, '') || 'Download';
   const safeLabel = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(sanitized) ? `_${sanitized}` : sanitized;
-  return `${safeLabel} - ${batchSummaryId(batchId).slice(0, BATCH_SUMMARY_ID_LENGTH)}.txt`;
+  const suffix = ` - ${batchSummaryId(batchId).slice(0, BATCH_SUMMARY_ID_LENGTH)}.txt`;
+  const readableLabel = truncateUtf8(safeLabel, MAX_FILENAME_BYTES - Buffer.byteLength(suffix, 'utf8')) || 'Download';
+  return `${readableLabel}${suffix}`;
 }
 
 function isBatchSummaryName(batchId: string, summaryName: string): boolean {
   const suffix = ` - ${batchSummaryId(batchId).slice(0, BATCH_SUMMARY_ID_LENGTH)}.txt`;
-  return path.basename(summaryName) === summaryName && summaryName.endsWith(suffix);
+  return path.basename(summaryName) === summaryName
+    && Buffer.byteLength(summaryName, 'utf8') <= MAX_FILENAME_BYTES
+    && summaryName.length > suffix.length
+    && summaryName.endsWith(suffix);
+}
+
+function summaryContent(lines: string[]): string {
+  const body = lines.join('\n') + '\n';
+  return `${body}${SUMMARY_INTEGRITY_PREFIX}${createHash('sha256').update(body).digest('hex')}\n`;
+}
+
+function hasValidSummaryIntegrity(file: string): boolean {
+  try {
+    const content = fs.readFileSync(file, 'utf8');
+    const markerStart = content.lastIndexOf(`\n${SUMMARY_INTEGRITY_PREFIX}`);
+    if (markerStart < 0 || !content.endsWith('\n')) return false;
+    const body = content.slice(0, markerStart + 1);
+    const digest = content.slice(markerStart + 1 + SUMMARY_INTEGRITY_PREFIX.length, -1);
+    return /^[a-f0-9]{64}$/.test(digest) && createHash('sha256').update(body).digest('hex') === digest;
+  } catch {
+    return false;
+  }
+}
+
+function recoverInterruptedPublication(file: string, lockFile: string): boolean {
+  if (!fs.existsSync(lockFile)) return fs.existsSync(file);
+  if (fs.existsSync(file) && hasValidSummaryIntegrity(file)) {
+    const published = fs.openSync(file, 'r');
+    try { fs.fsyncSync(published); } finally { fs.closeSync(published); }
+    try { fs.unlinkSync(lockFile); } catch {}
+    return true;
+  }
+  const age = Date.now() - fs.statSync(lockFile).mtimeMs;
+  if (age < PUBLICATION_LOCK_STALE_MS) throw new Error('Batch summary publication is already in progress');
+  try { fs.unlinkSync(file); } catch (error) {
+    if (errorCode(error) !== 'ENOENT') throw error;
+  }
+  try { fs.unlinkSync(lockFile); } catch (error) {
+    if (errorCode(error) !== 'ENOENT') throw error;
+  }
+  return false;
+}
+
+function publishWithoutHardLinks(temporaryFile: string, file: string, lockFile: string): void {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    let lock: number;
+    try {
+      lock = fs.openSync(lockFile, 'wx');
+    } catch (error) {
+      if (errorCode(error) !== 'EEXIST') throw error;
+      if (recoverInterruptedPublication(file, lockFile)) return;
+      continue;
+    }
+    let releaseLock = false;
+    try {
+      fs.closeSync(lock);
+      if (fs.existsSync(file)) {
+        if (!hasValidSummaryIntegrity(file)) throw new Error('Batch summary publication was incomplete');
+        releaseLock = true;
+        return;
+      }
+      try {
+        fs.copyFileSync(temporaryFile, file, fs.constants.COPYFILE_EXCL);
+        const published = fs.openSync(file, 'r');
+        try { fs.fsyncSync(published); } finally { fs.closeSync(published); }
+        if (!hasValidSummaryIntegrity(file)) throw new Error('Batch summary publication was incomplete');
+        releaseLock = true;
+        return;
+      } catch (error) {
+        if (fs.existsSync(file) && !hasValidSummaryIntegrity(file)) {
+          try {
+            fs.unlinkSync(file);
+            releaseLock = true;
+          } catch {}
+        }
+        throw error;
+      }
+    } finally {
+      if (releaseLock) {
+        try { fs.unlinkSync(lockFile); } catch {}
+      }
+    }
+  }
+  throw new Error('Could not recover batch summary publication');
 }
 
 function reserveBatchSummaryReceipt(batchId: string, root: string, batchLabel: string, receiptDir: string): BatchSummaryReceipt {
@@ -856,12 +961,12 @@ export function writeBatchSummary(
   const legacyFile = path.join(dir, `TubeVault batch - ${batchSlug}.txt`);
   if (fs.existsSync(legacyFile)) return wslToWindowsPath(legacyFile);
 
-  const stableSuffix = ` - ${batchSlug.slice(0, BATCH_SUMMARY_ID_LENGTH)}.txt`;
-  const existingName = fs.readdirSync(dir).sort().find((name) => name.endsWith(stableSuffix));
+  const existingName = fs.readdirSync(dir).sort().find((name) => isBatchSummaryName(batchId, name));
   const summaryName = existingName || reservedName || batchSummaryName(batchId, batchLabel);
   if (!isBatchSummaryName(batchId, summaryName)) throw new Error('Invalid batch summary filename');
   const file = path.join(dir, summaryName);
-  if (fs.existsSync(file)) return wslToWindowsPath(file);
+  const lockFile = path.join(dir, `.tv-${batchSlug.slice(0, BATCH_SUMMARY_ID_LENGTH)}.lock`);
+  if (recoverInterruptedPublication(file, lockFile)) return wslToWindowsPath(file);
 
   const stamp = new Date();
   const done = items.filter((i) => i.status === 'done').length;
@@ -881,13 +986,16 @@ export function writeBatchSummary(
     if (it.folder) lines.push(`        → ${it.folder}`);
   });
   lines.push('');
-  const temporaryFile = path.join(dir, `.${path.basename(file)}.${process.pid}.${randomUUID()}.tmp`);
+  const temporaryFile = path.join(dir, `.tv-${batchSlug.slice(0, BATCH_SUMMARY_ID_LENGTH)}-${randomUUID()}.tmp`);
   try {
-    fs.writeFileSync(temporaryFile, lines.join('\n') + '\n', { encoding: 'utf8', flag: 'wx' });
+    fs.writeFileSync(temporaryFile, summaryContent(lines), { encoding: 'utf8', flag: 'wx' });
     try {
       fs.linkSync(temporaryFile, file);
     } catch (error) {
-      if (!(error instanceof Error && 'code' in error && error.code === 'EEXIST')) throw error;
+      const code = errorCode(error);
+      if (code === 'EEXIST') return wslToWindowsPath(file);
+      if (!code || !HARD_LINK_UNAVAILABLE_CODES.has(code)) throw error;
+      publishWithoutHardLinks(temporaryFile, file, lockFile);
     }
   } finally {
     try { fs.unlinkSync(temporaryFile); } catch { /* ignore */ }

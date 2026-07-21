@@ -739,7 +739,6 @@ interface BatchSummaryReceipt { root: string; summaryName?: string; }
 
 const BATCH_SUMMARY_ID_LENGTH = 16;
 const MAX_FILENAME_BYTES = 255;
-const PUBLICATION_LOCK_STALE_MS = 30_000;
 const SUMMARY_INTEGRITY_PREFIX = 'Integrity: SHA-256 ';
 const HARD_LINK_UNAVAILABLE_CODES = new Set(['EACCES', 'EPERM', 'EXDEV', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
 
@@ -813,9 +812,56 @@ function hasValidSummaryIntegrity(file: string): boolean {
   }
 }
 
-function publicationOwnerIsAlive(lockFile: string): boolean | undefined {
+function publicationLockOwnerFile(lockPath: string): string {
   try {
-    const owner = JSON.parse(fs.readFileSync(lockFile, 'utf8')) as { pid?: unknown };
+    return fs.statSync(lockPath).isDirectory() ? path.join(lockPath, 'owner.json') : lockPath;
+  } catch {
+    return lockPath;
+  }
+}
+
+function removePublicationLock(lockPath: string): void {
+  try {
+    if (!fs.statSync(lockPath).isDirectory()) {
+      fs.unlinkSync(lockPath);
+      return;
+    }
+    try { fs.unlinkSync(path.join(lockPath, 'owner.json')); } catch (error) {
+      if (errorCode(error) !== 'ENOENT') throw error;
+    }
+    fs.rmdirSync(lockPath);
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT') throw error;
+  }
+}
+
+function acquirePublicationLock(lockPath: string): boolean {
+  const preparedLock = `${lockPath}.${process.pid}.${randomUUID()}.tmp`;
+  fs.mkdirSync(preparedLock);
+  try {
+    const ownerFile = path.join(preparedLock, 'owner.json');
+    const owner = fs.openSync(ownerFile, 'wx');
+    try {
+      fs.writeFileSync(owner, JSON.stringify({ pid: process.pid }), 'utf8');
+      fs.fsyncSync(owner);
+    } finally {
+      fs.closeSync(owner);
+    }
+    try {
+      fs.renameSync(preparedLock, lockPath);
+      return true;
+    } catch (error) {
+      if (!fs.existsSync(lockPath)) throw error;
+      return false;
+    }
+  } finally {
+    removePublicationLock(preparedLock);
+  }
+}
+
+function publicationOwnerIsAlive(lockPath: string): boolean | undefined {
+  try {
+    const owner = JSON.parse(fs.readFileSync(publicationLockOwnerFile(lockPath), 'utf8')) as { pid?: unknown };
     if (typeof owner.pid !== 'number' || !Number.isInteger(owner.pid) || owner.pid <= 0) return undefined;
     if (owner.pid === process.pid) return true;
     try {
@@ -829,46 +875,49 @@ function publicationOwnerIsAlive(lockFile: string): boolean | undefined {
   }
 }
 
-function recoverInterruptedPublication(file: string, lockFile: string): boolean {
+function recoverInterruptedPublication(file: string, lockPath: string): boolean {
   if (fs.existsSync(file) && hasValidSummaryIntegrity(file)) {
     const published = fs.openSync(file, 'r');
     try { fs.fsyncSync(published); } finally { fs.closeSync(published); }
     return true;
   }
-  if (!fs.existsSync(lockFile)) return false;
-  const ownerIsAlive = publicationOwnerIsAlive(lockFile);
+  if (!fs.existsSync(lockPath)) return false;
+  const ownerIsAlive = publicationOwnerIsAlive(lockPath);
   if (ownerIsAlive === true) throw new Error('Batch summary publication is already in progress');
-  const age = Date.now() - fs.statSync(lockFile).mtimeMs;
-  if (ownerIsAlive === undefined && age < PUBLICATION_LOCK_STALE_MS) {
-    throw new Error('Batch summary publication is already in progress');
+  const claimedLock = `${lockPath}.recover.${process.pid}.${randomUUID()}`;
+  try {
+    fs.renameSync(lockPath, claimedLock);
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return false;
+    throw error;
   }
-  try { fs.unlinkSync(file); } catch (error) {
-    if (errorCode(error) !== 'ENOENT') throw error;
-  }
-  try { fs.unlinkSync(lockFile); } catch (error) {
-    if (errorCode(error) !== 'ENOENT') throw error;
+  let ownsRecoveryLock = false;
+  try {
+    ownsRecoveryLock = acquirePublicationLock(lockPath);
+    if (!ownsRecoveryLock) {
+      if (fs.existsSync(file) && hasValidSummaryIntegrity(file)) return true;
+      throw new Error('Batch summary publication is already in progress');
+    }
+    if (fs.existsSync(file) && hasValidSummaryIntegrity(file)) return true;
+    try { fs.unlinkSync(file); } catch (error) {
+      if (errorCode(error) !== 'ENOENT') throw error;
+    }
+  } finally {
+    if (ownsRecoveryLock) removePublicationLock(lockPath);
+    removePublicationLock(claimedLock);
   }
   return false;
 }
 
-function publishWithoutHardLinks(temporaryFile: string, file: string, lockFile: string): void {
+function publishWithoutHardLinks(temporaryFile: string, file: string, lockPath: string): void {
   for (let attempt = 0; attempt < 2; attempt += 1) {
-    let lock: number;
-    try {
-      lock = fs.openSync(lockFile, 'wx');
-    } catch (error) {
-      if (errorCode(error) !== 'EEXIST') throw error;
-      if (recoverInterruptedPublication(file, lockFile)) return;
+    if (!acquirePublicationLock(lockPath)) {
+      if (recoverInterruptedPublication(file, lockPath)) return;
       continue;
     }
-    let releaseLock = false;
     try {
-      fs.writeFileSync(lock, JSON.stringify({ pid: process.pid }), 'utf8');
-      fs.fsyncSync(lock);
-      fs.closeSync(lock);
       if (fs.existsSync(file)) {
         if (hasValidSummaryIntegrity(file)) {
-          releaseLock = true;
           return;
         }
         fs.unlinkSync(file);
@@ -878,21 +927,15 @@ function publishWithoutHardLinks(temporaryFile: string, file: string, lockFile: 
         const published = fs.openSync(file, 'r');
         try { fs.fsyncSync(published); } finally { fs.closeSync(published); }
         if (!hasValidSummaryIntegrity(file)) throw new Error('Batch summary publication was incomplete');
-        releaseLock = true;
         return;
       } catch (error) {
         if (fs.existsSync(file) && !hasValidSummaryIntegrity(file)) {
-          try {
-            fs.unlinkSync(file);
-            releaseLock = true;
-          } catch {}
+          try { fs.unlinkSync(file); } catch {}
         }
         throw error;
       }
     } finally {
-      if (releaseLock) {
-        try { fs.unlinkSync(lockFile); } catch {}
-      }
+      removePublicationLock(lockPath);
     }
   }
   throw new Error('Could not recover batch summary publication');

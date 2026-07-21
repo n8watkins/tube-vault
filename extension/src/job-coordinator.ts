@@ -74,6 +74,7 @@ const SUMMARY_ATTEMPTS_KEY = 'tvBatchSummaryAttempts';
 const MAX_SUMMARY_ATTEMPTS = 3;
 const MAX_QUEUE_PUMP_RETRIES = 3;
 const QUEUE_WRITE_RETRY_DELAY_MS = 100;
+const MAX_QUEUE_WRITE_RETRY_DELAY_MS = 1_000;
 const isActive = (job: Job) => job.status === 'queued' || job.status === 'probing' || job.status === 'running';
 
 interface BatchSummaryRetry {
@@ -260,7 +261,7 @@ export class JobCoordinator {
         estBytes: probe?.ok && typeof probe.bytes === 'number' ? probe.bytes : 0,
       };
       if (probe?.ok && typeof probe.title === 'string' && probe.title) patch.label = probe.title;
-      if (!(await this.updateJob(job.id, patch))) return;
+      if (!(await this.updateJob(job.id, patch, true))) return;
       job = { ...job, ...patch };
     } else {
       if (!(await this.updateJob(job.id, { status: 'running' }))) return;
@@ -292,7 +293,7 @@ export class JobCoordinator {
         status: 'failed',
         error: typeof response?.error === 'string' ? response.error : 'Download failed',
         finishedAt: this.effects.now(),
-      });
+      }, true);
     } else {
       const folder = typeof response.windowsFolderPath === 'string'
         ? response.windowsFolderPath
@@ -302,7 +303,7 @@ export class JobCoordinator {
         folder,
         finishedAt: this.effects.now(),
         ...(typeof response.bytes === 'number' && response.bytes > 0 ? { estBytes: response.bytes } : {}),
-      });
+      }, true);
       if (!completed) return;
       if (settings.notifyOnDone) this.effects.notify(job.label, folder);
       if (settings.autoOpenFolder && folder && !job.batchId) await this.effects.openFolder(folder);
@@ -324,12 +325,12 @@ export class JobCoordinator {
     ));
   }
 
-  private async updateJob(id: string, patch: Partial<Job>): Promise<boolean> {
+  private async updateJob(id: string, patch: Partial<Job>, persistUntilStored = false): Promise<boolean> {
     return this.mutateJobs((jobs) => {
       const index = jobs.findIndex((job) => job.id === id);
       if (index < 0 || jobs[index].status === 'cancelled') return { changed: false, value: false };
       jobs[index] = { ...jobs[index], ...patch };
-      return { changed: true, value: true, options: !!jobs[index].batchId };
+      return { changed: true, value: true, options: !!jobs[index].batchId, persistUntilStored };
     });
   }
 
@@ -361,6 +362,7 @@ export class JobCoordinator {
   private async setJobsLocked(
     jobs: Job[],
     options: boolean | { clearHistory?: boolean; finalizedBatchId?: string } = false,
+    persistUntilStored = false,
   ): Promise<void> {
     const preserveAllFinished = options === true;
     const retainedJobs = preserveAllFinished ? jobs : this.trim(jobs, typeof options === 'object' ? options : {});
@@ -370,9 +372,9 @@ export class JobCoordinator {
         await this.effects.storage.setJobs(retainedJobs);
         break;
       } catch (error) {
-        if (failures >= MAX_QUEUE_PUMP_RETRIES) throw error;
+        if (!persistUntilStored && failures >= MAX_QUEUE_PUMP_RETRIES) throw error;
         failures += 1;
-        await this.effects.delay(QUEUE_WRITE_RETRY_DELAY_MS * failures);
+        await this.effects.delay(Math.min(QUEUE_WRITE_RETRY_DELAY_MS * failures, MAX_QUEUE_WRITE_RETRY_DELAY_MS));
       }
     }
     if (!preserveAllFinished) await this.reconcileSummaryAttempts(retainedJobs).catch(() => undefined);
@@ -383,13 +385,14 @@ export class JobCoordinator {
       changed: boolean;
       value: T;
       options?: boolean | { clearHistory?: boolean; finalizedBatchId?: string };
+      persistUntilStored?: boolean;
     },
     options: boolean | { clearHistory?: boolean; finalizedBatchId?: string } = false,
   ): Promise<T> {
     return this.withJobsLock(async () => {
       const jobs = await this.effects.storage.getJobs();
       const result = mutation(jobs);
-      if (result.changed) await this.setJobsLocked(jobs, result.options ?? options);
+      if (result.changed) await this.setJobsLocked(jobs, result.options ?? options, result.persistUntilStored);
       const { value } = result;
       return value;
     });

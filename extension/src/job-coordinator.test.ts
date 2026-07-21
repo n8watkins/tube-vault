@@ -199,12 +199,15 @@ describe('JobCoordinator', () => {
     expect(test.delays).toEqual([100]);
   });
 
-  it('retries a failed terminal transition without repeating the download', async () => {
-    let failedTerminalWrite = false;
+  it('retains a terminal transition through a prolonged outage without repeating the download', async () => {
+    let failedTerminalWrites = 0;
+    const attemptedTransitions: Job[][] = [];
     const test = harness({
       beforeSetJobs: async (jobs) => {
-        if (failedTerminalWrite || jobs[0]?.status !== 'done') return;
-        failedTerminalWrite = true;
+        if (jobs[0]?.status !== 'done') return;
+        attemptedTransitions.push(jobs);
+        if (failedTerminalWrites >= 12) return;
+        failedTerminalWrites += 1;
         throw new Error('Transient terminal write failure');
       },
     });
@@ -215,7 +218,9 @@ describe('JobCoordinator', () => {
     expect(test.jobs[0]).toMatchObject({ status: 'done', folder: '/videos/item' });
     expect(test.calls.filter((call) => call.action === 'custom')).toHaveLength(1);
     expect(test.notifications).toEqual([['one', '/videos/item']]);
-    expect(test.delays).toEqual([100]);
+    expect(attemptedTransitions).toHaveLength(13);
+    expect(attemptedTransitions.every((jobs) => jobs[0].status === 'done' && jobs[0].folder === '/videos/item')).toBe(true);
+    expect(test.delays).toEqual([100, 200, 300, 400, 500, 600, 700, 800, 900, 1_000, 1_000, 1_000]);
   });
 
   it('starts a fresh pump when work arrives as the final retry is exhausted', async () => {

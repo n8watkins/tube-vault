@@ -40,28 +40,47 @@ export function setVersion(extensionPackage, manifest, lockfile, version) {
   lockfile.packages[''].version = version;
 }
 
+export async function restoreVersionFiles(paths, contents, stageFiles) {
+  await Promise.all(paths.map((file, index) => writeFile(file, contents[index])));
+  stageFiles();
+}
+
 export async function main() {
   if (!isClean(['diff', '--quiet']) || !isClean(['diff', '--cached', '--quiet'])) {
     throw new Error('Release requires no tracked or staged changes. Untracked files are allowed.');
   }
 
-  const extensionPackage = JSON.parse(await readFile(packagePath, 'utf8'));
-  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-  const lockfile = JSON.parse(await readFile(lockfilePath, 'utf8'));
+  const originalContents = await Promise.all([packagePath, manifestPath, lockfilePath].map((file) => readFile(file, 'utf8')));
+  const extensionPackage = JSON.parse(originalContents[0]);
+  const manifest = JSON.parse(originalContents[1]);
+  const lockfile = JSON.parse(originalContents[2]);
   assertMatchingVersions(extensionPackage, manifest, lockfile);
   run('npm', ['run', 'check']);
 
   const version = nextPatchVersion(extensionPackage.version);
   setVersion(extensionPackage, manifest, lockfile, version);
-  await Promise.all([
-    writeFile(packagePath, `${JSON.stringify(extensionPackage, null, 2)}\n`),
-    writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`),
-    writeFile(lockfilePath, `${JSON.stringify(lockfile, null, 2)}\n`),
-  ]);
+  let versionFilesChanged = false;
+  try {
+    versionFilesChanged = true;
+    await Promise.all([
+      writeFile(packagePath, `${JSON.stringify(extensionPackage, null, 2)}\n`),
+      writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`),
+      writeFile(lockfilePath, `${JSON.stringify(lockfile, null, 2)}\n`),
+    ]);
 
-  run('npm', ['run', 'build']);
-  run('git', ['add', '--', ...VERSION_FILES]);
-  run('git', ['commit', '-m', `build(tube-vault): v${version}`]);
+    run('npm', ['run', 'build']);
+    run('git', ['add', '--', ...VERSION_FILES]);
+    run('git', ['commit', '-m', `build(tube-vault): v${version}`]);
+  } catch (error) {
+    if (versionFilesChanged) {
+      await restoreVersionFiles(
+        [packagePath, manifestPath, lockfilePath],
+        originalContents,
+        () => run('git', ['add', '--', ...VERSION_FILES]),
+      );
+    }
+    throw error;
+  }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === scriptPath) {

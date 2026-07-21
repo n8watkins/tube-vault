@@ -1,10 +1,11 @@
 import { readMessages, writeMessage } from './protocol';
-import { handle, killActive, probeVideo, listVideos, createBatchSummary, removeBatchSummaryReceipt, defaultOutputRoot, type DownloadRequest, type Action, type DownloadComponents, type BatchSummaryItem } from './downloader';
+import { handle, killActive, probeVideo, listVideos, createBatchSummary, removeBatchSummaryReceipt, defaultOutputRoot, readProcessIdentity, type DownloadRequest, type Action, type DownloadComponents, type BatchSummaryItem } from './downloader';
 import { isValidJobId, isValidYouTubeUrl, wslToWindowsPath, IS_WSL } from './sanitize';
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 
 // Reported back to the popup on `ping`. Read from package.json (dist/ sits one
 // level below it at runtime) so it never drifts from the published helper version.
@@ -31,12 +32,35 @@ const ALLOWED_ACTIONS: Action[] = [
 // `cancel` invocation can signal it. Lives in the shared WSL tmp dir.
 const JOBS_DIR = path.join(os.tmpdir(), 'tube-vault-jobs');
 const pidFile = (jobId: string) => path.join(JOBS_DIR, `${jobId}.pid`);
+interface JobOwner { pid: number; processIdentity: string; }
 
-function writePid(jobId: string): void {
-  try { fs.mkdirSync(JOBS_DIR, { recursive: true }); fs.writeFileSync(pidFile(jobId), String(process.pid)); } catch { /* ignore */ }
+function writePid(jobId: string): string | undefined {
+  const processIdentity = readProcessIdentity(process.pid);
+  if (!processIdentity) return undefined;
+  const contents = JSON.stringify({ pid: process.pid, processIdentity });
+  const temporaryFile = path.join(JOBS_DIR, `.${jobId}.${randomUUID()}.tmp`);
+  try {
+    fs.mkdirSync(JOBS_DIR, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(temporaryFile, contents, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    fs.renameSync(temporaryFile, pidFile(jobId));
+    return contents;
+  } catch {
+    try { fs.unlinkSync(temporaryFile); } catch { /* ignore */ }
+    return undefined;
+  }
 }
-function clearPid(jobId: string): void {
-  try { fs.unlinkSync(pidFile(jobId)); } catch { /* ignore */ }
+function clearPid(jobId: string, expectedContents: string): void {
+  try {
+    if (fs.readFileSync(pidFile(jobId), 'utf8') === expectedContents) fs.unlinkSync(pidFile(jobId));
+  } catch { /* ignore */ }
+}
+function readJobOwner(jobId: string): { owner: JobOwner; contents: string } {
+  const contents = fs.readFileSync(pidFile(jobId), 'utf8');
+  const owner = JSON.parse(contents) as Partial<JobOwner>;
+  if (!Number.isInteger(owner.pid) || (owner.pid as number) <= 0 || typeof owner.processIdentity !== 'string') {
+    throw new Error('Invalid job owner');
+  }
+  return { owner: owner as JobOwner, contents };
 }
 
 // When cancelled, kill our yt-dlp children and exit. The pending sendNativeMessage
@@ -81,9 +105,10 @@ readMessages(async (raw) => {
     }
     const jobId = req.jobId;
     try {
-      const pid = parseInt(fs.readFileSync(pidFile(jobId), 'utf8'), 10);
-      if (Number.isFinite(pid)) process.kill(pid, 'SIGTERM');
-      clearPid(jobId);
+      const { owner, contents } = readJobOwner(jobId);
+      if (readProcessIdentity(owner.pid) !== owner.processIdentity) throw new Error('Job owner changed');
+      process.kill(owner.pid, 'SIGTERM');
+      clearPid(jobId, contents);
       writeMessage({ ok: true, status: 'cancelled' });
     } catch {
       writeMessage({ ok: false, status: 'failed', error: 'Job not found or already finished' });
@@ -157,11 +182,11 @@ readMessages(async (raw) => {
     return;
   }
   const jobId = req.jobId;
-  if (jobId) writePid(jobId);
+  const ownerContents = jobId ? writePid(jobId) : undefined;
   try {
     const res = await handle(req as unknown as DownloadRequest);
     writeMessage(res);
   } finally {
-    if (jobId) clearPid(jobId);
+    if (jobId && ownerContents) clearPid(jobId, ownerContents);
   }
 });

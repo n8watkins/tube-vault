@@ -741,11 +741,35 @@ const BATCH_SUMMARY_ID_LENGTH = 16;
 const MAX_FILENAME_BYTES = 255;
 const SUMMARY_INTEGRITY_PREFIX = 'Integrity: SHA-256 ';
 const HARD_LINK_UNAVAILABLE_CODES = new Set(['EACCES', 'EPERM', 'EXDEV', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
+const DIRECTORY_SYNC_UNAVAILABLE_CODES = new Set(['EACCES', 'EPERM', 'EINVAL', 'EBADF', 'EISDIR', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
 const PUBLICATION_LEASE_MS = 30_000;
 const PROCESS_IDENTITY = readProcessIdentity(process.pid);
 
 function errorCode(error: unknown): string | undefined {
   return error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
+}
+
+function syncParentDirectory(file: string): void {
+  let descriptor: number;
+  try {
+    descriptor = fs.openSync(path.dirname(file), 'r');
+  } catch (error) {
+    if (errorCode(error) && DIRECTORY_SYNC_UNAVAILABLE_CODES.has(errorCode(error) as string)) return;
+    throw error;
+  }
+  try {
+    fs.fsyncSync(descriptor);
+  } catch (error) {
+    if (!errorCode(error) || !DIRECTORY_SYNC_UNAVAILABLE_CODES.has(errorCode(error) as string)) throw error;
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+function syncPublishedFile(file: string): void {
+  const descriptor = fs.openSync(file, 'r');
+  try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+  syncParentDirectory(file);
 }
 
 function truncateUtf8(value: string, maxBytes: number): string {
@@ -1139,8 +1163,7 @@ function takeOverPublicationLock(lockPath: string, observed: PublicationOwnerSna
 
 function recoverInterruptedPublication(file: string, lockPath: string): boolean {
   if (hasValidSummaryIntegrity(file)) {
-    const published = fs.openSync(file, 'r');
-    try { fs.fsyncSync(published); } finally { fs.closeSync(published); }
+    syncPublishedFile(file);
     return true;
   }
   let observed = readPublicationOwner(lockPath);
@@ -1201,6 +1224,7 @@ function publishWithoutHardLinks(temporaryFile: string, file: string, lockPath: 
           fs.closeSync(source);
         }
         if (!hasValidSummaryIntegrity(file)) throw new Error('Batch summary publication was incomplete');
+        syncParentDirectory(file);
         return;
       } catch (error) {
         if (lockHasToken(lockPath, publicationToken) && !hasValidSummaryIntegrity(file) && fs.existsSync(file)) {
@@ -1270,6 +1294,7 @@ function publishReceiptWithoutHardLinks(
         fs.copyFileSync(temporaryFile, receiptFile, fs.constants.COPYFILE_EXCL);
         const descriptor = fs.openSync(receiptFile, 'r');
         try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+        syncParentDirectory(receiptFile);
         return readReceipt();
       } catch (error) {
         if (errorCode(error) === 'EEXIST') {
@@ -1302,7 +1327,9 @@ function reserveBatchSummaryReceipt(batchId: string, root: string, batchLabel: s
     if (receipt.summaryName !== undefined && (typeof receipt.summaryName !== 'string' || !isBatchSummaryName(batchId, receipt.summaryName))) {
       throw new InvalidBatchSummaryReceiptError('Invalid batch summary receipt');
     }
-    return { root: receipt.root, summaryName: receipt.summaryName };
+    const result = { root: receipt.root, summaryName: receipt.summaryName };
+    syncPublishedFile(receiptFile);
+    return result;
   };
   try {
     return readReceipt();
@@ -1316,6 +1343,7 @@ function reserveBatchSummaryReceipt(batchId: string, root: string, batchLabel: s
     fs.writeFileSync(temporaryFile, JSON.stringify({ root, summaryName: batchSummaryName(batchId, batchLabel) }), { encoding: 'utf8', flag: 'wx' });
     try {
       fs.linkSync(temporaryFile, receiptFile);
+      syncPublishedFile(receiptFile);
     } catch (error) {
       const code = errorCode(error);
       if (code === 'EEXIST') {
@@ -1386,6 +1414,7 @@ export function writeBatchSummary(
   const batchSlug = batchSummaryId(batchId);
   const legacyFile = path.join(dir, `TubeVault batch - ${batchSlug}.txt`);
   if (hasValidSummaryIntegrity(legacyFile) || hasValidLegacyBatchSummary(legacyFile)) {
+    syncPublishedFile(legacyFile);
     return wslToWindowsPath(legacyFile);
   }
 
@@ -1422,13 +1451,17 @@ export function writeBatchSummary(
     } catch (error) {
       const code = errorCode(error);
       if (code === 'EEXIST') {
-        if (hasValidSummaryIntegrity(file)) return wslToWindowsPath(file);
+        if (hasValidSummaryIntegrity(file)) {
+          syncPublishedFile(file);
+          return wslToWindowsPath(file);
+        }
         publishWithoutHardLinks(temporaryFile, file, lockFile);
         return wslToWindowsPath(file);
       }
       if (!code || !HARD_LINK_UNAVAILABLE_CODES.has(code)) throw error;
       publishWithoutHardLinks(temporaryFile, file, lockFile);
     }
+    syncPublishedFile(file);
   } finally {
     try { fs.unlinkSync(temporaryFile); } catch { /* ignore */ }
   }

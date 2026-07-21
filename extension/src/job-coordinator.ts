@@ -590,39 +590,8 @@ export class JobCoordinator {
   }
 
   private async migrateLegacyTerminalBatches(): Promise<void> {
-    const values = await this.effects.storage.getValues([SUMMARY_SCHEMA_VERSION_KEY, SUMMARY_ATTEMPTS_KEY]);
+    const values = await this.effects.storage.getValues([SUMMARY_SCHEMA_VERSION_KEY]);
     if (values[SUMMARY_SCHEMA_VERSION_KEY] === SUMMARY_SCHEMA_VERSION) return;
-    const retryState = values[SUMMARY_ATTEMPTS_KEY];
-    const retryBatchIds = new Set(
-      retryState && typeof retryState === 'object' && !Array.isArray(retryState)
-        ? Object.keys(retryState)
-        : [],
-    );
-    await this.withJobsLock(async () => {
-      const jobs = await this.effects.storage.getJobs();
-      const batches = new Map<string, Job[]>();
-      for (const job of jobs) {
-        if (!job.batchId) continue;
-        const members = batches.get(job.batchId) ?? [];
-        members.push(job);
-        batches.set(job.batchId, members);
-      }
-      let changed = false;
-      for (const [batchId, members] of batches) {
-        if (retryBatchIds.has(batchId) || members.some(isActive)) continue;
-        if (members.some((job) => (
-          job.summaryWritten !== undefined
-          || job.summaryExhausted !== undefined
-          || job.summaryReceiptCleaned !== undefined
-        ))) continue;
-        for (const job of members) {
-          job.summaryWritten = true;
-          job.summaryReceiptCleaned = true;
-        }
-        changed = true;
-      }
-      if (changed) await this.setJobsLocked(jobs, true);
-    });
     await this.effects.storage.setValues({ [SUMMARY_SCHEMA_VERSION_KEY]: SUMMARY_SCHEMA_VERSION });
   }
 

@@ -570,7 +570,7 @@ describe('JobCoordinator', () => {
     expect(test.jobs[1].status).toBe('done');
   });
 
-  it('migrates legacy terminal batches without regenerating their summaries', async () => {
+  it('recovers legacy terminal batches whose summary write was interrupted', async () => {
     const test = harness({
       jobs: [
         job('historical', 'done', { batchId: 'historical-batch' }),
@@ -581,13 +581,15 @@ describe('JobCoordinator', () => {
 
     await test.coordinator.initialize();
     await test.coordinator.whenIdle();
-
-    expect(test.jobs.find((item) => item.id === 'queued')?.status).toBe('done');
-    expect(test.jobs.find((item) => item.id === 'historical')).toMatchObject({
+    await vi.waitFor(() => expect(test.jobs.find((item) => item.id === 'historical')).toMatchObject({
       summaryWritten: true,
       summaryReceiptCleaned: true,
-    });
-    expect(test.calls.some((call) => call.action === 'batch_summary')).toBe(false);
+    }));
+
+    expect(test.jobs.find((item) => item.id === 'queued')?.status).toBe('done');
+    expect(test.calls.filter((call) => call.action === 'batch_summary')).toEqual([
+      expect.objectContaining({ batchId: 'historical-batch' }),
+    ]);
     expect(test.values.tvBatchSummarySchemaVersion).toBe(1);
   });
 

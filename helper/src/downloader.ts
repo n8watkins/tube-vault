@@ -5,7 +5,7 @@ import os from 'os';
 import { createHash, randomUUID } from 'crypto';
 import { wslToWindowsPath, windowsToWslPath, sanitizeFilename, IS_WSL } from './sanitize';
 
-// Discover the Windows user profile (e.g. C:\Users\natha) from inside WSL, cached.
+// Discover the Windows user profile (for example, C:\Users\<user>) from inside WSL, cached.
 // The native host runs with a stripped PATH, so cmd.exe is called by absolute path.
 // This is how we avoid hardcoding any username in the default save location.
 let cachedWinHome: string | null | undefined;

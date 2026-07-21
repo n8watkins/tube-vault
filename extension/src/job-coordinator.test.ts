@@ -42,9 +42,13 @@ function harness(options: {
   beforeGetJobs?: (readCount: number) => Promise<void>;
   afterGetJobs?: (jobs: Job[], readCount: number) => Promise<void>;
   scheduleQueueWake?: (milliseconds: number) => void;
+  legacyJobs?: boolean;
 } = {}) {
   let jobs = structuredClone(options.jobs ?? []);
-  const values = { ...(options.values ?? {}) };
+  const values = {
+    ...(options.legacyJobs ? {} : { tvBatchSummarySchemaVersion: 1 }),
+    ...(options.values ?? {}),
+  };
   const settings = { ...baseSettings, ...options.settings };
   let id = 0;
   let now = 1_000_000;
@@ -566,23 +570,25 @@ describe('JobCoordinator', () => {
     expect(test.jobs[1].status).toBe('done');
   });
 
-  it('does not block startup or queued recovery on historical summaries', async () => {
-    const summary = deferred<NativeResponse>();
+  it('migrates legacy terminal batches without regenerating their summaries', async () => {
     const test = harness({
       jobs: [
         job('historical', 'done', { batchId: 'historical-batch' }),
         job('queued', 'queued', { estBytes: 1 }),
       ],
-      native: async (payload) => payload.action === 'batch_summary' ? summary.promise : { ok: true },
+      legacyJobs: true,
     });
 
     await test.coordinator.initialize();
-    await vi.waitFor(() => expect(test.calls).toContainEqual(expect.objectContaining({ action: 'batch_summary' })));
     await test.coordinator.whenIdle();
 
     expect(test.jobs.find((item) => item.id === 'queued')?.status).toBe('done');
-    summary.resolve({ ok: true });
-    await vi.waitFor(() => expect(test.jobs.find((item) => item.id === 'historical')?.summaryWritten).toBe(true));
+    expect(test.jobs.find((item) => item.id === 'historical')).toMatchObject({
+      summaryWritten: true,
+      summaryReceiptCleaned: true,
+    });
+    expect(test.calls.some((call) => call.action === 'batch_summary')).toBe(false);
+    expect(test.values.tvBatchSummarySchemaVersion).toBe(1);
   });
 
   it('retains an interrupted batch member until queued siblings and summary finish', async () => {
@@ -610,6 +616,7 @@ describe('JobCoordinator', () => {
         job('two', 'failed', { batchId: 'batch', batchLabel: 'Restarted batch' }),
       ],
       values: { tvBatchSummaryAttempts: { batch: 1 } },
+      legacyJobs: true,
     });
     await test.coordinator.initialize();
     await vi.waitFor(() => {
@@ -918,14 +925,22 @@ describe('JobCoordinator', () => {
   it('seeds the first helper output root exactly once', async () => {
     const fresh = harness();
     await fresh.coordinator.seedOutputRoot('/helper-default');
-    expect(fresh.values).toEqual({ outputRoot: '/helper-default', outputRootSeeded: true });
+    expect(fresh.values).toEqual({
+      tvBatchSummarySchemaVersion: 1,
+      outputRoot: '/helper-default',
+      outputRootSeeded: true,
+    });
 
     const saved = harness({ values: { outputRoot: '/saved' } });
     await saved.coordinator.seedOutputRoot('/helper-default');
-    expect(saved.values).toEqual({ outputRoot: '/saved' });
+    expect(saved.values).toEqual({ tvBatchSummarySchemaVersion: 1, outputRoot: '/saved' });
 
     const intentionallyBlank = harness({ values: { outputRoot: '', outputRootSeeded: true } });
     await intentionallyBlank.coordinator.seedOutputRoot('/helper-default');
-    expect(intentionallyBlank.values).toEqual({ outputRoot: '', outputRootSeeded: true });
+    expect(intentionallyBlank.values).toEqual({
+      tvBatchSummarySchemaVersion: 1,
+      outputRoot: '',
+      outputRootSeeded: true,
+    });
   });
 });

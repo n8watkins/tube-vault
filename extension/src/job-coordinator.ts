@@ -72,6 +72,8 @@ export interface EnqueueRequest {
 
 const MAX_HISTORY = 100;
 const SUMMARY_ATTEMPTS_KEY = 'tvBatchSummaryAttempts';
+const SUMMARY_SCHEMA_VERSION_KEY = 'tvBatchSummarySchemaVersion';
+const SUMMARY_SCHEMA_VERSION = 1;
 const MAX_SUMMARY_ATTEMPTS = 3;
 const MAX_QUEUE_PUMP_RETRIES = 3;
 const QUEUE_WRITE_RETRY_DELAY_MS = 100;
@@ -102,6 +104,7 @@ export class JobCoordinator {
   constructor(private readonly effects: CoordinatorEffects) {}
 
   async initialize(): Promise<void> {
+    await this.migrateLegacyTerminalBatches();
     const jobs = await this.mutateJobs((currentJobs) => {
       let changed = false;
       for (const job of currentJobs) {
@@ -584,6 +587,43 @@ export class JobCoordinator {
       };
     }
     return state;
+  }
+
+  private async migrateLegacyTerminalBatches(): Promise<void> {
+    const values = await this.effects.storage.getValues([SUMMARY_SCHEMA_VERSION_KEY, SUMMARY_ATTEMPTS_KEY]);
+    if (values[SUMMARY_SCHEMA_VERSION_KEY] === SUMMARY_SCHEMA_VERSION) return;
+    const retryState = values[SUMMARY_ATTEMPTS_KEY];
+    const retryBatchIds = new Set(
+      retryState && typeof retryState === 'object' && !Array.isArray(retryState)
+        ? Object.keys(retryState)
+        : [],
+    );
+    await this.withJobsLock(async () => {
+      const jobs = await this.effects.storage.getJobs();
+      const batches = new Map<string, Job[]>();
+      for (const job of jobs) {
+        if (!job.batchId) continue;
+        const members = batches.get(job.batchId) ?? [];
+        members.push(job);
+        batches.set(job.batchId, members);
+      }
+      let changed = false;
+      for (const [batchId, members] of batches) {
+        if (retryBatchIds.has(batchId) || members.some(isActive)) continue;
+        if (members.some((job) => (
+          job.summaryWritten !== undefined
+          || job.summaryExhausted !== undefined
+          || job.summaryReceiptCleaned !== undefined
+        ))) continue;
+        for (const job of members) {
+          job.summaryWritten = true;
+          job.summaryReceiptCleaned = true;
+        }
+        changed = true;
+      }
+      if (changed) await this.setJobsLocked(jobs, true);
+    });
+    await this.effects.storage.setValues({ [SUMMARY_SCHEMA_VERSION_KEY]: SUMMARY_SCHEMA_VERSION });
   }
 
   private async getSummaryRetry(batchId: string): Promise<BatchSummaryRetry> {

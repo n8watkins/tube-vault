@@ -9,6 +9,10 @@
 - Detect reused lock owner PIDs.
 - Ignore changelog refresh commits.
 
+### Documentation
+
+- Document changelog check pipeline.
+
 ## v0.3.83
 
 ### Fixed

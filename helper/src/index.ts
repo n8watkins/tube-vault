@@ -1,6 +1,6 @@
 import { readMessages, writeMessage } from './protocol';
 import { handle, killActive, probeVideo, listVideos, createBatchSummary, removeBatchSummaryReceipt, defaultOutputRoot, type DownloadRequest, type Action, type DownloadComponents, type BatchSummaryItem } from './downloader';
-import { isValidYouTubeUrl, wslToWindowsPath, IS_WSL } from './sanitize';
+import { isValidJobId, isValidYouTubeUrl, wslToWindowsPath, IS_WSL } from './sanitize';
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -75,7 +75,11 @@ readMessages(async (raw) => {
   }
 
   if (req.action === 'cancel') {
-    const jobId = req.jobId as string;
+    if (!isValidJobId(req.jobId)) {
+      writeMessage({ ok: false, status: 'failed', error: 'Invalid job ID' });
+      return;
+    }
+    const jobId = req.jobId;
     try {
       const pid = parseInt(fs.readFileSync(pidFile(jobId), 'utf8'), 10);
       if (Number.isFinite(pid)) process.kill(pid, 'SIGTERM');
@@ -148,7 +152,11 @@ readMessages(async (raw) => {
     return;
   }
 
-  const jobId = typeof req.jobId === 'string' ? req.jobId : undefined;
+  if (req.jobId !== undefined && !isValidJobId(req.jobId)) {
+    writeMessage({ ok: false, status: 'failed', error: 'Invalid job ID' });
+    return;
+  }
+  const jobId = req.jobId;
   if (jobId) writePid(jobId);
   try {
     const res = await handle(req as unknown as DownloadRequest);

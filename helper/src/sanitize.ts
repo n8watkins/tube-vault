@@ -5,6 +5,10 @@ export const IS_WSL = os.release().toLowerCase().includes('microsoft') || !!proc
 
 const ALLOWED_HOSTS = ['www.youtube.com', 'youtube.com', 'youtu.be'];
 
+export function isValidJobId(value: unknown): value is string {
+  return typeof value === 'string' && /^[A-Za-z0-9_-]{1,128}$/.test(value);
+}
+
 export function isValidYouTubeUrl(url: string): boolean {
   try {
     const parsed = new URL(url);

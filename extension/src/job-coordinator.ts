@@ -77,6 +77,7 @@ const isActive = (job: Job) => job.status === 'queued' || job.status === 'probin
 interface BatchSummaryRetry {
   attempts: number;
   outputRoot?: string;
+  receiptCleanupPending?: 'written' | 'exhausted';
 }
 
 export class JobCoordinator {
@@ -105,6 +106,10 @@ export class JobCoordinator {
     const terminalBatchIds = new Set(jobs
       .filter((job) => job.batchId && !isActive(job))
       .map((job) => job.batchId as string));
+    const retryState = await this.withSummaryStateLock(() => this.readSummaryAttemptState());
+    for (const [batchId, retry] of Object.entries(retryState)) {
+      if (retry.receiptCleanupPending) terminalBatchIds.add(batchId);
+    }
     void this.pumpQueue();
     for (const batchId of terminalBatchIds) {
       void this.maybeWriteBatchSummary(batchId).catch(() => undefined);
@@ -306,7 +311,7 @@ export class JobCoordinator {
     const settings = this.effects.getSettings();
     const protectedBatchIds = new Set(jobs.flatMap((job) => (
       job.batchId && job.batchId !== options.finalizedBatchId
-        && (isActive(job) || job.summaryReceiptCleaned !== true)
+        && (isActive(job) || (!job.summaryWritten && !job.summaryExhausted))
         ? [job.batchId]
         : []
     )));
@@ -368,11 +373,19 @@ export class JobCoordinator {
   }
 
   private async finalizeBatchSummary(batchId: string): Promise<void> {
+    const retry = await this.getSummaryRetry(batchId);
+    if (retry.receiptCleanupPending) {
+      await this.finalizeBatchJobs(batchId, retry.receiptCleanupPending);
+      if (await this.cleanupBatchSummaryReceipt(batchId)) await this.clearSummaryAttempts(batchId);
+      return;
+    }
     const jobs = await this.effects.storage.getJobs();
     const members = jobs.filter((job) => job.batchId === batchId);
     if (members.length === 0 || members.some(isActive)) return;
     if (members.some((job) => job.summaryWritten)) {
       if (members.some((job) => job.summaryReceiptCleaned !== true)) {
+        await this.setSummaryRetry(batchId, { attempts: retry.attempts, receiptCleanupPending: 'written' });
+        await this.finalizeBatchJobs(batchId, 'written');
         if (await this.cleanupBatchSummaryReceipt(batchId)) await this.clearSummaryAttempts(batchId);
         return;
       }
@@ -381,6 +394,8 @@ export class JobCoordinator {
     }
     if (members.some((job) => job.summaryExhausted)) {
       if (members.some((job) => job.summaryReceiptCleaned !== true)) {
+        await this.setSummaryRetry(batchId, { attempts: retry.attempts, receiptCleanupPending: 'exhausted' });
+        await this.finalizeBatchJobs(batchId, 'exhausted');
         if (await this.cleanupBatchSummaryReceipt(batchId)) await this.clearSummaryAttempts(batchId);
         return;
       }
@@ -388,7 +403,6 @@ export class JobCoordinator {
       return;
     }
     const first = members[0];
-    const retry = await this.getSummaryRetry(batchId);
     const outputRoot = retry.outputRoot ?? this.effects.getSettings().outputRoot;
     const payload = {
       action: 'batch_summary',
@@ -405,33 +419,31 @@ export class JobCoordinator {
       await this.setSummaryRetry(batchId, { attempts, outputRoot });
       const response = await this.safeNative(payload);
       if (response?.ok) {
-        await this.mutateJobs((latestJobs) => {
-          let changed = false;
-          for (const job of latestJobs) {
-            if (job.batchId !== batchId) continue;
-            job.summaryWritten = true;
-            job.summaryReceiptCleaned = false;
-            changed = true;
-          }
-          return { changed, value: undefined, options: true };
-        }, true);
+        await this.setSummaryRetry(batchId, { attempts, receiptCleanupPending: 'written' });
+        await this.finalizeBatchJobs(batchId, 'written');
         if (await this.cleanupBatchSummaryReceipt(batchId)) await this.clearSummaryAttempts(batchId);
         return;
       }
       if (attempts < MAX_SUMMARY_ATTEMPTS) await this.effects.delay(100 * attempts);
     }
 
-    await this.mutateJobs((exhaustedJobs) => {
+    await this.setSummaryRetry(batchId, { attempts, receiptCleanupPending: 'exhausted' });
+    await this.finalizeBatchJobs(batchId, 'exhausted');
+    if (await this.cleanupBatchSummaryReceipt(batchId)) await this.clearSummaryAttempts(batchId);
+  }
+
+  private async finalizeBatchJobs(batchId: string, outcome: 'written' | 'exhausted'): Promise<void> {
+    await this.mutateJobs((jobs) => {
       let changed = false;
-      for (const job of exhaustedJobs) {
+      for (const job of jobs) {
         if (job.batchId !== batchId) continue;
-        job.summaryExhausted = true;
+        if (outcome === 'written') job.summaryWritten = true;
+        else job.summaryExhausted = true;
         job.summaryReceiptCleaned = false;
         changed = true;
       }
-      return { changed, value: undefined, options: true };
-    }, true);
-    if (await this.cleanupBatchSummaryReceipt(batchId)) await this.clearSummaryAttempts(batchId);
+      return { changed, value: undefined, options: { finalizedBatchId: batchId } };
+    });
   }
 
   private async cleanupBatchSummaryReceipt(batchId: string): Promise<boolean> {
@@ -461,9 +473,16 @@ export class JobCoordinator {
       if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
       const attempts = (entry as { attempts?: unknown }).attempts;
       const outputRoot = (entry as { outputRoot?: unknown }).outputRoot;
+      const receiptCleanupPending = (entry as { receiptCleanupPending?: unknown }).receiptCleanupPending;
       if (typeof attempts !== 'number' || !Number.isInteger(attempts) || attempts < 0) continue;
       if (outputRoot !== undefined && typeof outputRoot !== 'string') continue;
-      state[batchId] = { attempts, ...(typeof outputRoot === 'string' ? { outputRoot } : {}) };
+      if (receiptCleanupPending !== undefined
+        && receiptCleanupPending !== 'written' && receiptCleanupPending !== 'exhausted') continue;
+      state[batchId] = {
+        attempts,
+        ...(typeof outputRoot === 'string' ? { outputRoot } : {}),
+        ...(receiptCleanupPending ? { receiptCleanupPending } : {}),
+      };
     }
     return state;
   }
@@ -496,7 +515,9 @@ export class JobCoordinator {
       const retainedBatchIds = new Set(jobs.flatMap((job) => job.batchId ? [job.batchId] : []));
       const state = await this.readSummaryAttemptState();
       const retainedState = Object.fromEntries(
-        Object.entries(state).filter(([batchId]) => retainedBatchIds.has(batchId)),
+        Object.entries(state).filter(([batchId, retry]) => (
+          retainedBatchIds.has(batchId) || !!retry.receiptCleanupPending
+        )),
       );
       if (Object.keys(retainedState).length === Object.keys(state).length) return;
       await this.effects.storage.setValues({ [SUMMARY_ATTEMPTS_KEY]: retainedState });

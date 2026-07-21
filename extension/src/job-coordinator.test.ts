@@ -472,7 +472,7 @@ describe('JobCoordinator', () => {
     expect(afterRestart.jobs.every((item) => item.summaryWritten)).toBe(true);
   });
 
-  it('reuses the original output root when settings change after an unmarked write', async () => {
+  it('does not rewrite a summary when settings change after an unmarked write', async () => {
     const terminalJobs = [job('one', 'done', { batchId: 'batch', batchLabel: 'Restarted batch' })];
     const beforeCrash = harness({
       jobs: terminalJobs,
@@ -481,7 +481,7 @@ describe('JobCoordinator', () => {
     });
     await beforeCrash.coordinator.initialize();
     await vi.waitFor(() => expect(beforeCrash.values.tvBatchSummaryAttempts).toEqual({
-      batch: { attempts: 1, outputRoot: '/root-a' },
+      batch: { attempts: 1, receiptCleanupPending: 'written' },
     }));
 
     const afterRestart = harness({
@@ -495,9 +495,7 @@ describe('JobCoordinator', () => {
     expect(beforeCrash.calls.filter((call) => call.action === 'batch_summary')).toEqual([
       expect.objectContaining({ options: { outputRoot: '/root-a' } }),
     ]);
-    expect(afterRestart.calls.filter((call) => call.action === 'batch_summary')).toEqual([
-      expect.objectContaining({ options: { outputRoot: '/root-a' } }),
-    ]);
+    expect(afterRestart.calls).toEqual([{ action: 'batch_summary_finalize', batchId: 'batch' }]);
   });
 
   it('does not exceed the persisted summary attempt bound after restart', async () => {
@@ -568,7 +566,7 @@ describe('JobCoordinator', () => {
     expect(test.jobs[0]).toMatchObject({ summaryWritten: true, summaryReceiptCleaned: true });
   });
 
-  it('retains cleanup-pending private history and resumes receipt removal after restart', async () => {
+  it('removes private history while retaining minimal receipt cleanup state across restart', async () => {
     const beforeRestart = harness({
       jobs: [job('one', 'done', { batchId: 'batch' })],
       settings: { collectHistory: false },
@@ -576,11 +574,9 @@ describe('JobCoordinator', () => {
     });
     await beforeRestart.coordinator.cancelBatch('batch');
 
-    expect(beforeRestart.jobs).toEqual([
-      expect.objectContaining({ summaryWritten: true, summaryReceiptCleaned: false }),
-    ]);
+    expect(beforeRestart.jobs).toEqual([]);
     expect(beforeRestart.values.tvBatchSummaryAttempts).toEqual({
-      batch: { attempts: 1, outputRoot: '/videos' },
+      batch: { attempts: 1, receiptCleanupPending: 'written' },
     });
 
     const afterRestart = harness({
@@ -589,10 +585,26 @@ describe('JobCoordinator', () => {
       values: structuredClone(beforeRestart.values),
     });
     await afterRestart.coordinator.initialize();
-    await vi.waitFor(() => expect(afterRestart.jobs).toEqual([]));
+    await vi.waitFor(() => expect(afterRestart.values.tvBatchSummaryAttempts).toEqual({}));
 
     expect(afterRestart.calls.map((call) => call.action)).toEqual(['batch_summary_finalize']);
-    expect(afterRestart.values.tvBatchSummaryAttempts).toEqual({});
+    expect(afterRestart.jobs).toEqual([]);
+  });
+
+  it('clears private history even when receipt cleanup keeps failing', async () => {
+    const test = harness({
+      jobs: [job('one', 'done', { batchId: 'batch' })],
+      settings: { collectHistory: false },
+      native: async (payload) => ({ ok: payload.action !== 'batch_summary_finalize' }),
+    });
+
+    await test.coordinator.cancelBatch('batch');
+    await test.coordinator.clearHistory();
+
+    expect(test.jobs).toEqual([]);
+    expect(test.values.tvBatchSummaryAttempts).toEqual({
+      batch: { attempts: 1, receiptCleanupPending: 'written' },
+    });
   });
 
   it('deduplicates concurrent successful batch summary requests', async () => {

@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises';
+import { link, mkdtemp, mkdir, readFile, readdir, rename, rm, symlink, unlink, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
-import { main, readProcessIdentity, syncArtifacts, targetArgument, validateTarget } from './sync-windows.mjs';
+import { main, readProcessIdentity, recoverSyncTransactions, syncArtifacts, targetArgument, validateTarget } from './sync-windows.mjs';
 
 async function makeTarget({ git = true, validIdentity = true } = {}) {
   const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-test-'));
@@ -106,6 +106,47 @@ test('preserves an artifact created concurrently after staging', async () => {
   }), /appeared concurrently/);
 
   assert.equal(await readFile(join(target, relativePath), 'utf8'), 'concurrent\n');
+  assert.deepEqual((await readdir(target)).filter((name) => name.startsWith('.tube-vault-sync-')), []);
+});
+
+test('does not overwrite an artifact created after backing up the original', async () => {
+  const source = await mkdtemp(join(tmpdir(), 'tube-vault-sync-source-'));
+  const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));
+  const relativePath = 'extension/manifest.json';
+  await mkdir(join(source, 'extension'), { recursive: true });
+  await mkdir(join(target, 'extension'), { recursive: true });
+  await writeFile(join(source, relativePath), 'new\n');
+  await writeFile(join(target, relativePath), 'original\n');
+
+  await assert.rejects(syncArtifacts(source, target, [relativePath], {
+    afterBackup: async () => {
+      await writeFile(join(target, relativePath), 'concurrent\n');
+    },
+  }), /Artifact sync and rollback both failed/);
+
+  assert.equal(await readFile(join(target, relativePath), 'utf8'), 'concurrent\n');
+  const transactions = (await readdir(target)).filter((name) => name.startsWith('.tube-vault-sync-'));
+  assert.equal(transactions.length, 1);
+  assert.equal(await readFile(join(target, transactions[0], 'backups', relativePath), 'utf8'), 'original\n');
+});
+
+test('recovers an install interrupted before staged-link cleanup', async () => {
+  const target = await mkdtemp(join(tmpdir(), 'tube-vault-sync-target-'));
+  const relativePath = 'extension/manifest.json';
+  const transaction = join(target, '.tube-vault-sync-interrupted-link');
+  const staged = join(transaction, 'files', relativePath);
+  await mkdir(join(target, 'extension'), { recursive: true });
+  await mkdir(join(transaction, 'files', 'extension'), { recursive: true });
+  await writeFile(staged, 'partially installed\n');
+  await link(staged, join(target, relativePath));
+  await writeFile(join(transaction, 'journal.json'), JSON.stringify({
+    state: 'pending',
+    entries: [{ relativePath, existed: false }],
+  }));
+
+  await recoverSyncTransactions(target);
+
+  await assert.rejects(readFile(join(target, relativePath), 'utf8'), /ENOENT/);
   assert.deepEqual((await readdir(target)).filter((name) => name.startsWith('.tube-vault-sync-')), []);
 });
 

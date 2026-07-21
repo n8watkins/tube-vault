@@ -282,7 +282,6 @@ async function installWithoutOverwrite(staged, destination) {
     }
     throw error;
   }
-  await unlinkDurably(staged);
 }
 
 async function renameDurably(existingPath, newPath) {
@@ -564,15 +563,40 @@ async function restoreTransaction(target, transactionRoot, entries) {
     const destination = join(target, entry.relativePath);
     const staged = join(transactionRoot, 'files', entry.relativePath);
     const backup = join(transactionRoot, 'backups', entry.relativePath);
-    const installed = !await pathExists(staged);
-    if (entry.existed && await pathExists(backup)) {
-      if (await pathExists(destination)) await removeDurably(destination, { force: true });
+    const stagedInfo = await lstat(staged).catch((error) => {
+      if (error?.code === 'ENOENT') return null;
+      throw error;
+    });
+    let claimed;
+    if (await pathExists(destination)) {
+      const claimRoot = await createTemporaryDirectoryDurably(join(transactionRoot, '.rollback-'));
+      const claimPath = join(claimRoot, 'artifact');
+      try {
+        await renameDurably(destination, claimPath);
+        claimed = { path: claimPath, root: claimRoot };
+      } catch (error) {
+        await removeDurably(claimRoot, { recursive: true, force: true });
+        if (error?.code !== 'ENOENT') throw error;
+      }
+    }
+
+    const claimedInfo = claimed ? await lstat(claimed.path) : null;
+    const transactionOwned = claimedInfo && (!stagedInfo || sameFile(claimedInfo, stagedInfo));
+    if (claimed && !transactionOwned) {
+      await installWithoutOverwrite(claimed.path, destination);
+      await removeDurably(claimed.root, { recursive: true, force: true });
+      if (entry.existed && await pathExists(backup)) {
+        throw new Error(`Sync target artifact changed concurrently during rollback: ${destination}`);
+      }
+    } else if (claimed) {
+      await removeDurably(claimed.root, { recursive: true, force: true });
+    }
+
+    if (entry.existed && await pathExists(backup) && (!claimed || transactionOwned)) {
       await mkdirDurably(resolve(destination, '..'));
       await requireSafeTargetPath(target, entry.relativePath);
       await requireSafeTransactionPath(transactionRoot, `backups/${entry.relativePath}`);
-      await renameDurably(backup, destination);
-    } else if (!entry.existed && installed && await pathExists(destination)) {
-      await removeDurably(destination, { force: true });
+      await installWithoutOverwrite(backup, destination);
     }
   }
 }
@@ -641,13 +665,13 @@ export async function syncArtifacts(sourceRoot, target, files = SYNC_FILES, hook
               await requireSafeTransactionPath(transactionRoot, `backups/${entry.relativePath}`);
               await syncFile(destination);
               await renameDurably(destination, backup);
+              await hooks.afterBackup?.(entry.relativePath, index);
             } else {
               await mkdirDurably(resolve(destination, '..'));
             }
             await requireSafeTargetPath(target, entry.relativePath);
             await requireSafeTransactionPath(transactionRoot, `files/${entry.relativePath}`);
-            if (entry.existed) await renameDurably(staged, destination);
-            else await installWithoutOverwrite(staged, destination);
+            await installWithoutOverwrite(staged, destination);
           }
         } catch (error) {
           try {

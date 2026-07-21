@@ -84,6 +84,7 @@ interface BatchSummaryRetry {
 export class JobCoordinator {
   private pumpPromise: Promise<void> | null = null;
   private pumpRequested = false;
+  private pumpWakeVersion = 0;
   private readonly summaryPromises = new Map<string, Promise<void>>();
   private jobsTail = Promise.resolve();
   private summaryTail = Promise.resolve();
@@ -203,21 +204,29 @@ export class JobCoordinator {
   }
 
   private pumpQueue(): Promise<void> {
+    const wakeVersion = ++this.pumpWakeVersion;
     this.pumpRequested = true;
     if (this.pumpPromise) return this.pumpPromise;
-    this.pumpPromise = this.drainRequestedQueue();
+    this.pumpPromise = this.drainRequestedQueue(wakeVersion);
     return this.pumpPromise;
   }
 
-  private async drainRequestedQueue(): Promise<void> {
+  private async drainRequestedQueue(initialWakeVersion: number): Promise<void> {
     let retries = 0;
+    let handledWakeVersion = initialWakeVersion;
+    let restartRequested = false;
     try {
       do {
         this.pumpRequested = false;
+        const attemptWakeVersion = this.pumpWakeVersion;
         try {
           await this.drainQueue();
+          handledWakeVersion = attemptWakeVersion;
         } catch {
-          if (retries >= MAX_QUEUE_PUMP_RETRIES) return;
+          if (retries >= MAX_QUEUE_PUMP_RETRIES) {
+            restartRequested = this.pumpWakeVersion > handledWakeVersion;
+            return;
+          }
           retries += 1;
           await this.effects.delay(100 * retries);
           this.pumpRequested = true;
@@ -225,6 +234,7 @@ export class JobCoordinator {
       } while (this.pumpRequested);
     } finally {
       this.pumpPromise = null;
+      if (restartRequested) void this.pumpQueue();
     }
   }
 

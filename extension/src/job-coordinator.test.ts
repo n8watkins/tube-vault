@@ -199,6 +199,30 @@ describe('JobCoordinator', () => {
     expect(test.delays).toEqual([100]);
   });
 
+  it('starts a fresh pump when work arrives as the final retry is exhausted', async () => {
+    let test!: ReturnType<typeof harness>;
+    let lateEnqueue: Promise<unknown> | undefined;
+    test = harness({
+      beforeGetJobs: async (readCount) => {
+        if (readCount < 2 || readCount > 5) return;
+        if (readCount === 5) {
+          lateEnqueue = test.coordinator.enqueue({ items: [{ url: 'late', bytes: 1 }] });
+          await lateEnqueue;
+        }
+        throw new Error('Persistent storage failure');
+      },
+    });
+
+    await test.coordinator.initialize();
+    await vi.waitFor(() => expect(lateEnqueue).toBeDefined());
+    await lateEnqueue;
+
+    await vi.waitFor(() => expect(test.jobs).toEqual([
+      expect.objectContaining({ videoUrl: 'late', status: 'done' }),
+    ]));
+    expect(test.delays).toEqual([100, 200, 300]);
+  });
+
   it('probes and downloads strictly serially while applying probe metadata', async () => {
     const firstDownload = deferred<NativeResponse>();
     const test = harness({ native: async (payload) => {

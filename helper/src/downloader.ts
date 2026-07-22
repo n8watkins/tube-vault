@@ -2,9 +2,10 @@ import { spawn, execFileSync } from 'child_process';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import { createHash, randomUUID } from 'crypto';
 import { wslToWindowsPath, windowsToWslPath, sanitizeFilename, IS_WSL } from './sanitize';
 
-// Discover the Windows user profile (e.g. C:\Users\natha) from inside WSL, cached.
+// Discover the Windows user profile (for example, C:\Users\<user>) from inside WSL, cached.
 // The native host runs with a stripped PATH, so cmd.exe is called by absolute path.
 // This is how we avoid hardcoding any username in the default save location.
 let cachedWinHome: string | null | undefined;
@@ -184,6 +185,18 @@ export function buildBase(root: string, req: DownloadRequest, naming: NamingOpti
 
 function ensureDir(p: string): void {
   fs.mkdirSync(p, { recursive: true });
+}
+
+function assertPrivatePath(target: string, kind: 'directory' | 'file'): void {
+  const stats = fs.lstatSync(target);
+  if (kind === 'directory' ? !stats.isDirectory() : !stats.isFile()) throw new Error(`Unsafe private ${kind}`);
+  if (typeof process.getuid === 'function' && stats.uid !== process.getuid()) throw new Error(`Unsafe private ${kind} owner`);
+  if (process.platform !== 'win32' && (stats.mode & 0o077) !== 0) throw new Error(`Unsafe private ${kind} permissions`);
+}
+
+function ensurePrivateDir(p: string): void {
+  fs.mkdirSync(p, { recursive: true, mode: 0o700 });
+  assertPrivatePath(p, 'directory');
 }
 
 // Strip yt-dlp template variables so we return a real path to the user.
@@ -689,6 +702,23 @@ function fmtDuration(d: string): string {
   return h ? `${h}:${String(m).padStart(2, '0')}:${String(sec).padStart(2, '0')}` : `${m}:${String(sec).padStart(2, '0')}`;
 }
 
+export function writeTextFileDurably(file: string, contents: string): void {
+  const temporaryFile = path.join(path.dirname(file), `.tv-summary-${randomUUID()}.tmp`);
+  let descriptor: number | undefined;
+  try {
+    descriptor = fs.openSync(temporaryFile, 'wx');
+    fs.writeFileSync(descriptor, contents, 'utf8');
+    fs.fsyncSync(descriptor);
+    fs.closeSync(descriptor);
+    descriptor = undefined;
+    fs.renameSync(temporaryFile, file);
+    syncParentDirectory(file);
+  } finally {
+    if (descriptor !== undefined) fs.closeSync(descriptor);
+    try { fs.unlinkSync(temporaryFile); } catch { /* already published or cleaned */ }
+  }
+}
+
 // Write the human-readable <Title>.txt summary beside the saved files. Best-effort.
 function writeSummary(folder: string, mediaPath: string, req: DownloadRequest, meta: CaptureMeta): void {
   try {
@@ -728,47 +758,806 @@ function writeSummary(folder: string, mediaPath: string, req: DownloadRequest, m
       '',
       `Folder: ${wslToWindowsPath(folder)}`,
     ];
-    fs.writeFileSync(path.join(folder, txtName), lines.join('\n') + '\n', 'utf8');
+    writeTextFileDurably(path.join(folder, txtName), lines.join('\n') + '\n');
   } catch { /* best-effort — never fail the download over the summary */ }
 }
 
 export interface BatchSummaryItem { title: string; folder?: string; status: string; }
 
-// One overview .txt per playlist/channel download, listing every video + where it
-// landed. Written under <root>/TubeVault Summaries/. Returns the Windows path.
-export function writeBatchSummary(
-  root: string,
+interface BatchSummaryReceipt { root: string; summaryName?: string; }
+
+const BATCH_SUMMARY_ID_LENGTH = 16;
+const MAX_FILENAME_BYTES = 255;
+const SUMMARY_INTEGRITY_PREFIX = 'Integrity: SHA-256 ';
+const HARD_LINK_UNAVAILABLE_CODES = new Set(['EACCES', 'EPERM', 'EXDEV', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
+const DIRECTORY_SYNC_UNAVAILABLE_CODES = new Set(['EACCES', 'EPERM', 'EINVAL', 'EBADF', 'EISDIR', 'ENOSYS', 'ENOTSUP', 'EOPNOTSUPP']);
+const PUBLICATION_LEASE_MS = 30_000;
+const PROCESS_IDENTITY = readProcessIdentity(process.pid);
+
+function errorCode(error: unknown): string | undefined {
+  return error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
+}
+
+function syncParentDirectory(file: string): void {
+  let descriptor: number;
+  try {
+    descriptor = fs.openSync(path.dirname(file), 'r');
+  } catch (error) {
+    if (errorCode(error) && DIRECTORY_SYNC_UNAVAILABLE_CODES.has(errorCode(error) as string)) return;
+    throw error;
+  }
+  try {
+    fs.fsyncSync(descriptor);
+  } catch (error) {
+    if (!errorCode(error) || !DIRECTORY_SYNC_UNAVAILABLE_CODES.has(errorCode(error) as string)) throw error;
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+function syncPublishedFile(file: string): void {
+  const descriptor = fs.openSync(file, 'r');
+  try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+  syncParentDirectory(file);
+}
+
+function truncateUtf8(value: string, maxBytes: number): string {
+  let result = '';
+  let bytes = 0;
+  for (const character of value) {
+    const characterBytes = Buffer.byteLength(character, 'utf8');
+    if (bytes + characterBytes > maxBytes) break;
+    result += character;
+    bytes += characterBytes;
+  }
+  return result;
+}
+
+function batchSummaryReceiptDir(): string {
+  const localAppData = process.env.LOCALAPPDATA;
+  if (process.platform === 'win32' && localAppData && path.isAbsolute(localAppData)) {
+    return path.join(localAppData, 'TubeVault', 'batch-summary-receipts');
+  }
+  const stateHome = process.env.XDG_STATE_HOME;
+  const base = stateHome && path.isAbsolute(stateHome) ? stateHome : path.join(os.homedir(), '.local', 'state');
+  return path.join(base, 'tube-vault', 'batch-summary-receipts');
+}
+
+function batchSummaryReceiptFile(batchId: string, receiptDir: string): string {
+  if (typeof batchId !== 'string' || !batchId) throw new Error('Batch ID is required');
+  const batchSlug = createHash('sha256').update(batchId).digest('hex');
+  return path.join(receiptDir, `${batchSlug}.json`);
+}
+
+function batchSummaryId(batchId: string): string {
+  return createHash('sha256').update(batchId).digest('hex');
+}
+
+function batchSummaryName(batchId: string, batchLabel: string): string {
+  const sanitized = (sanitizeFilename(batchLabel || 'Download') || 'Download').replace(/[. ]+$/g, '') || 'Download';
+  const safeLabel = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(sanitized) ? `_${sanitized}` : sanitized;
+  const suffix = ` - ${batchSummaryId(batchId).slice(0, BATCH_SUMMARY_ID_LENGTH)}.txt`;
+  const readableLabel = truncateUtf8(safeLabel, MAX_FILENAME_BYTES - Buffer.byteLength(suffix, 'utf8')) || 'Download';
+  return `${readableLabel}${suffix}`;
+}
+
+function isBatchSummaryName(batchId: string, summaryName: string): boolean {
+  const suffix = ` - ${batchSummaryId(batchId).slice(0, BATCH_SUMMARY_ID_LENGTH)}.txt`;
+  return path.basename(summaryName) === summaryName
+    && Buffer.byteLength(summaryName, 'utf8') <= MAX_FILENAME_BYTES
+    && summaryName.length > suffix.length
+    && summaryName.endsWith(suffix);
+}
+
+function summaryContent(lines: string[]): string {
+  const body = lines.join('\n') + '\n';
+  return `${body}${SUMMARY_INTEGRITY_PREFIX}${createHash('sha256').update(body).digest('hex')}\n`;
+}
+
+function hasValidSummaryIntegrity(file: string): boolean {
+  try {
+    const content = fs.readFileSync(file, 'utf8');
+    const markerStart = content.lastIndexOf(`\n${SUMMARY_INTEGRITY_PREFIX}`);
+    if (markerStart < 0 || !content.endsWith('\n')) return false;
+    const body = content.slice(0, markerStart + 1);
+    const digest = content.slice(markerStart + 1 + SUMMARY_INTEGRITY_PREFIX.length, -1);
+    return /^[a-f0-9]{64}$/.test(digest) && createHash('sha256').update(body).digest('hex') === digest;
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+function hasValidLegacyBatchSummary(file: string): boolean {
+  let content: string;
+  try {
+    content = fs.readFileSync(file, 'utf8');
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return false;
+    throw error;
+  }
+  if (!content.endsWith('\n')) return false;
+  const lines = content.slice(0, -1).split('\n');
+  if (!lines[0]
+    || lines[1] !== '═'.repeat(48)
+    || !/^Type:\s+\S.*$/.test(lines[2] || '')
+    || !/^Downloaded:\s+\S.*$/.test(lines[3] || '')) return false;
+  const totals = /^Videos:\s+(\d+) of (\d+) completed$/.exec(lines[4] || '');
+  if (!totals || lines[5] !== '' || lines[6] !== 'Items:' || lines[lines.length - 1] !== '') return false;
+  const completed = Number(totals[1]);
+  const total = Number(totals[2]);
+  let itemCount = 0;
+  let completedCount = 0;
+  for (let index = 7; index < lines.length - 1; index += 1) {
+    const item = /^\s{2}\d+ ([✓✗⊘·]) \S.*$/.exec(lines[index]);
+    if (!item) return false;
+    itemCount += 1;
+    if (item[1] === '✓') completedCount += 1;
+    if (/^\s{8}→ \S.*$/.test(lines[index + 1] || '')) index += 1;
+  }
+  return itemCount === total && completedCount === completed && completed <= total;
+}
+
+function batchSummaryLines(
   batchLabel: string,
   category: string | undefined,
   items: BatchSummaryItem[],
-): string {
-  const dir = path.join(root, 'TubeVault Summaries');
-  ensureDir(dir);
-  const stamp = new Date();
-  const dateSlug = `${stamp.getFullYear()}-${String(stamp.getMonth() + 1).padStart(2, '0')}-${String(stamp.getDate()).padStart(2, '0')} ${String(stamp.getHours()).padStart(2, '0')}${String(stamp.getMinutes()).padStart(2, '0')}`;
-  const fileBase = sanitizeFilename(batchLabel || 'Download') || 'Download';
-  const file = path.join(dir, `${fileBase} - ${dateSlug}.txt`);
-
-  const done = items.filter((i) => i.status === 'done').length;
+  downloaded: string,
+): string[] {
+  const done = items.filter((item) => item.status === 'done').length;
   const lines = [
     batchLabel || 'TubeVault download',
     '═'.repeat(48),
     `Type:        ${category || 'Batch'}`,
-    `Downloaded:  ${stamp.toLocaleString()}`,
+    `Downloaded:  ${downloaded}`,
     `Videos:      ${done} of ${items.length} completed`,
     '',
     'Items:',
   ];
-  items.forEach((it, i) => {
-    const n = String(i + 1).padStart(Math.max(3, String(items.length).length), '0');
-    const mark = it.status === 'done' ? '✓' : it.status === 'failed' ? '✗' : it.status === 'cancelled' ? '⊘' : '·';
-    lines.push(`  ${n} ${mark} ${it.title}`);
-    if (it.folder) lines.push(`        → ${it.folder}`);
+  items.forEach((item, index) => {
+    const number = String(index + 1).padStart(Math.max(3, String(items.length).length), '0');
+    const mark = item.status === 'done' ? '✓' : item.status === 'failed' ? '✗' : item.status === 'cancelled' ? '⊘' : '·';
+    lines.push(`  ${number} ${mark} ${item.title}`);
+    if (item.folder) lines.push(`        → ${item.folder}`);
   });
   lines.push('');
+  return lines;
+}
+
+function findMatchingDateNamedLegacySummary(
+  dir: string,
+  batchLabel: string,
+  category: string | undefined,
+  items: BatchSummaryItem[],
+): string | undefined {
+  const fileBase = sanitizeFilename(batchLabel || 'Download') || 'Download';
+  const prefix = `${fileBase} - `;
+  const expected = batchSummaryLines(batchLabel, category, items, '').filter((_line, index) => index !== 3);
+  const candidates = fs.readdirSync(dir)
+    .filter((name) => name.startsWith(prefix) && /^\d{4}-\d{2}-\d{2} \d{4}\.txt$/.test(name.slice(prefix.length)))
+    .sort()
+    .reverse();
+  for (const name of candidates) {
+    const file = path.join(dir, name);
+    if (!hasValidLegacyBatchSummary(file)) continue;
+    const actual = fs.readFileSync(file, 'utf8').slice(0, -1).split('\n').filter((_line, index) => index !== 3);
+    if (actual.length === expected.length && actual.every((line, index) => line === expected[index])) return file;
+  }
+  return undefined;
+}
+
+class InvalidBatchSummaryReceiptError extends Error {}
+
+function canRecoverReceiptRead(error: unknown): boolean {
+  return errorCode(error) === 'ENOENT'
+    || error instanceof SyntaxError
+    || error instanceof InvalidBatchSummaryReceiptError;
+}
+
+function publicationLockOwnerFile(lockPath: string): string {
   try {
-    fs.writeFileSync(file, lines.join('\n') + '\n', 'utf8');
-  } catch { /* best-effort */ }
+    return fs.statSync(lockPath).isDirectory() ? path.join(lockPath, 'owner.json') : lockPath;
+  } catch {
+    return lockPath;
+  }
+}
+
+export function readProcessIdentity(
+  pid: number,
+  platform = process.platform,
+  execute: typeof execFileSync = execFileSync,
+): string | undefined {
+  try {
+    if (platform === 'darwin') {
+      const started = execute('/bin/ps', ['-p', String(pid), '-o', 'lstart='], {
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'ignore'],
+      }).trim();
+      return started ? `darwin:${started}` : undefined;
+    }
+    if (platform !== 'linux') return undefined;
+    const stat = fs.readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    return fields[19] ? `linux:${fields[19]}` : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+interface PublicationOwner {
+  token: string;
+  pid: number;
+  processIdentity?: string;
+  leaseExpiresAt: number;
+}
+
+interface PublicationOwnerSnapshot {
+  contents: string;
+  owner?: Partial<PublicationOwner>;
+  modifiedAt: number;
+  heartbeatAt?: number;
+}
+
+function publicationHeartbeatFile(lockPath: string, token: string): string {
+  return path.join(lockPath, `.heartbeat-${createHash('sha256').update(token).digest('hex')}`);
+}
+
+function publicationOwner(token = randomUUID()): PublicationOwner {
+  return {
+    token,
+    pid: process.pid,
+    processIdentity: PROCESS_IDENTITY,
+    leaseExpiresAt: Date.now() + PUBLICATION_LEASE_MS,
+  };
+}
+
+function readPublicationOwner(lockPath: string): PublicationOwnerSnapshot | undefined {
+  try {
+    const ownerFile = publicationLockOwnerFile(lockPath);
+    const contents = fs.readFileSync(ownerFile, 'utf8');
+    let owner: Partial<PublicationOwner> | undefined;
+    try { owner = JSON.parse(contents) as Partial<PublicationOwner>; } catch { /* malformed owners are handled as unknown */ }
+    const modifiedAt = fs.statSync(ownerFile).mtimeMs;
+    let heartbeatAt: number | undefined;
+    if (ownerFile !== lockPath && typeof owner?.token === 'string') {
+      try {
+        heartbeatAt = fs.statSync(publicationHeartbeatFile(lockPath, owner.token)).mtimeMs;
+      } catch (error) {
+        if (errorCode(error) !== 'ENOENT') throw error;
+      }
+    }
+    return { contents, owner, modifiedAt, heartbeatAt };
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return undefined;
+    throw error;
+  }
+}
+
+function lockHasToken(lockPath: string, token: string): boolean {
+  return readPublicationOwner(lockPath)?.owner?.token === token;
+}
+
+function refreshPublicationLease(lockPath: string, token: string): void {
+  if (!lockHasToken(lockPath, token)) throw new Error('Batch summary publication ownership changed concurrently');
+  const heartbeat = publicationHeartbeatFile(lockPath, token);
+  const descriptor = fs.openSync(heartbeat, 'a', 0o600);
+  try {
+    if (!lockHasToken(lockPath, token)) throw new Error('Batch summary publication ownership changed concurrently');
+    const now = new Date();
+    fs.futimesSync(descriptor, now, now);
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  if (!lockHasToken(lockPath, token)) throw new Error('Batch summary publication ownership changed concurrently');
+}
+
+function removeClaimedPublicationLock(lockPath: string, token: string): boolean {
+  if (!lockHasToken(lockPath, token)) return false;
+  const claimedPath = `${lockPath}.${createHash('sha256').update(token).digest('hex')}.${randomUUID()}.cleanup`;
+  try {
+    fs.renameSync(lockPath, claimedPath);
+    if (!lockHasToken(claimedPath, token)) {
+      if (!fs.existsSync(lockPath)) fs.renameSync(claimedPath, lockPath);
+      return false;
+    }
+    fs.rmSync(claimedPath, { recursive: true });
+    return true;
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+function removePublicationLock(lockPath: string, token: string): boolean {
+  const coordinationPath = `${lockPath}.recovery`;
+  const coordinationToken = acquireRecoveryLock(coordinationPath);
+  if (!coordinationToken) return false;
+  try {
+    return removeClaimedPublicationLock(lockPath, token);
+  } finally {
+    removeClaimedPublicationLock(coordinationPath, coordinationToken);
+  }
+}
+
+function acquirePublicationLock(lockPath: string): string | undefined {
+  const token = randomUUID();
+  const preparedLock = `${lockPath}.${process.pid}.${randomUUID()}.tmp`;
+  fs.mkdirSync(preparedLock, { mode: 0o700 });
+  try {
+    const ownerFile = path.join(preparedLock, 'owner.json');
+    const owner = fs.openSync(ownerFile, 'wx', 0o600);
+    try {
+      fs.writeFileSync(owner, JSON.stringify(publicationOwner(token)), 'utf8');
+      fs.fsyncSync(owner);
+    } finally {
+      fs.closeSync(owner);
+    }
+    try {
+      fs.renameSync(preparedLock, lockPath);
+      return token;
+    } catch (error) {
+      if (!fs.existsSync(lockPath)) throw error;
+      return undefined;
+    }
+  } finally {
+    if (fs.existsSync(preparedLock)) fs.rmSync(preparedLock, { recursive: true });
+  }
+}
+
+function publicationOwnerState(snapshot: PublicationOwnerSnapshot): 'alive' | 'leased' | 'dead' {
+  const owner = snapshot.owner;
+  if (typeof owner?.pid !== 'number' || !Number.isInteger(owner.pid) || owner.pid <= 0) return 'dead';
+  try {
+    const currentIdentity = readProcessIdentity(owner.pid);
+    if (typeof owner.processIdentity === 'string' && currentIdentity !== undefined) {
+      return owner.processIdentity === currentIdentity ? 'alive' : 'dead';
+    }
+    if (owner.pid === process.pid) {
+      return owner.processIdentity === undefined || owner.processIdentity === PROCESS_IDENTITY ? 'alive' : 'dead';
+    }
+    try {
+      process.kill(owner.pid, 0);
+    } catch (error) {
+      if (errorCode(error) !== 'EPERM') return 'dead';
+    }
+    if (currentIdentity === undefined) return 'alive';
+    const leaseExpiresAt = publicationLeaseDeadline(snapshot);
+    return Date.now() < leaseExpiresAt ? 'leased' : 'dead';
+  } catch {
+    return 'dead';
+  }
+}
+
+function publicationLeaseDeadline(snapshot: PublicationOwnerSnapshot): number {
+  const initialDeadline = typeof snapshot.owner?.leaseExpiresAt === 'number'
+    ? snapshot.owner.leaseExpiresAt
+    : snapshot.modifiedAt + PUBLICATION_LEASE_MS;
+  return Math.max(initialDeadline, (snapshot.heartbeatAt ?? 0) + PUBLICATION_LEASE_MS);
+}
+
+function waitForPublicationLease(file: string, lockPath: string, snapshot: PublicationOwnerSnapshot): boolean {
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  let deadline = publicationLeaseDeadline(snapshot);
+  while (Date.now() < deadline) {
+    if (hasValidSummaryIntegrity(file)) return true;
+    const current = readPublicationOwner(lockPath);
+    if (!current || current.contents !== snapshot.contents) return false;
+    snapshot = current;
+    deadline = publicationLeaseDeadline(snapshot);
+    Atomics.wait(signal, 0, 0, Math.min(50, deadline - Date.now()));
+  }
+  return false;
+}
+
+function waitForCoordinationLease(lockPath: string, snapshot: PublicationOwnerSnapshot): void {
+  const signal = new Int32Array(new SharedArrayBuffer(4));
+  let deadline = publicationLeaseDeadline(snapshot);
+  while (Date.now() < deadline) {
+    const current = readPublicationOwner(lockPath);
+    if (!current || current.contents !== snapshot.contents) return;
+    snapshot = current;
+    deadline = publicationLeaseDeadline(snapshot);
+    Atomics.wait(signal, 0, 0, Math.min(50, deadline - Date.now()));
+  }
+}
+
+function discardAbandonedPublicationLock(lockPath: string, observed: PublicationOwnerSnapshot): boolean {
+  const claimedPath = `${lockPath}.${randomUUID()}.abandoned`;
+  try {
+    fs.renameSync(lockPath, claimedPath);
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT' || errorCode(error) === 'EEXIST') return false;
+    throw error;
+  }
+  const claimed = readPublicationOwner(claimedPath);
+  if (!claimed || claimed.contents !== observed.contents || publicationOwnerState(claimed) !== 'dead') {
+    try {
+      if (!fs.existsSync(lockPath)) fs.renameSync(claimedPath, lockPath);
+    } catch { /* best-effort restoration before reporting lost ownership */ }
+    throw new Error('Batch summary recovery ownership changed concurrently');
+  }
+  fs.rmSync(claimedPath, { recursive: true });
+  return true;
+}
+
+function acquireRecoveryLock(lockPath: string): string | undefined {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const token = acquirePublicationLock(lockPath);
+    if (token) return token;
+    let observed = readPublicationOwner(lockPath);
+    if (!observed) continue;
+    let state = publicationOwnerState(observed);
+    if (state === 'alive') return undefined;
+    if (state === 'leased') {
+      waitForCoordinationLease(lockPath, observed);
+      const current = readPublicationOwner(lockPath);
+      if (!current || current.contents !== observed.contents) continue;
+      observed = current;
+      state = publicationOwnerState(observed);
+      if (state !== 'dead') return undefined;
+    }
+    if (discardAbandonedPublicationLock(lockPath, observed)) continue;
+  }
+  return undefined;
+}
+
+function takeOverPublicationLock(lockPath: string, observed: PublicationOwnerSnapshot): string | undefined {
+  const recoveryFile = `${lockPath}.recovery`;
+  const recoveryToken = acquireRecoveryLock(recoveryFile);
+  if (!recoveryToken) return undefined;
+  try {
+    const current = readPublicationOwner(lockPath);
+    if (!current || current.contents !== observed.contents || current.heartbeatAt !== observed.heartbeatAt) return undefined;
+    const token = randomUUID();
+    const ownerFile = publicationLockOwnerFile(lockPath);
+    if (ownerFile === lockPath) {
+      fs.unlinkSync(lockPath);
+      const acquired = acquirePublicationLock(lockPath);
+      return acquired;
+    }
+    const replacement = path.join(lockPath, `.owner-${token}.tmp`);
+    try {
+      const descriptor = fs.openSync(replacement, 'wx', 0o600);
+      try {
+        fs.writeFileSync(descriptor, JSON.stringify(publicationOwner(token)), 'utf8');
+        fs.fsyncSync(descriptor);
+      } finally {
+        fs.closeSync(descriptor);
+      }
+      fs.renameSync(replacement, ownerFile);
+    } finally {
+      try { fs.unlinkSync(replacement); } catch (error) {
+        // Cleanup failure must remain visible even when the protected operation failed.
+        // eslint-disable-next-line no-unsafe-finally
+        if (errorCode(error) !== 'ENOENT') throw error;
+      }
+    }
+    return token;
+  } finally {
+    removePublicationLock(recoveryFile, recoveryToken);
+  }
+}
+
+function recoverInterruptedPublication(file: string, lockPath: string): boolean {
+  if (hasValidSummaryIntegrity(file)) {
+    syncPublishedFile(file);
+    return true;
+  }
+  let observed = readPublicationOwner(lockPath);
+  if (!observed) return false;
+  const ownerState = publicationOwnerState(observed);
+  if (ownerState === 'alive') throw new Error('Batch summary publication is already in progress');
+  if (ownerState === 'leased') {
+    if (waitForPublicationLease(file, lockPath, observed)) return true;
+    observed = readPublicationOwner(lockPath);
+    if (!observed) return false;
+    const stateAfterWait = publicationOwnerState(observed);
+    if (stateAfterWait !== 'dead') throw new Error('Batch summary publication is already in progress');
+  }
+  const recoveryToken = takeOverPublicationLock(lockPath, observed);
+  if (!recoveryToken) throw new Error('Batch summary publication ownership changed concurrently');
+  try {
+    if (hasValidSummaryIntegrity(file)) return true;
+    try { fs.unlinkSync(file); } catch (error) {
+      if (errorCode(error) !== 'ENOENT') throw error;
+    }
+  } finally {
+    removePublicationLock(lockPath, recoveryToken);
+  }
+  return false;
+}
+
+function publishWithoutHardLinks(temporaryFile: string, file: string, lockPath: string): void {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const publicationToken = acquirePublicationLock(lockPath);
+    if (!publicationToken) {
+      if (recoverInterruptedPublication(file, lockPath)) return;
+      continue;
+    }
+    try {
+      if (hasValidSummaryIntegrity(file)) return;
+      if (fs.existsSync(file)) {
+        fs.unlinkSync(file);
+      }
+      try {
+        const source = fs.openSync(temporaryFile, 'r');
+        try {
+          const published = fs.openSync(file, 'wx');
+          try {
+            const buffer = Buffer.allocUnsafe(64 * 1024);
+            let bytesRead: number;
+            do {
+              refreshPublicationLease(lockPath, publicationToken);
+              bytesRead = fs.readSync(source, buffer, 0, buffer.length, null);
+              if (bytesRead > 0) fs.writeSync(published, buffer, 0, bytesRead);
+            } while (bytesRead > 0);
+            refreshPublicationLease(lockPath, publicationToken);
+            fs.fsyncSync(published);
+            refreshPublicationLease(lockPath, publicationToken);
+          } finally {
+            fs.closeSync(published);
+          }
+        } finally {
+          fs.closeSync(source);
+        }
+        if (!hasValidSummaryIntegrity(file)) throw new Error('Batch summary publication was incomplete');
+        syncParentDirectory(file);
+        return;
+      } catch (error) {
+        if (lockHasToken(lockPath, publicationToken) && !hasValidSummaryIntegrity(file) && fs.existsSync(file)) {
+          try { fs.unlinkSync(file); } catch { /* preserve the publication error */ }
+        }
+        throw error;
+      }
+    } finally {
+      removePublicationLock(lockPath, publicationToken);
+    }
+  }
+  throw new Error('Could not recover batch summary publication');
+}
+
+function publishReceiptWithoutHardLinks(
+  temporaryFile: string,
+  receiptFile: string,
+  lockPath: string,
+  readReceipt: () => BatchSummaryReceipt,
+): BatchSummaryReceipt {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const publicationToken = acquirePublicationLock(lockPath);
+    if (!publicationToken) {
+      try {
+        return readReceipt();
+      } catch (error) {
+        if (!canRecoverReceiptRead(error)) throw error;
+      }
+      let observed = readPublicationOwner(lockPath);
+      if (!observed) continue;
+      const state = publicationOwnerState(observed);
+      if (state === 'alive') throw new Error('Batch summary receipt reservation is already in progress');
+      if (state === 'leased') {
+        waitForCoordinationLease(lockPath, observed);
+        observed = readPublicationOwner(lockPath);
+        if (!observed) continue;
+        if (publicationOwnerState(observed) !== 'dead') {
+          throw new Error('Batch summary receipt reservation is already in progress');
+        }
+      }
+      const recoveryToken = takeOverPublicationLock(lockPath, observed);
+      if (!recoveryToken) throw new Error('Batch summary receipt ownership changed concurrently');
+      try {
+        try {
+          return readReceipt();
+        } catch (error) {
+          if (!canRecoverReceiptRead(error)) throw error;
+          try { fs.unlinkSync(receiptFile); } catch (error) {
+            if (errorCode(error) !== 'ENOENT') throw error;
+          }
+        }
+      } finally {
+        removePublicationLock(lockPath, recoveryToken);
+      }
+      continue;
+    }
+    try {
+      try {
+        return readReceipt();
+      } catch (error) {
+        if (!canRecoverReceiptRead(error)) throw error;
+        try { fs.unlinkSync(receiptFile); } catch (error) {
+          if (errorCode(error) !== 'ENOENT') throw error;
+        }
+      }
+      try {
+        fs.copyFileSync(temporaryFile, receiptFile, fs.constants.COPYFILE_EXCL);
+        const descriptor = fs.openSync(receiptFile, 'r');
+        try { fs.fsyncSync(descriptor); } finally { fs.closeSync(descriptor); }
+        syncParentDirectory(receiptFile);
+        return readReceipt();
+      } catch (error) {
+        if (errorCode(error) === 'EEXIST') {
+          try { return readReceipt(); } catch (readError) {
+            if (!canRecoverReceiptRead(readError)) throw readError;
+          }
+        }
+        if (lockHasToken(lockPath, publicationToken)) {
+          try { readReceipt(); } catch (readError) {
+            if (!canRecoverReceiptRead(readError)) throw readError;
+            try { fs.unlinkSync(receiptFile); } catch { /* preserve the reservation error */ }
+          }
+        }
+        throw error;
+      }
+    } finally {
+      removePublicationLock(lockPath, publicationToken);
+    }
+  }
+  throw new Error('Could not recover batch summary receipt reservation');
+}
+
+function reserveBatchSummaryReceipt(batchId: string, root: string, batchLabel: string, receiptDir: string): BatchSummaryReceipt {
+  ensurePrivateDir(receiptDir);
+  const receiptFile = batchSummaryReceiptFile(batchId, receiptDir);
+  const batchSlug = path.basename(receiptFile, '.json');
+  const readReceipt = (): BatchSummaryReceipt => {
+    assertPrivatePath(receiptFile, 'file');
+    const receipt = JSON.parse(fs.readFileSync(receiptFile, 'utf8')) as Partial<BatchSummaryReceipt>;
+    if (typeof receipt.root !== 'string' || !receipt.root) throw new InvalidBatchSummaryReceiptError('Invalid batch summary receipt');
+    if (receipt.summaryName !== undefined && (typeof receipt.summaryName !== 'string' || !isBatchSummaryName(batchId, receipt.summaryName))) {
+      throw new InvalidBatchSummaryReceiptError('Invalid batch summary receipt');
+    }
+    const result = { root: receipt.root, summaryName: receipt.summaryName };
+    syncPublishedFile(receiptFile);
+    return result;
+  };
+  try {
+    return readReceipt();
+  } catch (error) {
+    if (!canRecoverReceiptRead(error)) throw error;
+  }
+
+  const temporaryFile = path.join(receiptDir, `.${batchSlug}.${process.pid}.${randomUUID()}.tmp`);
+  const lockPath = path.join(receiptDir, `.${batchSlug}.lock`);
+  try {
+    fs.writeFileSync(temporaryFile, JSON.stringify({ root, summaryName: batchSummaryName(batchId, batchLabel) }), {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    });
+    try {
+      fs.linkSync(temporaryFile, receiptFile);
+      syncPublishedFile(receiptFile);
+    } catch (error) {
+      const code = errorCode(error);
+      if (code === 'EEXIST') {
+        try { return readReceipt(); } catch (readError) {
+          if (!canRecoverReceiptRead(readError)) throw readError;
+        }
+      } else if (!code || !HARD_LINK_UNAVAILABLE_CODES.has(code)) {
+        throw error;
+      }
+      return publishReceiptWithoutHardLinks(temporaryFile, receiptFile, lockPath, readReceipt);
+    }
+  } finally {
+    try { fs.unlinkSync(temporaryFile); } catch { /* ignore */ }
+  }
+  return readReceipt();
+}
+
+export function resolveBatchSummaryRoot(rawRoot: string | undefined, fallback = defaultOutputRoot()): string {
+  const root = rawRoot || fallback;
+  return /^[A-Za-z]:/.test(root) ? windowsToWslPath(root) : root;
+}
+
+export function createBatchSummary(
+  rawRoot: string | undefined,
+  batchId: string,
+  batchLabel: string,
+  category: string | undefined,
+  items: BatchSummaryItem[],
+  fallback?: string,
+  receiptDir = batchSummaryReceiptDir(),
+  allowDateNamedLegacySummary = false,
+): { ok: boolean; status: string; summaryPath?: string; error?: string } {
+  try {
+    if (typeof batchId !== 'string' || !batchId) throw new Error('Batch ID is required');
+    const receipt = reserveBatchSummaryReceipt(batchId, resolveBatchSummaryRoot(rawRoot, fallback), batchLabel, receiptDir);
+    return {
+      ok: true,
+      status: 'ok',
+      summaryPath: writeBatchSummary(
+        receipt.root,
+        batchId,
+        batchLabel,
+        category,
+        items,
+        receipt.summaryName,
+        allowDateNamedLegacySummary,
+      ),
+    };
+  } catch (error) {
+    return { ok: false, status: 'failed', error: error instanceof Error ? error.message : 'Could not write batch summary' };
+  }
+}
+
+export function removeBatchSummaryReceipt(
+  batchId: string,
+  receiptDir = batchSummaryReceiptDir(),
+  syncDirectory = syncParentDirectory,
+): { ok: boolean; status: string; error?: string } {
+  const receiptFile = batchSummaryReceiptFile(batchId, receiptDir);
+  try {
+    fs.unlinkSync(receiptFile);
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT') {
+      return { ok: false, status: 'failed', error: error instanceof Error ? error.message : 'Could not remove batch summary receipt' };
+    }
+  }
+  try {
+    syncDirectory(receiptFile);
+    return { ok: true, status: 'ok' };
+  } catch (error) {
+    return { ok: false, status: 'failed', error: error instanceof Error ? error.message : 'Could not remove batch summary receipt' };
+  }
+}
+
+// One overview .txt per playlist/channel download, listing every video + where it
+// landed. Written under <root>/TubeVault Summaries/. Returns the Windows path.
+export function writeBatchSummary(
+  root: string,
+  batchId: string,
+  batchLabel: string,
+  category: string | undefined,
+  items: BatchSummaryItem[],
+  reservedName?: string,
+  allowDateNamedLegacySummary = false,
+): string {
+  const dir = path.join(root, 'TubeVault Summaries');
+  ensureDir(dir);
+  const batchSlug = batchSummaryId(batchId);
+  const legacyFile = path.join(dir, `TubeVault batch - ${batchSlug}.txt`);
+  if (hasValidSummaryIntegrity(legacyFile) || hasValidLegacyBatchSummary(legacyFile)) {
+    syncPublishedFile(legacyFile);
+    return wslToWindowsPath(legacyFile);
+  }
+  const dateNamedLegacyFile = allowDateNamedLegacySummary
+    ? findMatchingDateNamedLegacySummary(dir, batchLabel, category, items)
+    : undefined;
+  if (dateNamedLegacyFile) {
+    syncPublishedFile(dateNamedLegacyFile);
+    return wslToWindowsPath(dateNamedLegacyFile);
+  }
+
+  const existingName = fs.readdirSync(dir).sort().find((name) => isBatchSummaryName(batchId, name));
+  const summaryName = existingName || reservedName || batchSummaryName(batchId, batchLabel);
+  if (!isBatchSummaryName(batchId, summaryName)) throw new Error('Invalid batch summary filename');
+  const file = path.join(dir, summaryName);
+  const lockFile = path.join(dir, `.tv-${batchSlug.slice(0, BATCH_SUMMARY_ID_LENGTH)}.lock`);
+  if (recoverInterruptedPublication(file, lockFile)) return wslToWindowsPath(file);
+
+  const stamp = new Date();
+  const lines = batchSummaryLines(batchLabel, category, items, stamp.toLocaleString());
+  const temporaryFile = path.join(dir, `.tv-${batchSlug.slice(0, BATCH_SUMMARY_ID_LENGTH)}-${randomUUID()}.tmp`);
+  try {
+    fs.writeFileSync(temporaryFile, summaryContent(lines), { encoding: 'utf8', flag: 'wx' });
+    try {
+      fs.linkSync(temporaryFile, file);
+    } catch (error) {
+      const code = errorCode(error);
+      if (code === 'EEXIST') {
+        if (hasValidSummaryIntegrity(file)) {
+          syncPublishedFile(file);
+          return wslToWindowsPath(file);
+        }
+        publishWithoutHardLinks(temporaryFile, file, lockFile);
+        return wslToWindowsPath(file);
+      }
+      if (!code || !HARD_LINK_UNAVAILABLE_CODES.has(code)) throw error;
+      publishWithoutHardLinks(temporaryFile, file, lockFile);
+    }
+    syncPublishedFile(file);
+  } finally {
+    try { fs.unlinkSync(temporaryFile); } catch { /* ignore */ }
+  }
   return wslToWindowsPath(file);
 }
 

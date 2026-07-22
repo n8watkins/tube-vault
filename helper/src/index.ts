@@ -1,10 +1,11 @@
 import { readMessages, writeMessage } from './protocol';
-import { handle, killActive, probeVideo, listVideos, writeBatchSummary, defaultOutputRoot, type DownloadRequest, type Action, type DownloadComponents, type BatchSummaryItem } from './downloader';
-import { isValidYouTubeUrl, windowsToWslPath, wslToWindowsPath, IS_WSL } from './sanitize';
+import { handle, killActive, probeVideo, listVideos, createBatchSummary, removeBatchSummaryReceipt, defaultOutputRoot, readProcessIdentity, type DownloadRequest, type Action, type DownloadComponents, type BatchSummaryItem } from './downloader';
+import { isValidJobId, isValidYouTubeUrl, wslToWindowsPath, IS_WSL } from './sanitize';
 import { spawn } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { randomUUID } from 'crypto';
 
 // Reported back to the popup on `ping`. Read from package.json (dist/ sits one
 // level below it at runtime) so it never drifts from the published helper version.
@@ -27,20 +28,125 @@ const ALLOWED_ACTIONS: Action[] = [
   'diagnostics',
 ];
 
-// A running download writes its node pid here keyed by jobId, so a separate
-// `cancel` invocation can signal it. Lives in the shared WSL tmp dir.
-const JOBS_DIR = path.join(os.tmpdir(), 'tube-vault-jobs');
+// A cancellable probe or download records its owner here by jobId so a separate
+// `cancel` invocation can durably request cancellation and signal the right process.
+const uid = typeof process.getuid === 'function' ? process.getuid() : undefined;
+const defaultJobsDirectory = path.join(os.tmpdir(), `tube-vault-jobs-${uid ?? os.userInfo().username}`);
+const JOBS_DIR = process.env.NODE_ENV === 'test' && process.env.TUBE_VAULT_TEST_JOBS_DIR
+  ? process.env.TUBE_VAULT_TEST_JOBS_DIR
+  : defaultJobsDirectory;
 const pidFile = (jobId: string) => path.join(JOBS_DIR, `${jobId}.pid`);
+const cancellationFile = (jobId: string) => path.join(JOBS_DIR, `${jobId}.cancel`);
+interface JobOwner { pid: number; processIdentity: string; }
 
-function writePid(jobId: string): void {
-  try { fs.mkdirSync(JOBS_DIR, { recursive: true }); fs.writeFileSync(pidFile(jobId), String(process.pid)); } catch { /* ignore */ }
-}
-function clearPid(jobId: string): void {
-  try { fs.unlinkSync(pidFile(jobId)); } catch { /* ignore */ }
+function errorCode(error: unknown): string | undefined {
+  return error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
 }
 
-// When cancelled, kill our yt-dlp children and exit. The pending sendNativeMessage
-// in the service worker then resolves with a closed port → treated as cancelled.
+function assertPrivatePath(target: string, kind: 'directory' | 'file'): void {
+  const stats = fs.lstatSync(target);
+  if (kind === 'directory' ? !stats.isDirectory() : !stats.isFile()) throw new Error(`Unsafe job ${kind}`);
+  if (uid !== undefined && stats.uid !== uid) throw new Error(`Unsafe job ${kind} owner`);
+  if (process.platform !== 'win32' && (stats.mode & 0o077) !== 0) throw new Error(`Unsafe job ${kind} permissions`);
+}
+
+function ensureJobsDirectory(): void {
+  try {
+    fs.mkdirSync(JOBS_DIR, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  }
+  assertPrivatePath(JOBS_DIR, 'directory');
+}
+
+function writePid(jobId: string): string {
+  const processIdentity = readProcessIdentity(process.pid);
+  if (!processIdentity) throw new Error('Process identity is unavailable');
+  const contents = JSON.stringify({ pid: process.pid, processIdentity });
+  const temporaryFile = path.join(JOBS_DIR, `.${jobId}.${randomUUID()}.tmp`);
+  try {
+    ensureJobsDirectory();
+    fs.writeFileSync(temporaryFile, contents, { encoding: 'utf8', flag: 'wx', mode: 0o600 });
+    fs.renameSync(temporaryFile, pidFile(jobId));
+    return contents;
+  } catch (error) {
+    try { fs.unlinkSync(temporaryFile); } catch { /* ignore */ }
+    throw error;
+  }
+}
+function recordCancellation(jobId: string): void {
+  ensureJobsDirectory();
+  try {
+    fs.writeFileSync(cancellationFile(jobId), JSON.stringify({ cancelledAt: Date.now() }), {
+      encoding: 'utf8',
+      flag: 'wx',
+      mode: 0o600,
+    });
+  } catch (error) {
+    if (errorCode(error) !== 'EEXIST') throw error;
+    assertPrivatePath(cancellationFile(jobId), 'file');
+  }
+}
+function cancellationRequested(jobId: string): boolean {
+  try {
+    assertPrivatePath(cancellationFile(jobId), 'file');
+    return true;
+  } catch (error) {
+    if (errorCode(error) === 'ENOENT') return false;
+    throw error;
+  }
+}
+function clearCancellation(jobId: string): void {
+  ensureJobsDirectory();
+  try {
+    assertPrivatePath(cancellationFile(jobId), 'file');
+    fs.unlinkSync(cancellationFile(jobId));
+  } catch (error) {
+    if (errorCode(error) !== 'ENOENT') throw error;
+  }
+}
+function clearPid(jobId: string, expectedContents: string): void {
+  try {
+    ensureJobsDirectory();
+    assertPrivatePath(pidFile(jobId), 'file');
+    if (fs.readFileSync(pidFile(jobId), 'utf8') === expectedContents) fs.unlinkSync(pidFile(jobId));
+  } catch { /* ignore */ }
+}
+function readJobOwner(jobId: string): { owner: JobOwner; contents: string } {
+  ensureJobsDirectory();
+  assertPrivatePath(pidFile(jobId), 'file');
+  const contents = fs.readFileSync(pidFile(jobId), 'utf8');
+  const owner = JSON.parse(contents) as Partial<JobOwner>;
+  if (!Number.isInteger(owner.pid) || (owner.pid as number) <= 0 || typeof owner.processIdentity !== 'string') {
+    throw new Error('Invalid job owner');
+  }
+  return { owner: owner as JobOwner, contents };
+}
+
+async function withJobOwner<T>(jobId: string | undefined, operation: () => Promise<T>): Promise<T> {
+  if (!jobId) return operation();
+  ensureJobsDirectory();
+  if (cancellationRequested(jobId)) throw new Error('Job cancelled');
+  const ownerContents = writePid(jobId);
+  try {
+    if (cancellationRequested(jobId)) throw new Error('Job cancelled');
+    return await operation();
+  } finally {
+    clearPid(jobId, ownerContents);
+  }
+}
+
+async function waitForOwnerExit(owner: JobOwner): Promise<boolean> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    if (readProcessIdentity(owner.pid) !== owner.processIdentity) return true;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  return readProcessIdentity(owner.pid) !== owner.processIdentity;
+}
+
+// When cancelled, kill our yt-dlp children and exit. The separate cancel invocation
+// waits for this process to exit before acknowledging cancellation.
 process.on('SIGTERM', () => { killActive(); process.exit(0); });
 
 // Open a folder in the OS file manager. Under WSL we hand a Windows path to Explorer
@@ -75,14 +181,43 @@ readMessages(async (raw) => {
   }
 
   if (req.action === 'cancel') {
-    const jobId = req.jobId as string;
+    if (!isValidJobId(req.jobId)) {
+      writeMessage({ ok: false, status: 'failed', error: 'Invalid job ID' });
+      return;
+    }
+    const jobId = req.jobId;
     try {
-      const pid = parseInt(fs.readFileSync(pidFile(jobId), 'utf8'), 10);
-      if (Number.isFinite(pid)) process.kill(pid, 'SIGTERM');
-      clearPid(jobId);
+      recordCancellation(jobId);
+      const { owner, contents } = readJobOwner(jobId);
+      if (readProcessIdentity(owner.pid) !== owner.processIdentity) {
+        clearPid(jobId, contents);
+        writeMessage({ ok: true, status: 'cancelled' });
+        return;
+      }
+      process.kill(owner.pid, 'SIGTERM');
+      if (!(await waitForOwnerExit(owner))) throw new Error('Job owner did not exit');
+      clearPid(jobId, contents);
       writeMessage({ ok: true, status: 'cancelled' });
+    } catch (error) {
+      if (errorCode(error) === 'ENOENT') {
+        writeMessage({ ok: true, status: 'cancellation_pending' });
+      } else {
+        writeMessage({ ok: false, status: 'failed', error: 'Job cancellation failed' });
+      }
+    }
+    return;
+  }
+
+  if (req.action === 'cancel_finalize') {
+    if (!isValidJobId(req.jobId)) {
+      writeMessage({ ok: false, status: 'failed', error: 'Invalid job ID' });
+      return;
+    }
+    try {
+      clearCancellation(req.jobId);
+      writeMessage({ ok: true, status: 'ok' });
     } catch {
-      writeMessage({ ok: false, status: 'failed', error: 'Job not found or already finished' });
+      writeMessage({ ok: false, status: 'failed', error: 'Cancellation cleanup failed' });
     }
     return;
   }
@@ -104,18 +239,38 @@ readMessages(async (raw) => {
   if (req.action === 'probe') {
     const url = req.url as string;
     if (!isValidYouTubeUrl(url)) { writeMessage({ ok: false, status: 'failed', error: 'Invalid URL' }); return; }
-    const p = await probeVideo(url, req.components as DownloadComponents | undefined);
-    writeMessage({ ok: true, status: 'ok', title: p.title, bytes: p.bytes, duration: p.duration, views: p.views });
+    if (req.jobId !== undefined && !isValidJobId(req.jobId)) {
+      writeMessage({ ok: false, status: 'failed', error: 'Invalid job ID' });
+      return;
+    }
+    try {
+      const p = await withJobOwner(req.jobId, () => probeVideo(url, req.components as DownloadComponents | undefined));
+      writeMessage({ ok: true, status: 'ok', title: p.title, bytes: p.bytes, duration: p.duration, views: p.views });
+    } catch (error) {
+      writeMessage({ ok: false, status: 'failed', error: error instanceof Error ? error.message : 'Probe failed' });
+    }
     return;
   }
 
   // Write the per-batch overview .txt once a playlist/channel batch finishes.
   if (req.action === 'batch_summary') {
-    const rawRoot = (req.options as { outputRoot?: string } | undefined)?.outputRoot ?? '';
-    const root = /^[A-Za-z]:/.test(rawRoot) ? windowsToWslPath(rawRoot) : rawRoot;
+    const rawRoot = (req.options as { outputRoot?: string } | undefined)?.outputRoot;
     const items = (req.items as BatchSummaryItem[]) ?? [];
-    const winPath = root ? writeBatchSummary(root, req.batchLabel as string, req.category as string | undefined, items) : '';
-    writeMessage({ ok: true, status: 'ok', summaryPath: winPath });
+    writeMessage(createBatchSummary(
+      rawRoot,
+      req.batchId as string,
+      req.batchLabel as string,
+      req.category as string | undefined,
+      items,
+      undefined,
+      undefined,
+      req.allowDateNamedLegacySummary === true,
+    ));
+    return;
+  }
+
+  if (req.action === 'batch_summary_finalize') {
+    writeMessage(removeBatchSummaryReceipt(req.batchId as string));
     return;
   }
 
@@ -145,12 +300,15 @@ readMessages(async (raw) => {
     return;
   }
 
-  const jobId = typeof req.jobId === 'string' ? req.jobId : undefined;
-  if (jobId) writePid(jobId);
+  if (req.jobId !== undefined && !isValidJobId(req.jobId)) {
+    writeMessage({ ok: false, status: 'failed', error: 'Invalid job ID' });
+    return;
+  }
+  const jobId = req.jobId;
   try {
-    const res = await handle(req as unknown as DownloadRequest);
+    const res = await withJobOwner(jobId, () => handle(req as unknown as DownloadRequest));
     writeMessage(res);
-  } finally {
-    if (jobId) clearPid(jobId);
+  } catch (error) {
+    writeMessage({ ok: false, status: 'failed', error: error instanceof Error ? error.message : 'Download failed' });
   }
 });

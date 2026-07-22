@@ -2,10 +2,11 @@
   "name": "tube-vault-helper",
   "version": "0.1.0",
   "scripts": {
-    "build": "tsc && cp dist/*.js /mnt/c/Users/natha/Projects/Tools/tube-vault/helper/dist/ && cp package.json /mnt/c/Users/natha/Projects/Tools/tube-vault/helper/",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "start": "node dist/index.js",
     "dev": "ts-node src/index.ts",
-    "test": "node -r ts-node/register/transpile-only --test src/sanitize.test.ts src/downloader.test.ts"
+    "test": "node -r ts-node/register/transpile-only --test src/sanitize.test.ts src/downloader.test.ts src/index.test.ts"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -1,166 +1,33 @@
-# TubeVault — Downloads Manager v2 Plan
+# TubeVault Downloads Manager v2 - Shipped Plan
 
-Status: **mostly shipped** (current Chrome extension version is v0.3.51).
-Goal: per-video job queue, info split between popup (now) and options (history +
-setup + support).
+Status: **shipped**.
 
-## Decisions (locked)
+This document records the architecture delivered by the Downloads Manager v2 work.
+It is historical context, not an active implementation plan.
+See [README.md](README.md) for current features and backlog.
 
-- **One job per video.** A playlist/channel batch expands into individual
-  per-video jobs (grouped by a `batchId`), each with its own size + cancel.
-- **Popup = "now"**: currently downloading + queue only. Links to options for
-  history.
-- **History = options page only** (a History section).
-- Options page also gets: **Setup/Installation guide**, **Support me** section.
+## Delivered Architecture
 
----
+- Every selected video becomes an individual job with its own ID, status, expected size, folder, error, and timestamps.
+- Playlist and channel jobs share a batch ID, label, category, sequential index, and selected total.
+- Jobs with unknown sizes are probed immediately before download, refreshing the title when available.
+- Downloads and queue-time probes run through one strictly serial queue, while planning and visible-row probes use bounded concurrency.
+- Individual jobs and complete batches enter a cancelling state until the helper acknowledges a durable cancellation request.
+- After a service-worker restart, interrupted probing or running jobs become failed with an `Interrupted` error, while interrupted cancellations become cancelled, only after the helper acknowledges cancellation.
+- For in-flight work, the durable cancellation marker is cleared only after the terminal job transition is stored, and the job remains protected from history pruning until that cleanup succeeds.
+- The popup shows active work, grouped queued batches, recent results, and inline cancellation.
+- The options Downloads tab contains status filters, grouped history, folder actions, JSON export, and history clearing.
+- History can be disabled, retained for a configured number of days, and is capped at 100 finished jobs.
+- A batch overview is requested after its final member settles, with successful writes deduplicated and each write attempted up to three times.
+- During the one-time migration of unfinished legacy batches, matching date-named summaries from v0.3.80 are reused so an upgrade does not create a duplicate summary.
+- Batch-summary reservation receipts live in user-private helper state and are removed only after the terminal summary outcome is durably stored.
+- Finished private-history batch details are removed after summary success or retry exhaustion.
+- The helper implements probing, video listing, per-video custom downloads, cancellation, and batch summaries.
+- Playlist and channel confirmation dialogs support per-video selection, thumbnails, expected size, duration, views, and duplicate detection.
+- The options page contains the four shipped tabs: Downloads, Settings, Status, and Setup.
 
-## 1. Job model (core change)
+## Compatibility Contract
 
-Current `Job` (service-worker.ts) is one-per-request. Change to **one per video**:
-
-```ts
-interface Job {
-  id: string;
-  batchId?: string;        // groups videos from one playlist/channel request
-  batchLabel?: string;     // e.g. "Playlist: Interviews" / "MKBHD — top 30"
-  videoUrl: string;        // single watch URL
-  label: string;           // video title (lazily filled) or video id
-  components: object;       // what to grab (video/audio/meta/thumb)
-  status: 'queued'|'probing'|'running'|'done'|'failed'|'cancelled';
-  estBytes?: number;       // filled from plan, or lazily before download
-  folder?: string;
-  error?: string;
-  createdAt: number; finishedAt?: number;
-}
-```
-
-### Expansion (where batches become per-video jobs)
-On a download request the service worker builds the job list:
-- **Single video** → 1 job (`videoUrl` = the watch URL).
-- **Channel popular / latest** → we already have `plan.targets` (watch URLs) AND
-  per-video sizes from `channel_plan`. Enqueue one job per target with `estBytes`
-  pre-filled. (Also fetch titles in the plan — add `%(title)s` to fetchVideoMeta.)
-- **Channel all / Playlist** → flat-list the URL first (fast, 1 call) to get all
-  video URLs, enqueue one job each, `estBytes` unknown → lazy.
-
-### Lazy sizing/titling (avoids rate-limit bursts)
-Because the queue is **serial**, fetch each job's size+title **just before it
-downloads** if not already known:
-- pumpQueue picks next `queued` job → if no `estBytes`/title, set `probing`,
-  call helper `probe` (one video) → store title+estBytes → set `running` →
-  download. One-at-a-time = no rate-limit burst even for huge channels.
-
----
-
-## 2. Helper changes (helper/src)
-
-Mostly already done (single-URL custom download + cancel by jobId work). Add:
-
-- **`probe` action**: `{action:'probe', url}` → `{ok, title, bytes, duration}`
-  via `yt-dlp --no-warnings --skip-download --print "%(title)s\t%(filesize_approx)s\t%(duration)s" <url>`.
-- **`list_videos` action**: `{action:'list_videos', url}` →
-  `{ok, videos:[{id,url}]}` (flat-list) for expanding playlist/channel-all.
-  (channel_plan already flat-lists — factor `flatListIds` for reuse.)
-- channel_plan's `fetchVideoMeta`: also print `%(title)s` so popular/latest jobs
-  get titles up front.
-
-Per-video download itself = existing `custom` with a single `url` + `jobId`
-(already supports detached spawn + cancel-by-pid). No change.
-
----
-
-## 3. Service worker (queue) changes
-
-- `enqueueBatch(request)`: expand → push N per-video jobs (shared `batchId`).
-  - popular/latest: use targets + sizes (+titles) from the plan already fetched.
-  - playlist/all: call `list_videos`, push jobs (sizes lazy).
-- `pumpQueue()`: before running a job missing size/title → `probe` → update →
-  download. Still strictly one running at a time.
-- **Cancel job** (exists). **Cancel batch** = cancel all jobs with that batchId
-  (cancel running + drop queued).
-- History retention: keep last ~100 finished jobs in `tvJobs`.
-
----
-
-## 3b. Confirmation flow (download + cancel)
-
-**Download confirm = a selection list for batches.** Single videos download in
-one click (no modal). Channel/playlist (any batch) ALWAYS opens the styled
-modal — which is now a **video selection list**:
-- one row per video: checkbox (all checked by default), title, size.
-- uncheck the ones you don't want → only checked videos get enqueued.
-- footer shows running total (count + est size); **Download N videos** / cancel
-  (backdrop click / Esc).
-- This REPLACES the old >1 GB size threshold — batches always confirm via this
-  list, regardless of size.
-- Rows populate from `channel_plan` (popular/latest already have titles+sizes)
-  or `list_videos` (playlist/all — titles up front, size lazy or "—").
-
-**Cancel confirm** stays the 2-step inline confirm in the popup (✕ → Stop / No),
-per item; batches get a **Cancel batch** with the same 2-step confirm.
-
----
-
-## 4. Popup (now-focused) — popup.tsx
-
-- **Downloading**: current job — video title, size, Cancel (✕→Stop confirm).
-- **Up next**: queued jobs; collapse batches → "Playlist: Interviews — 3/15"
-  with expand to see/cancel individual videos; "Cancel batch" option.
-- Footer: **"History & settings →"** button → `chrome.runtime.openOptionsPage()`.
-- Remove the History section from the popup.
-
----
-
-## 5. Options page — options.tsx (becomes a multi-section page)
-
-Sections (left-nav tabs or stacked):
-
-1. **Settings** (existing): download folder, auto-open Explorer, channel count
-   presets.
-2. **History** (new): full finished-jobs list — title, size, folder (button to
-   open via `open_folder`), date, status badge; **Clear history**; filter by
-   status. Reads `tvJobs` from storage.
-3. **Setup & Status** (new):
-   - "Check status" using the existing `diagnostics` action → show yt-dlp
-     version, ffmpeg version, output root, helper connected ✓/✗.
-   - Install guide: what you need (WSL, yt-dlp, ffmpeg, the native-messaging
-     host registration, the helper build). Step list + copyable commands.
-   - Troubleshooting notes (helper offline, etc.).
-4. **Support** (new): "Support me" with two icon buttons —
-   **GitHub Sponsors** (FaGithub / FaHeart) and **Buy Me a Coffee**
-   (FaMugHot/SiBuymeacoffee). Links TBD (user provides later); use placeholder
-   `#` hrefs until then. On-brand styling, icons required.
-5. (Optional later) **About**: version, links, changelog.
-
----
-
-## 6. Build order (phased, low-risk first)
-
-- **P1 — per-video jobs**: helper `probe` + `list_videos`; SW expansion + lazy
-  sizing; **batch selection modal** (checkbox list, deselect to skip); popup
-  shows per-item + batch grouping. (Biggest piece.)
-- **P2 — options History**: move history to options; popup links out.
-- **P3 — options Setup & Status** (reuse `diagnostics`).
-- **P4 — options Support** (GitHub Sponsors + Buy Me a Coffee, icons) + polish
-  (batch cancel, actual sizes, reorder).
-
-## Decisions (locked this round)
-- **Per-video over playlist single-process** — accepted the efficiency cost
-  (N yt-dlp procs vs 1) to get per-item visibility, cancel, AND deselection.
-- **Download confirm = selection list for batches; single video = no modal.**
-  Replaces the old >1 GB threshold.
-- **Support:** GitHub Sponsors + Buy Me a Coffee, both with icons; links later.
-
-## Open questions to confirm later
-- Actual (vs estimated) size for finished jobs — capture from yt-dlp output or
-  stat the folder? (phase 4)
-
-## Current code references
-- `extension/src/service-worker.ts` — queue/jobs (batch-as-one today)
-- `extension/src/components/ArchiveButton.tsx` — sendRequest, runChannelFlow,
-  runPlaylistFlow, showConfirm
-- `extension/src/popup.tsx` — current downloads panel (has history; to be split)
-- `extension/src/options.tsx` — settings only today
-- `helper/src/index.ts` — actions incl. cancel; `helper/src/downloader.ts` —
-  channelPlan/fetchVideoMeta/flatListIds, detached spawn + killActive
+Stored jobs remain under the `tvJobs` Chrome local-storage key.
+New optional job fields are additive so older stored jobs continue to load.
+Existing message names remain stable between the content UI, popup, options page, and service worker.

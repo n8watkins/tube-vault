@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ${{ github.event_name == 'push' && fromJSON('["self-hosted", "tube-vault"]') || fromJSON('["ubuntu-latest"]') }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: ${{ github.event_name == 'pull_request' && 'npm' || '' }}
+          cache-dependency-path: |
+            package-lock.json
+            extension/package-lock.json
+            helper/package-lock.json
+      - name: Install dependencies
+        run: |
+          npm ci
+          npm ci --prefix extension
+          npm ci --prefix helper
+      - name: Install Chromium and Linux dependencies
+        if: github.event_name == 'pull_request'
+        run: npx playwright install --with-deps chromium
+      - name: Install Chromium
+        if: github.event_name == 'push'
+        run: npx playwright install chromium
+      - name: Check
+        run: npm run check
+      - name: Browser smoke tests
+        run: npm run test:e2e
+      - name: Upload browser artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-artifacts
+          path: |
+            playwright-report
+            test-results
+          if-no-files-found: ignore

@@ -1,159 +1,182 @@
 # TubeVault
 
-TubeVault is a local-first Chrome extension for archiving YouTube videos, playlists, channels, thumbnails, and metadata to your own machine. The browser extension provides the YouTube UI, download queue, options page, history, setup/status panels, and support links. A WSL native messaging helper runs the actual local download work through `yt-dlp`.
+TubeVault is a local-first Chrome extension for archiving YouTube videos, playlists, channels, Shorts, live videos, thumbnails, subtitles, audio, and metadata to your own machine.
+The Chrome extension provides the YouTube controls, serial download queue, popup, history, settings, and diagnostics.
+A local Node.js native messaging helper runs `yt-dlp` and `ffmpeg` without a TubeVault server.
 
-Current Chrome extension version: **v0.3.51**
+## Features
 
-## What It Does
+- Adds download controls to YouTube watch, live, Shorts, playlist, mix, and channel pages.
+- Selects video quality and format, audio format, subtitles, thumbnails, and metadata per request.
+- Expands playlist and channel requests into individually selectable per-video jobs.
+- Probes batch rows progressively for title, expected size, duration, and view count.
+- Keeps downloads and queue-time probes serial, while planning and visible-row probes use bounded concurrency.
+- Supports SponsorBlock chapter marking or explicit segment removal.
+- Supports concurrent media fragments for faster individual downloads.
+- Shows active work, queued batches, recent results, and acknowledged cancellation controls in the popup.
+- Stores optional local download history with retention controls, export, and a 100-item cap.
+- On restart, durably cancels interrupted native work before marking it interrupted or cancelled and resuming the queue.
+- Uses a cross-platform helper on Windows with WSL, macOS, and Linux.
+- Resolves a platform-appropriate default output folder without hardcoded usernames.
 
-- Adds TubeVault archive controls to YouTube watch, Shorts, playlist, and channel pages.
-- Supports video/audio/metadata/thumbnail component selection.
-- Supports quality and format preferences.
-- Expands playlist and channel requests into per-video jobs.
-- Shows active downloads and queued work in the popup.
-- Keeps finished download history in the options page.
-- Saves locally through a native helper; no remote server is involved.
-- Opens completed output folders from the options/history UI.
+Browser-cookie access and parallel downloads of multiple videos are not implemented.
+They remain deliberate backlog items because both require additional privacy, locking, and rate-limit safeguards.
 
 ## Project Layout
 
 ```text
-extension/          Chrome MV3 extension, React UI, service worker, content script
-helper/             Node native messaging helper that calls yt-dlp in WSL
-native-messaging/   Chrome native messaging host manifest
-scripts/            Windows helper launcher and install script
-DOWNLOADS_PLAN.md   Product and queue architecture plan
-SETUP.md            Local install and troubleshooting guide
-CHANGELOG.md        Version history
+extension/          Chrome MV3 extension, React UI, service worker, and content script
+helper/             Node.js native messaging helper that calls yt-dlp and ffmpeg
+native-messaging/   Native messaging host manifest template
+scripts/            Build deployment, release, registration, and launcher scripts
+tests/e2e/          Playwright Chromium smoke tests
+SETUP.md            Installation and troubleshooting guide
 ```
 
-## Local Paths
+## Install and Build
 
-Development source:
-
-```text
-/home/natkins/personal/tools/extensions/tube-vault
-```
-
-Chrome loads the unpacked extension from Windows:
-
-```text
-C:\Users\natha\Projects\Tools\tube-vault\extension
-```
-
-The helper build is copied to:
-
-```text
-C:\Users\natha\Projects\Tools\tube-vault\helper\dist
-```
-
-Default download output:
-
-```text
-C:\Users\natha\Videos\Youtube Downloads
-```
-
-## Setup
-
-TubeVault is a Chrome extension plus a local WSL helper. The extension UI includes a **Setup** tab with the same core checklist, and [SETUP.md](SETUP.md) has the full local install and troubleshooting flow.
-
-Short version:
+Install all three dependency sets from the repository root:
 
 ```bash
-npm install --prefix extension
-npm install --prefix helper
-npm run build --prefix helper
-npm run build --prefix extension
+npm ci
+npm ci --prefix extension
+npm ci --prefix helper
 ```
 
-Then run `scripts\install.ps1` from Windows PowerShell if the native messaging host needs to be registered, open `chrome://extensions`, enable Developer mode, load the Windows extension folder, and reload the unpacked extension after each build.
+Build both packages:
+
+```bash
+npm run build
+```
+
+The default build is portable and side-effect free.
+It writes bundles only to `extension/dist` and `helper/dist`.
+It does not change versions, copy to another checkout, stage files, commit, or push.
+
+See [SETUP.md](SETUP.md) for native messaging registration and platform-specific prerequisites.
+
+## Development Commands
+
+```bash
+npm run build       # Build extension and helper
+npm run typecheck   # Type-check both packages
+npm run lint        # Lint source, tests, and build scripts
+npm test            # Run script, extension, and helper unit tests
+npm run test:e2e    # Build and run unpacked-extension Chromium smoke tests
+npm run changelog   # Regenerate CHANGELOG.md from release commits
+npm run check       # Lint, type-check, unit test, check the changelog, and build
+```
+
+Install the bundled Playwright browser before the first local E2E run:
+
+```bash
+npx playwright install chromium
+```
+
+On Linux CI or a new Linux workstation, install Chromium and its system dependencies with:
+
+```bash
+npx playwright install --with-deps chromium
+```
+
+## Continuous Integration
+
+GitHub Actions runs the full `npm run check` pipeline and Chromium smoke suite for pushes and pull requests.
+Trusted pushes use the repository-scoped `n8desktop-tube-vault` self-hosted WSL runner with the `tube-vault` label.
+Because this repository is public, pull requests continue to use a GitHub-hosted Ubuntu runner so untrusted changes cannot execute on the development machine.
+The local runner is installed outside the repository at `/home/natkins/actions-runners/tube-vault` and managed by the `github-actions-tube-vault.service` user service.
+If the development machine is offline, push jobs remain queued until the local runner reconnects.
+
+Watch all four extension entry points without release side effects:
+
+```bash
+npm run watch --prefix extension
+```
+
+## Explicit Windows Sync
+
+Chrome on Windows cannot load an unpacked extension directly from the WSL Linux filesystem reliably.
+Build and copy the runtime artifacts to an existing Windows checkout explicitly:
+
+```bash
+npm run sync:windows -- --target /mnt/c/Users/<you>/Projects/tube-vault
+```
+
+You can set `TUBE_VAULT_WINDOWS_REPO` instead of passing `--target`.
+The CLI argument takes precedence when both are present.
+The destination must be the absolute root of an existing Git repository with TubeVault extension and helper package identities.
+The command copies only the extension manifest, HTML, icons, bundles, helper bundles, and helper package metadata.
+Existing allowlisted destinations must be regular files; the sync rejects symbolic links and other file types without moving or deleting them.
+The copy is serialized and transactional: a failed publication restores replaced allowlisted files and removes newly installed allowlisted files when they are still owned by that transaction.
+If another process changes an artifact concurrently, the sync preserves that change and retains its transaction backups rather than overwriting data it no longer owns.
+The next sync recovers an interrupted transaction before publishing new artifacts when its ownership records still match, and otherwise stops for manual inspection.
+Files outside the allowlist are never deleted.
+
+Reload the unpacked extension at `chrome://extensions` after syncing.
+
+## Patch Release
+
+Create a local patch release commit with:
+
+```bash
+npm run release:patch
+```
+
+The release command requires clean tracked and staged files, while unrelated untracked files are allowed.
+It verifies matching package, manifest, and lockfile versions, runs the full check, increments all four version records across those three files, regenerates `CHANGELOG.md`, rebuilds, stages the release files, and commits `build(tube-vault): vX.Y.Z`.
+If changelog generation, rebuilding, staging, or committing fails after the version change, the command restores the original release files and Git index.
+It does not sync to Windows or push.
 
 ## Options Page
 
-TubeVault's Chrome options page includes:
+The options page has four tabs:
 
-- **Downloads**: finished jobs, grouped batches, status filters, open-folder actions, and clear history.
-- **Settings**: output root, naming layout, default download components, quality/format defaults, history retention, and channel count presets.
-- **Status**: helper diagnostics, `yt-dlp`, `ffmpeg`, and output path checks.
-- **Setup**: install checklist and local environment guidance.
-- **Support**: support links and project links.
+- **Downloads** contains finished history, grouped batches, filters, folder actions, JSON export, and history clearing.
+- **Settings** controls the output root, naming, component defaults, quality and formats, notifications, history retention, SponsorBlock, faster fragments, thumbnails, and channel counts.
+- **Status** checks the native helper, `yt-dlp`, `ffmpeg`, and resolved output path.
+- **Setup** provides the one-time local helper checklist.
 
 ## Screenshots
 
 ### Popup
 
-The popup is the "what is happening now" surface. It is intentionally compact: it shows the native-helper connection state, the current extension version, active downloads, queued batch groups, the configured local output folder, and the shortcut into history/settings. The popup is for monitoring and quick cancellation; completed work moves to the options-page history view.
+The popup focuses on current work, recent results, connection status, quick cancellation, and shortcuts to history and settings.
 
 ![TubeVault popup](docs/screenshots/tubevault-popup.png)
 
 ### Downloads
 
-The Downloads tab is the finished-history view. It separates history from the popup so the popup can stay focused on current work. Finished videos show status, file size, finish time, folder actions, and batch grouping. The filter chips make it easy to isolate done, failed, or cancelled work, and the clear-history action is kept here instead of in the popup.
+The Downloads tab provides local history and batch grouping without crowding the popup.
 
 ![TubeVault downloads options tab](docs/screenshots/tubevault-options-downloads.png)
 
 ### Settings
 
-The Settings tab controls the defaults that shape every download. The output folder is a Windows path because Chrome and the native helper write to the Windows-visible filesystem. Naming controls decide whether downloads are grouped by category, numbered, given title-based file names, and paired with local summary files. Channel presets define the counts offered for popular/latest channel downloads. Default download preferences preselect video/audio/thumbnail/metadata options in the YouTube menu, and the history controls decide whether TubeVault keeps local history and how long it should be retained.
+The Settings tab controls download behavior, formats, naming, history, and advanced options.
 
 ![TubeVault settings options tab](docs/screenshots/tubevault-options-settings.png)
 
 ### Status
 
-The Status tab is the local diagnostics surface. It checks whether Chrome can reach the native messaging helper, whether the helper can see `yt-dlp`, whether `ffmpeg` is available for media conversion, and which output folder the helper is using. This is the first place to look when downloads fail immediately or Chrome reports that the helper is not reachable.
+The Status tab is the first place to inspect helper or local tool failures.
 
 ![TubeVault status options tab](docs/screenshots/tubevault-options-status.png)
 
 ### Setup
 
-The Setup tab keeps the one-time install checklist inside the extension, so local helper setup is visible without returning to GitHub. It summarizes the WSL dependency install, native messaging registration, helper build, extension reload, and final Status-tab verification. The full version of this flow lives in [SETUP.md](SETUP.md).
+The Setup tab keeps the core installation checklist available inside the extension.
 
 ![TubeVault setup options tab](docs/screenshots/tubevault-options-setup.png)
 
-### Support
-
-The Support tab explains the local-first privacy model and exposes project support links. The About block states the important boundary: TubeVault has no server, Chrome talks to a native helper on this machine, and that helper runs local `yt-dlp` commands that write files to the configured output folder.
-
-![TubeVault support options tab](docs/screenshots/tubevault-options-support.png)
-
-## Build Workflow
-
-Extension build:
-
-```bash
-npm run build --prefix extension
-```
-
-This bumps `extension/package.json` and `extension/manifest.json`, bundles the extension with esbuild, copies built files to the Windows Chrome folder, and commits the extension build output.
-
-Helper build:
-
-```bash
-npm run build --prefix helper
-```
-
-This compiles helper TypeScript and copies `dist/*.js` to the Windows helper path used by the native messaging launcher.
-
-Screenshot capture:
-
-```bash
-npm run screenshots --prefix extension
-```
-
-This runs [scripts/capture-extension-screenshots.mjs](scripts/capture-extension-screenshots.mjs), which serves the built extension UI with a Chrome API shim and captures the popup plus every options tab through Puppeteer. See [docs/PUPPETEER_SCREENSHOTS.md](docs/PUPPETEER_SCREENSHOTS.md) for the workflow details.
-
-## Support
-
-- GitHub: <https://github.com/n8watkins/tube-vault>
-- Issues: <https://github.com/n8watkins/tube-vault/issues>
-- Support links in the extension options page are currently placeholders until final support URLs are configured.
-
 ## Privacy
 
-TubeVault is local-first. It does not send videos to a TubeVault server because there is no TubeVault server. The extension talks to Chrome storage and the native helper; the helper runs local `yt-dlp` commands and writes files to your configured local output folder.
-
+TubeVault has no application server.
+The extension uses Chrome storage and sends commands to the local native helper.
+The helper runs local `yt-dlp` and `ffmpeg` processes and writes to the configured local folder.
 YouTube and `yt-dlp` still operate under their own network behavior and terms.
 
 ## Changelog
 
 See [CHANGELOG.md](CHANGELOG.md).
+The changelog is generated from Git release boundaries and conventional commit subjects with `npm run changelog`.
+Use `npm run changelog:check` to verify that the committed file is current.

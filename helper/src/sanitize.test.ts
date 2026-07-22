@@ -1,6 +1,16 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { isValidYouTubeUrl, sanitizeFilename, wslToWindowsPath, windowsToWslPath } from './sanitize';
+import { isValidJobId, isValidYouTubeUrl, sanitizeFilename, wslToWindowsPath, windowsToWslPath } from './sanitize';
+
+test('isValidJobId accepts generated IDs and rejects path traversal', () => {
+  for (const value of ['mabc123xyz', 'id-1', 'job_name', 'A'.repeat(128)]) {
+    assert.equal(isValidJobId(value), true, `expected valid: ${value}`);
+  }
+
+  for (const value of ['', '../victim', '..', 'nested/job', 'nested\\job', 'A'.repeat(129), 123, null]) {
+    assert.equal(isValidJobId(value), false, `expected invalid: ${String(value)}`);
+  }
+});
 
 test('isValidYouTubeUrl accepts the supported page types', () => {
   const valid = [

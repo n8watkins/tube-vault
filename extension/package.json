@@ -1,10 +1,12 @@
 {
   "name": "tube-vault-extension",
-  "version": "0.3.80",
+  "version": "0.3.106",
   "scripts": {
     "build": "node build.mjs",
     "screenshots": "node ../scripts/capture-extension-screenshots.mjs",
-    "watch": "node build.mjs --watch"
+    "watch": "node build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "react": "^18.3.1",
@@ -16,6 +18,7 @@
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "esbuild": "^0.21.5",
-    "typescript": "^5.4.0"
+    "typescript": "^5.4.0",
+    "vitest": "^3.2.4"
   }
 }

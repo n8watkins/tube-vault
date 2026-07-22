@@ -9,7 +9,7 @@ export const DEFAULT_OUTPUT_ROOT = '';
 
 type Tab = 'downloads' | 'settings' | 'status' | 'setup';
 
-type JobStatus = 'queued' | 'probing' | 'running' | 'done' | 'failed' | 'cancelled';
+type JobStatus = 'queued' | 'probing' | 'running' | 'cancelling' | 'done' | 'failed' | 'cancelled';
 interface Job {
   id: string;
   batchId?: string;
@@ -134,7 +134,12 @@ function HistorySection() {
     if (folder) chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: { action: 'open_folder', windowsPath: folder } });
   };
   const clear = () => chrome.runtime.sendMessage({ type: 'TUBE_VAULT_CLEAR_HISTORY' });
-  const toggle = (id: string) => setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggle = (id: string) => setExpanded((s) => {
+    const next = new Set(s);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
   const exportHistory = () => {
     const blob = new Blob([JSON.stringify(jobs, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);

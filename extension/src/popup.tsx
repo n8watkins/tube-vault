@@ -11,7 +11,7 @@ function openOptions(tab: 'downloads' | 'settings' | 'status' | 'setup') {
   chrome.storage.local.set({ tvOpenTab: tab }, () => chrome.runtime.openOptionsPage());
 }
 
-type JobStatus = 'queued' | 'probing' | 'running' | 'done' | 'failed' | 'cancelled';
+type JobStatus = 'queued' | 'probing' | 'running' | 'cancelling' | 'done' | 'failed' | 'cancelled';
 interface Job {
   id: string;
   batchId?: string;
@@ -28,6 +28,7 @@ interface Job {
 const STATUS_META: Record<JobStatus, { dot: string; text: string; label: string }> = {
   running:   { dot: '#42a5f5', text: '#90caf9', label: 'Downloading' },
   probing:   { dot: '#42a5f5', text: '#90caf9', label: 'Checking size…' },
+  cancelling: { dot: '#ffb74d', text: '#ffcc80', label: 'Stopping…' },
   queued:    { dot: '#bbb',    text: '#bbb',    label: 'Queued' },
   done:      { dot: '#4caf50', text: '#81c784', label: 'Done' },
   failed:    { dot: '#ef5350', text: '#ef9a9a', label: 'Failed' },
@@ -68,10 +69,15 @@ function App() {
 
   const cancel = (id: string) => { chrome.runtime.sendMessage({ type: 'TUBE_VAULT_CANCEL', jobId: id }); setConfirmId(null); };
   const cancelBatch = (batchId: string) => { chrome.runtime.sendMessage({ type: 'TUBE_VAULT_CANCEL_BATCH', batchId }); setConfirmId(null); };
-  const toggle = (id: string) => setExpanded((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
+  const toggle = (id: string) => setExpanded((s) => {
+    const next = new Set(s);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
   const openFolder = (folder?: string) => { if (folder) chrome.runtime.sendMessage({ type: 'TUBE_VAULT_REQUEST', payload: { action: 'open_folder', windowsPath: folder } }); };
 
-  const active = jobs.filter((j) => j.status === 'running' || j.status === 'probing');
+  const active = jobs.filter((j) => j.status === 'running' || j.status === 'probing' || j.status === 'cancelling');
   const queued = jobs.filter((j) => j.status === 'queued');
   const recent = jobs
     .filter((j) => j.status === 'done' || j.status === 'failed' || j.status === 'cancelled')
@@ -158,7 +164,7 @@ function App() {
 
         {active.length > 0 && <>
           <div style={sectionLabel}>Downloading</div>
-          {active.map((j) => jobRowEl(j, true))}
+          {active.map((j) => jobRowEl(j, j.status !== 'cancelling'))}
         </>}
 
         {queued.length > 0 && <>

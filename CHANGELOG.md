@@ -8,6 +8,10 @@
 
 - Exclude merge commits from changelog.
 
+### Changed
+
+- Skip push cache upload.
+
 ## v0.3.106
 
 ### Changed

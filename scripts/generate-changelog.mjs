@@ -107,7 +107,7 @@ export function renderChangelog(releases) {
 }
 
 function readHistory(root) {
-  const result = spawnSync('git', ['log', '--reverse', '--format=%H%x09%cs%x09%s'], {
+  const result = spawnSync('git', ['log', '--no-merges', '--reverse', '--format=%H%x09%cs%x09%s'], {
     cwd: root,
     encoding: 'utf8',
   });

@@ -1,6 +1,15 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
-import { collectReleases, parseGitLog, renderChangelog } from './generate-changelog.mjs';
+import {
+  collectReleases,
+  generateChangelog,
+  parseGitLog,
+  renderChangelog,
+} from './generate-changelog.mjs';
 
 const commits = parseGitLog([
   '1111111\t2026-01-01\tfeat(tube-vault): first feature',
@@ -32,4 +41,33 @@ test('collectReleases rejects invalid, duplicate, and empty releases', () => {
   assert.throws(() => collectReleases(commits, '1.0'), /Expected --version/);
   assert.throws(() => collectReleases(commits, '1.0.0'), /already has a release commit/);
   assert.throws(() => collectReleases(commits.slice(0, 3), '1.0.2'), /No changes exist/);
+});
+
+test('generateChangelog excludes synthetic pull request merge commits', async (t) => {
+  const root = await mkdtemp(join(tmpdir(), 'tube-vault-changelog-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const git = (...args) => execFileSync('git', args, { cwd: root, stdio: 'ignore' });
+
+  git('init', '--initial-branch=main');
+  git('config', 'user.name', 'TubeVault Test');
+  git('config', 'user.email', 'tube-vault@example.invalid');
+  await writeFile(join(root, 'base.txt'), 'base\n');
+  git('add', 'base.txt');
+  git('commit', '-m', 'feat: add base');
+  git('checkout', '-b', 'feature');
+  await writeFile(join(root, 'feature.txt'), 'feature\n');
+  git('add', 'feature.txt');
+  git('commit', '-m', 'fix: add feature');
+  git('checkout', 'main');
+  await writeFile(join(root, 'main.txt'), 'main\n');
+  git('add', 'main.txt');
+  git('commit', '-m', 'docs: update main');
+  git('merge', '--no-ff', 'feature', '-m', 'Merge pull request #1 from feature');
+
+  await generateChangelog({ root });
+  const output = await readFile(join(root, 'CHANGELOG.md'), 'utf8');
+  assert.match(output, /- Add base\./);
+  assert.match(output, /- Add feature\./);
+  assert.match(output, /- Update main\./);
+  assert.doesNotMatch(output, /Merge pull request/);
 });

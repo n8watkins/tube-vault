@@ -79,6 +79,14 @@ On Linux CI or a new Linux workstation, install Chromium and its system dependen
 npx playwright install --with-deps chromium
 ```
 
+## Continuous Integration
+
+GitHub Actions runs the full `npm run check` pipeline and Chromium smoke suite for pushes and pull requests.
+Trusted pushes use the repository-scoped `n8desktop-tube-vault` self-hosted WSL runner with the `tube-vault` label.
+Because this repository is public, pull requests continue to use a GitHub-hosted Ubuntu runner so untrusted changes cannot execute on the development machine.
+The local runner is installed outside the repository at `/home/natkins/actions-runners/tube-vault` and managed by the `github-actions-tube-vault.service` user service.
+If the development machine is offline, push jobs remain queued until the local runner reconnects.
+
 Watch all four extension entry points without release side effects:
 
 ```bash

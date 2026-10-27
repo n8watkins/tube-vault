@@ -12,6 +12,10 @@
 
 - Skip push cache upload.
 
+### Maintenance
+
+- Adopt release-kit 2.0.0 as a dev dependency.
+
 ## v0.3.106
 
 ### Changed

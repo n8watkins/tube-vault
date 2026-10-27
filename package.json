@@ -1,6 +1,6 @@
 {
   "name": "tube-vault",
-  "version": "0.0.0",
+  "version": "0.3.106",
   "private": true,
   "scripts": {
     "build": "npm run build --prefix extension && npm run build --prefix helper",
@@ -12,7 +12,10 @@
     "changelog:check": "node scripts/generate-changelog.mjs --check",
     "check": "npm run lint && npm run typecheck && npm test && npm run changelog:check && npm run build",
     "sync:windows": "node scripts/sync-windows.mjs",
-    "release:patch": "node scripts/release-patch.mjs"
+    "release:patch": "node scripts/release-patch.mjs",
+    "release": "release-kit release",
+    "release:check": "release-kit check && npm run lint && npm run typecheck && npm test && npm run build",
+    "prepare": "git config core.hooksPath .githooks || true"
   },
   "devDependencies": {
     "@eslint/js": "^9.31.0",
@@ -20,6 +23,7 @@
     "eslint": "^9.31.0",
     "eslint-plugin-react-hooks": "^5.2.0",
     "globals": "^16.3.0",
+    "release-kit": "github:n8watkins/release-kit#v2.0.0",
     "typescript-eslint": "^8.38.0"
   }
 }

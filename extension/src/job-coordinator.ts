@@ -426,7 +426,7 @@ export class JobCoordinator {
     }
 
     const settings = this.effects.getSettings();
-    const progress = this.progressWriter(job.id, job.estBytes);
+    const progress = this.progressWriter(job.id, job.estBytes, !!(job.components.video || job.components.audio));
     const response = await this.safeNative({
       action: 'custom',
       url: job.videoUrl,
@@ -474,9 +474,12 @@ export class JobCoordinator {
   // Coalesces the helper's progress snapshots into rate-limited storage writes:
   // at most one write in flight, always carrying the newest snapshot. The stored
   // percent only moves forward (the helper already holds it; this also covers a
-  // helper that sends none), so the bar pauses rather than dipping.
-  private progressWriter(jobId: string, estBytes?: number): { report: (raw: unknown) => void; stop: () => Promise<void> } {
+  // helper that sends none), so the bar pauses rather than dipping. The phase only
+  // moves forward too: a media job is not finishing up before it has downloaded
+  // anything, and once it is, it stays finishing up.
+  private progressWriter(jobId: string, estBytes: number | undefined, media: boolean): { report: (raw: unknown) => void; stop: () => Promise<void> } {
     let shownPercent: number | null = null;
+    let finishing = false;
     let latest: JobProgress | null = null;
     let lastWriteAt = Number.NEGATIVE_INFINITY;
     let lastPhase: JobProgress['phase'] | null = null;
@@ -524,7 +527,15 @@ export class JobCoordinator {
         if (stopped) return;
         const snapshot = sanitizeProgress(raw, this.effects.now());
         if (!snapshot) return;
-        if (snapshot.phase === 'processing') {
+        if (snapshot.phase === 'processing' && media && snapshot.downloadedBytes <= 0) {
+          snapshot.phase = 'downloading';
+          snapshot.percent = null;
+        }
+        if (snapshot.phase === 'processing' || finishing) {
+          finishing = true;
+          snapshot.phase = 'processing';
+          snapshot.speed = null;
+          snapshot.eta = null;
           snapshot.percent = 100;
         } else {
           const percent = snapshot.percent ?? computePercent(snapshot, estBytes);

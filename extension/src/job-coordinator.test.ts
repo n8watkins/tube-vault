@@ -214,6 +214,59 @@ describe('JobCoordinator', () => {
     await test.coordinator.whenIdle();
   });
 
+  it('never shows a media job finishing up before it downloads, or going back from finishing up', async () => {
+    const download = deferred<NativeResponse>();
+    let report: ((progress: unknown) => void) | undefined;
+    const test = harness({
+      native: async (payload, onProgress) => {
+        if (payload.action !== 'custom') return { ok: true };
+        report = onProgress;
+        return download.promise;
+      },
+    });
+    await test.coordinator.enqueue({ items: [{ url: 'one', title: 'One', bytes: 1000 }], components: { video: true } });
+    await vi.waitFor(() => expect(report).toBeTypeOf('function'));
+    const stored = async (now: number, progress: Record<string, unknown>) => {
+      test.setNow(now);
+      report!(progress);
+      await vi.waitFor(() => expect(test.jobs[0].progress?.updatedAt).toBe(now));
+      return test.jobs[0].progress;
+    };
+
+    // A post-processor yt-dlp runs before the download (the thumbnail convert)
+    // reported as finishing up by an older helper: nothing has downloaded yet.
+    expect(await stored(1_001_000, { phase: 'processing', downloadedBytes: 0, totalBytes: 1000, percent: 100, speed: null, eta: null }))
+      .toMatchObject({ phase: 'downloading', percent: 0 });
+    expect(await stored(1_002_000, { phase: 'downloading', downloadedBytes: 100, totalBytes: 1000, percent: 10, speed: 1, eta: 9 }))
+      .toMatchObject({ phase: 'downloading', percent: 10 });
+    expect(await stored(1_003_000, { phase: 'processing', downloadedBytes: 1000, totalBytes: 1000, percent: 100, speed: null, eta: null }))
+      .toMatchObject({ phase: 'processing', percent: 100 });
+    // Once finishing up, a stray download tick does not pull the bar back.
+    expect(await stored(1_004_000, { phase: 'downloading', downloadedBytes: 1000, totalBytes: 2000, percent: 50, speed: 1, eta: 9 }))
+      .toMatchObject({ phase: 'processing', percent: 100, speed: null, eta: null });
+
+    download.resolve({ ok: true, folderPath: '/videos/one' });
+    await test.coordinator.whenIdle();
+  });
+
+  it('shows a thumbnail-only job finishing up without any media bytes', async () => {
+    const download = deferred<NativeResponse>();
+    let report: ((progress: unknown) => void) | undefined;
+    const test = harness({
+      native: async (payload, onProgress) => {
+        if (payload.action !== 'custom') return { ok: true };
+        report = onProgress;
+        return download.promise;
+      },
+    });
+    await test.coordinator.enqueue({ items: [{ url: 'one', title: 'One', bytes: 10 }], components: { thumbnail: true } });
+    await vi.waitFor(() => expect(report).toBeTypeOf('function'));
+    report!({ phase: 'processing', downloadedBytes: 0, totalBytes: null, speed: null, eta: null });
+    await vi.waitFor(() => expect(test.jobs[0].progress).toMatchObject({ phase: 'processing', percent: 100 }));
+    download.resolve({ ok: true, folderPath: '/videos/one' });
+    await test.coordinator.whenIdle();
+  });
+
   it('drops leftover progress when a running job is interrupted', async () => {
     const test = harness({
       jobs: [job('a', 'running', { progress: { phase: 'downloading', downloadedBytes: 1, totalBytes: 2, percent: 50, speed: 1, eta: 1, updatedAt: 1 } })],

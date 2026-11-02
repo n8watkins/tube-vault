@@ -1,4 +1,5 @@
 import { NamingOptions } from './types';
+import { computePercent } from './job-progress';
 
 export type JobStatus = 'queued' | 'probing' | 'running' | 'cancelling' | 'done' | 'failed' | 'cancelled';
 
@@ -7,6 +8,9 @@ export interface JobProgress {
   phase: 'downloading' | 'processing';
   downloadedBytes: number;
   totalBytes: number | null;
+  // 0-100 for the whole job; it never goes down while the job runs (it holds
+  // when a larger real size turns up), null while the total is unknown.
+  percent: number | null;
   speed: number | null;   // bytes per second
   eta: number | null;     // seconds
   updatedAt: number;
@@ -109,10 +113,12 @@ export function sanitizeProgress(raw: unknown, now: number): JobProgress | null 
   const value = raw as Record<string, unknown>;
   const downloadedBytes = finiteOrNull(value.downloadedBytes);
   if (downloadedBytes === null) return null;
+  const percent = finiteOrNull(value.percent);
   return {
     phase: value.phase === 'processing' ? 'processing' : 'downloading',
     downloadedBytes,
     totalBytes: finiteOrNull(value.totalBytes),
+    percent: percent === null ? null : Math.min(100, Math.floor(percent)),
     speed: finiteOrNull(value.speed),
     eta: finiteOrNull(value.eta),
     updatedAt: now,
@@ -420,7 +426,7 @@ export class JobCoordinator {
     }
 
     const settings = this.effects.getSettings();
-    const progress = this.progressWriter(job.id);
+    const progress = this.progressWriter(job.id, job.estBytes);
     const response = await this.safeNative({
       action: 'custom',
       url: job.videoUrl,
@@ -466,15 +472,37 @@ export class JobCoordinator {
   }
 
   // Coalesces the helper's progress snapshots into rate-limited storage writes:
-  // at most one write in flight, always carrying the newest snapshot.
-  private progressWriter(jobId: string): { report: (raw: unknown) => void; stop: () => Promise<void> } {
+  // at most one write in flight, always carrying the newest snapshot. The stored
+  // percent only moves forward (the helper already holds it; this also covers a
+  // helper that sends none), so the bar pauses rather than dipping.
+  private progressWriter(jobId: string, estBytes?: number): { report: (raw: unknown) => void; stop: () => Promise<void> } {
+    let shownPercent: number | null = null;
     let latest: JobProgress | null = null;
     let lastWriteAt = Number.NEGATIVE_INFINITY;
     let lastPhase: JobProgress['phase'] | null = null;
     let writing: Promise<void> | null = null;
+    let trailing: ReturnType<typeof setTimeout> | null = null;
     let stopped = false;
 
+    const cancelTrailing = () => {
+      if (trailing) clearTimeout(trailing);
+      trailing = null;
+    };
+    // The newest snapshot held back by the rate limit is written once the
+    // interval is up, so the bar does not sit on an old value through a quiet
+    // spell (a stream finishing and the next one opening).
+    const scheduleTrailing = (delay: number) => {
+      if (trailing || stopped) return;
+      trailing = setTimeout(() => {
+        trailing = null;
+        if (stopped || !latest) return;
+        if (writing) scheduleTrailing(PROGRESS_WRITE_INTERVAL_MS);
+        else write(latest);
+      }, Math.max(0, Math.min(PROGRESS_WRITE_INTERVAL_MS, delay)));
+    };
+
     const write = (snapshot: JobProgress) => {
+      cancelTrailing();
       lastWriteAt = snapshot.updatedAt;
       lastPhase = snapshot.phase;
       latest = null;
@@ -485,7 +513,9 @@ export class JobCoordinator {
         return { changed: true, value: undefined, options: true };
       }).catch(() => undefined).then(() => {
         writing = null;
-        if (!stopped && latest && latest.phase !== lastPhase) write(latest);
+        if (stopped || !latest) return;
+        if (latest.phase !== lastPhase) write(latest);
+        else scheduleTrailing(PROGRESS_WRITE_INTERVAL_MS - (this.effects.now() - lastWriteAt));
       });
     };
 
@@ -494,12 +524,22 @@ export class JobCoordinator {
         if (stopped) return;
         const snapshot = sanitizeProgress(raw, this.effects.now());
         if (!snapshot) return;
+        if (snapshot.phase === 'processing') {
+          snapshot.percent = 100;
+        } else {
+          const percent = snapshot.percent ?? computePercent(snapshot, estBytes);
+          if (percent !== null) shownPercent = Math.max(shownPercent ?? 0, Math.min(99, percent));
+          snapshot.percent = shownPercent;
+        }
         latest = snapshot;
         if (writing) return;
-        if (snapshot.phase !== lastPhase || snapshot.updatedAt - lastWriteAt >= PROGRESS_WRITE_INTERVAL_MS) write(snapshot);
+        const wait = PROGRESS_WRITE_INTERVAL_MS - (snapshot.updatedAt - lastWriteAt);
+        if (snapshot.phase !== lastPhase || wait <= 0) write(snapshot);
+        else scheduleTrailing(wait);
       },
       stop: async () => {
         stopped = true;
+        cancelTrailing();
         while (writing) await writing;
       },
     };

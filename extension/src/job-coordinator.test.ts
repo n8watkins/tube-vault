@@ -125,7 +125,7 @@ describe('JobCoordinator', () => {
 
     report!({ phase: 'downloading', downloadedBytes: 500, totalBytes: 2000, speed: 250, eta: 6 });
     await vi.waitFor(() => expect(test.jobs[0].progress).toEqual({
-      phase: 'downloading', downloadedBytes: 500, totalBytes: 2000, speed: 250, eta: 6, updatedAt: 1_000_000,
+      phase: 'downloading', downloadedBytes: 500, totalBytes: 2000, percent: 25, speed: 250, eta: 6, updatedAt: 1_000_000,
     }));
 
     test.setNow(1_000_400);
@@ -139,7 +139,7 @@ describe('JobCoordinator', () => {
 
     test.setNow(1_001_200);
     report!({ phase: 'processing', downloadedBytes: 2000, totalBytes: 2000, speed: null, eta: null });
-    await vi.waitFor(() => expect(test.jobs[0].progress?.phase).toBe('processing'));
+    await vi.waitFor(() => expect(test.jobs[0].progress).toMatchObject({ phase: 'processing', percent: 100 }));
 
     report!({ downloadedBytes: 'garbage' });
     download.resolve({ ok: true, folderPath: '/videos/one' });
@@ -150,9 +150,73 @@ describe('JobCoordinator', () => {
     expect(test.jobs[0]).not.toHaveProperty('progress');
   });
 
+  it('writes the last held-back progress once the interval is up', async () => {
+    const download = deferred<NativeResponse>();
+    let report: ((progress: unknown) => void) | undefined;
+    const test = harness({
+      native: async (payload, onProgress) => {
+        if (payload.action !== 'custom') return { ok: true };
+        report = onProgress;
+        return download.promise;
+      },
+    });
+    await test.coordinator.enqueue({ items: [{ url: 'one', title: 'One', bytes: 1000 }] });
+    await vi.waitFor(() => expect(report).toBeTypeOf('function'));
+    report!({ phase: 'downloading', downloadedBytes: 100, totalBytes: 1000, speed: 1, eta: 1 });
+    await vi.waitFor(() => expect(test.jobs[0].progress?.downloadedBytes).toBe(100));
+    // The stream finishes inside the interval and nothing follows for a while.
+    test.setNow(1_000_900);
+    report!({ phase: 'downloading', downloadedBytes: 600, totalBytes: 1000, speed: null, eta: null });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(test.jobs[0].progress?.downloadedBytes).toBe(100);
+    await vi.waitFor(() => expect(test.jobs[0].progress).toMatchObject({ downloadedBytes: 600, percent: 60 }), { timeout: 1_000 });
+
+    download.resolve({ ok: true, folderPath: '/videos/one' });
+    await test.coordinator.whenIdle();
+    expect(test.jobs[0]).not.toHaveProperty('progress');
+  });
+
+  it('never stores a lower percent than it already showed, from the helper or from the bytes', async () => {
+    const download = deferred<NativeResponse>();
+    let report: ((progress: unknown) => void) | undefined;
+    const test = harness({
+      native: async (payload, onProgress) => {
+        if (payload.action !== 'custom') return { ok: true };
+        report = onProgress;
+        return download.promise;
+      },
+    });
+    await test.coordinator.enqueue({ items: [{ url: 'one', title: 'One', bytes: 1000 }] });
+    await vi.waitFor(() => expect(report).toBeTypeOf('function'));
+    const stored = async (now: number, progress: Record<string, unknown>) => {
+      test.setNow(now);
+      report!(progress);
+      await vi.waitFor(() => expect(test.jobs[0].progress?.updatedAt).toBe(now));
+      return test.jobs[0].progress;
+    };
+
+    // A helper without a percent: the bytes against the queued estimate give 66%.
+    expect(await stored(1_001_000, { phase: 'downloading', downloadedBytes: 660, totalBytes: null, speed: 1, eta: 1 }))
+      .toMatchObject({ percent: 66 });
+    // The real size turns out larger (65%): the bar holds while the bytes update.
+    expect(await stored(1_002_000, { phase: 'downloading', downloadedBytes: 670, totalBytes: 1030, speed: 1, eta: 1 }))
+      .toMatchObject({ percent: 66, downloadedBytes: 670, totalBytes: 1030 });
+    // A helper percent below the one shown is held too, and one above it moves on.
+    expect(await stored(1_003_000, { phase: 'downloading', downloadedBytes: 680, totalBytes: 1030, percent: 50, speed: 1, eta: 1 }))
+      .toMatchObject({ percent: 66 });
+    expect(await stored(1_004_000, { phase: 'downloading', downloadedBytes: 700, totalBytes: 1030, percent: 67.9, speed: 1, eta: 1 }))
+      .toMatchObject({ percent: 67 });
+    // The merge shows 100%.
+    expect(await stored(1_005_000, { phase: 'processing', downloadedBytes: 1030, totalBytes: 1030, percent: 100, speed: null, eta: null }))
+      .toMatchObject({ phase: 'processing', percent: 100 });
+
+    download.resolve({ ok: true, folderPath: '/videos/one' });
+    await test.coordinator.whenIdle();
+  });
+
   it('drops leftover progress when a running job is interrupted', async () => {
     const test = harness({
-      jobs: [job('a', 'running', { progress: { phase: 'downloading', downloadedBytes: 1, totalBytes: 2, speed: 1, eta: 1, updatedAt: 1 } })],
+      jobs: [job('a', 'running', { progress: { phase: 'downloading', downloadedBytes: 1, totalBytes: 2, percent: 50, speed: 1, eta: 1, updatedAt: 1 } })],
     });
     await test.coordinator.initialize();
     await test.coordinator.whenIdle();

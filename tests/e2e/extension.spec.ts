@@ -190,6 +190,15 @@ test('popup and Downloads page show live progress for a running download', async
   await test.expect(popup.getByText('42% · 120 / 285 MB · 4.2 MB/s · 39s left')).toBeVisible();
   await test.expect(popup.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '42');
 
+  // The real size turned out larger: the bytes read 65%, but the bar holds the 66% it showed.
+  await options.evaluate((jobs) => chrome.storage.local.set({ tvJobs: jobs }), [{
+    ...job,
+    progress: { ...job.progress, downloadedBytes: 67e6, totalBytes: 103e6, percent: 66 },
+  }]);
+  await test.expect(popup.getByText('66% · 67 / 103 MB · 4.2 MB/s · 39s left')).toBeVisible();
+  await test.expect(popup.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '66');
+  await test.expect(options.getByText('66% · 67 / 103 MB · 4.2 MB/s · 39s left')).toBeVisible();
+
   await options.evaluate((jobs) => chrome.storage.local.set({ tvJobs: jobs }), [{
     ...job,
     progress: { ...job.progress, phase: 'processing', downloadedBytes: 285e6, speed: null, eta: null },

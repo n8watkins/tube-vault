@@ -34,13 +34,27 @@ export interface ProgressView {
   detail: string;         // e.g. "42% · 120 / 285 MB · 4.2 MB/s · 0:39 left"
 }
 
+function totalOf(progress: Pick<JobProgress, 'totalBytes'>, estBytes?: number): number | null {
+  if (progress.totalBytes && progress.totalBytes > 0) return progress.totalBytes;
+  return estBytes && estBytes > 0 ? estBytes : null;
+}
+
+// The percent the bytes alone give (99 at most until the helper finishes), for a
+// snapshot that carries no percent of its own.
+export function computePercent(progress: Pick<JobProgress, 'downloadedBytes' | 'totalBytes'>, estBytes?: number): number | null {
+  const total = totalOf(progress, estBytes);
+  return total ? Math.min(99, Math.floor((progress.downloadedBytes / total) * 100)) : null;
+}
+
 export function describeProgress(progress: JobProgress | undefined, estBytes?: number): ProgressView | null {
   if (!progress) return null;
   if (progress.phase === 'processing') {
     return { percent: 100, detail: 'Finishing up…' };
   }
-  const total = progress.totalBytes && progress.totalBytes > 0 ? progress.totalBytes : estBytes && estBytes > 0 ? estBytes : null;
-  const percent = total ? Math.min(99, Math.floor((progress.downloadedBytes / total) * 100)) : null;
+  const total = totalOf(progress, estBytes);
+  // The stored percent never goes down; the byte counts next to it stay exact,
+  // so they can briefly read lower than the percent while it holds.
+  const percent = typeof progress.percent === 'number' ? Math.min(99, progress.percent) : computePercent(progress, estBytes);
   const parts: string[] = [];
   if (percent !== null && total) {
     parts.push(`${percent}%`, formatBytePair(progress.downloadedBytes, total));

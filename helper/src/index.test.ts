@@ -188,8 +188,9 @@ test('native cancellation rejects a symlinked registry directory', async () => {
 });
 
 // A stand-in yt-dlp: writes the media file named by the first `-o` template,
-// prints the capture line, and (only when asked for progress templates) emits
-// progress ticks on stdout and a post-processing tick on stderr like the real one.
+// prints the capture line, and (only when asked for progress templates) prints a
+// plan of a merged download's two streams, downloads the video stream and then the
+// audio stream, and reports the merge on stderr like the real one.
 function writeFakeYtDlp(directory: string): void {
   const script = `#!${process.execPath}
 const fs = require('fs');
@@ -198,10 +199,15 @@ const args = process.argv.slice(2);
 const output = args[args.indexOf('-o') + 1].replace('%(title)s', 'Fake title').replace('%(ext)s', 'mp4');
 fs.mkdirSync(path.dirname(output), { recursive: true });
 fs.writeFileSync(output, 'x'.repeat(1000));
-const tick = (done, status) => '[tube-vault-progress]\\tdownload\\t18\\t' + status + '\\t' + done + '\\t1000\\tNA\\t500\\t1\\n';
+const tick = (part, done, total, status) => '[tube-vault-progress]\\tdownload\\t' + part + '\\t' + status + '\\t' + done + '\\t' + total + '\\tNA\\t500\\t1\\n';
 if (args.includes('--progress-template')) {
-  process.stdout.write(tick(250, 'downloading'));
-  process.stdout.write(tick(1000, 'finished'));
+  if (args.some((arg) => arg.startsWith('video:[tube-vault-progress]'))) {
+    process.stdout.write('[tube-vault-progress]\\tplan\\t137+140\\t["137", "140"]\\t[600, 400]\\t[600, 400]\\tNA\\t1000\\n');
+  }
+  process.stdout.write(tick(137, 300, 600, 'downloading'));
+  process.stdout.write(tick(137, 600, 600, 'finished'));
+  process.stdout.write(tick(140, 200, 400, 'downloading'));
+  process.stdout.write(tick(140, 400, 400, 'finished'));
   process.stderr.write('[tube-vault-progress]\\tpostprocess\\tMerger\\tstarted\\n');
 }
 process.stdout.write(output + '\\tFake title\\tUploader\\t20200101\\t1\\t19\\tfakeid\\n');
@@ -251,9 +257,10 @@ test('custom downloads stream progress before the result only when the caller as
   assert.deepEqual(progress[0], {
     type: 'progress',
     jobId: request.jobId,
-    progress: { phase: 'downloading', downloadedBytes: 250, totalBytes: 2000, speed: 500, eta: 4 },
+    // The plan's two streams are the total, not the probe's larger estimate.
+    progress: { phase: 'downloading', downloadedBytes: 300, totalBytes: 1000, percent: 30, speed: 500, eta: 1 },
   });
-  assert.equal((progress.at(-1)?.progress as { phase: string }).phase, 'processing');
+  assert.deepEqual(progress.at(-1)?.progress, { phase: 'processing', downloadedBytes: 1000, totalBytes: 1000, percent: 100, speed: null, eta: null });
   const result = streamed.at(-1)!;
   assert.equal(result.type, undefined);
   assert.equal(result.ok, true);

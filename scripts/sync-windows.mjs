@@ -43,6 +43,32 @@ export const SYNC_FILES = [
   'helper/package-lock.json',
 ];
 
+// Every file that carries the release version: package.json plus the
+// `versionFiles` that release-kit bumps (.release.json). The sync publishes
+// extension/manifest.json and helper/package.json, which Chrome and the helper
+// report as their versions, so it refuses a tree whose versions disagree.
+export async function releaseVersions(root = repoRoot) {
+  const config = await readJson(join(root, '.release.json'), 'Release configuration');
+  const files = ['package.json', ...(Array.isArray(config.versionFiles) ? config.versionFiles : [])];
+  const versions = {};
+  for (const relativePath of files) {
+    const data = await readJson(join(root, relativePath), `Version file ${relativePath}`);
+    versions[relativePath] = data.version;
+    if (basename(relativePath) === 'package-lock.json') versions[`${relativePath} (root package)`] = data.packages?.['']?.version;
+  }
+  return versions;
+}
+
+export async function assertReleaseVersions(root = repoRoot) {
+  const versions = await releaseVersions(root);
+  const expected = versions['package.json'];
+  const wrong = Object.entries(versions).filter(([, version]) => version !== expected);
+  if (wrong.length) {
+    throw new Error(`Version files disagree with package.json ${expected}: ${wrong.map(([file, version]) => `${file} has ${version}`).join(', ')}. Release with npm run release, which bumps them all.`);
+  }
+  return expected;
+}
+
 export function targetArgument(argv) {
   const index = argv.indexOf('--target');
   if (index === -1) return undefined;
@@ -826,6 +852,7 @@ export async function validateTarget(requestedTarget) {
 }
 
 export async function main(argv = process.argv.slice(2), environment = process.env, operations = {}) {
+  const version = await assertReleaseVersions();
   const target = await validateTarget(targetArgument(argv) ?? environment.TUBE_VAULT_WINDOWS_REPO);
   await withMutationRoot(target, async () => {
     await validateTarget(target);
@@ -834,6 +861,7 @@ export async function main(argv = process.argv.slice(2), environment = process.e
     for (const relativePath of SYNC_FILES) {
       console.log(`Copied ${relativePath}`);
     }
+    console.log(`Synced TubeVault v${version}`);
   });
 }
 

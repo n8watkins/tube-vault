@@ -4,7 +4,7 @@ import { hostname, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
-import { SYNC_FILES, main, readProcessIdentity, recoverSyncTransactions, syncArtifacts, targetArgument, validateTarget } from './sync-windows.mjs';
+import { SYNC_FILES, assertReleaseVersions, main, readProcessIdentity, recoverSyncTransactions, releaseVersions, syncArtifacts, targetArgument, validateTarget } from './sync-windows.mjs';
 
 function transactionJournal(transaction, entries, state = 'pending') {
   return JSON.stringify({
@@ -661,5 +661,31 @@ test('publishes every helper module the helper build emits', async () => {
   const modules = sources.filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts'));
   for (const name of modules) {
     assert.ok(SYNC_FILES.includes(`helper/dist/${name.replace(/\.ts$/, '.js')}`), `${name} is missing from SYNC_FILES`);
+  }
+});
+
+test('publishes the version files Chrome and the helper report, and release-kit bumps them', async () => {
+  const config = JSON.parse(await readFile(new URL('../.release.json', import.meta.url), 'utf8'));
+  for (const relativePath of ['extension/manifest.json', 'helper/package.json']) {
+    assert.ok(SYNC_FILES.includes(relativePath), `${relativePath} is missing from SYNC_FILES`);
+    assert.ok(config.versionFiles.includes(relativePath), `${relativePath} is missing from .release.json versionFiles`);
+  }
+  const versions = await releaseVersions();
+  assert.equal(new Set(Object.values(versions)).size, 1, `version files disagree: ${JSON.stringify(versions)}`);
+});
+
+test('refuses to sync a tree whose version files disagree', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'tube-vault-sync-versions-test-'));
+  try {
+    await mkdir(join(root, 'helper'));
+    await writeFile(join(root, '.release.json'), JSON.stringify({ versionFiles: ['helper/package.json', 'helper/package-lock.json'] }));
+    await writeFile(join(root, 'package.json'), JSON.stringify({ version: '1.2.3' }));
+    await writeFile(join(root, 'helper/package.json'), JSON.stringify({ version: '1.2.3' }));
+    await writeFile(join(root, 'helper/package-lock.json'), JSON.stringify({ version: '1.2.3', packages: { '': { version: '1.2.3' } } }));
+    assert.equal(await assertReleaseVersions(root), '1.2.3');
+    await writeFile(join(root, 'helper/package-lock.json'), JSON.stringify({ version: '1.2.3', packages: { '': { version: '0.1.0' } } }));
+    await assert.rejects(assertReleaseVersions(root), /helper\/package-lock\.json \(root package\) has 0\.1\.0/);
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

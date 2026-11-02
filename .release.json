@@ -2,7 +2,15 @@
   "versionFiles": [
     "extension/manifest.json",
     "extension/package.json",
-    "extension/package-lock.json"
+    "extension/package-lock.json",
+    "helper/package.json",
+    "helper/package-lock.json"
   ],
+  "branches": [
+    "master",
+    "review/tube-vault-v0.3.81"
+  ],
+  "node": "24",
+  "timeZone": "America/Los_Angeles",
   "workflows": "package"
 }

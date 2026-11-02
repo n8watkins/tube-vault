@@ -1,6 +1,6 @@
 {
   "name": "tube-vault",
-  "version": "0.3.106",
+  "version": "0.3.107",
   "private": true,
   "scripts": {
     "build": "npm run build --prefix extension && npm run build --prefix helper",

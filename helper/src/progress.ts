@@ -229,9 +229,12 @@ export class ProgressTracker {
         updatedAt: now,
       });
       this.lastDownloadAt = now;
-    } else if (event.status === 'started' || event.status === 'processing') {
+    } else if ((event.status === 'started' || event.status === 'processing') && this.downloadsDone()) {
       this.lastPostprocessAt = now;
     } else {
+      // Post-processors yt-dlp runs before the media download (SponsorBlock's
+      // segment fetch, the thumbnail convert) report "started" too: they are not
+      // the job finishing up, so they change nothing.
       return;
     }
 
@@ -266,6 +269,21 @@ export class ProgressTracker {
   stop(): void {
     if (this.trailing) clearTimeout(this.trailing);
     this.trailing = null;
+  }
+
+  // Whether every media run has downloaded every stream it is fetching: it has
+  // printed a plan or sent ticks, and each planned stream (or, without a plan,
+  // each started one) has finished. Only then is a post-processor the job
+  // finishing up. Runs without media (thumbnail, metadata, subtitles only) have
+  // nothing to wait for, so their post-processors always count.
+  private downloadsDone(): boolean {
+    return this.runs.every((run) => {
+      if (!run.plans) return true;
+      const segment = run.segments.at(-1);
+      if (!segment) return false;
+      if (segment.planned.length) return segment.planned.every((stream) => segment.parts.get(stream.part)?.finished);
+      return segment.parts.size > 0 && [...segment.parts.values()].every((part) => part.finished);
+    });
   }
 
   // The job's total: every planned and every started stream. `complete` when there
@@ -329,7 +347,8 @@ export class ProgressTracker {
     const eta = totalBytes !== null && currentSpeed !== null
       ? Math.max(0, Math.round((totalBytes - downloadedBytes) / currentSpeed))
       : maxEta;
-    const processing = this.lastPostprocessAt > 0 && this.lastPostprocessAt >= this.lastDownloadAt && !downloading;
+    const processing = this.lastPostprocessAt > 0 && this.lastPostprocessAt >= this.lastDownloadAt && !downloading
+      && this.downloadsDone();
 
     // The percent only moves forward: when a stream turns out bigger than its
     // estimate, it holds until the bytes catch up instead of dipping. Processing

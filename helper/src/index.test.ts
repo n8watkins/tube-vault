@@ -190,7 +190,9 @@ test('native cancellation rejects a symlinked registry directory', async () => {
 // A stand-in yt-dlp: writes the media file named by the first `-o` template,
 // prints the capture line, and (only when asked for progress templates) prints a
 // plan of a merged download's two streams, downloads the video stream and then the
-// audio stream, and reports the merge on stderr like the real one.
+// audio stream, and reports the merge on stderr like the real one. Like the real
+// one, it reports the post-processors that run before the download: SponsorBlock
+// before the plan and the thumbnail convert after it.
 function writeFakeYtDlp(directory: string): void {
   const script = `#!${process.execPath}
 const fs = require('fs');
@@ -200,15 +202,22 @@ const output = args[args.indexOf('-o') + 1].replace('%(title)s', 'Fake title').r
 fs.mkdirSync(path.dirname(output), { recursive: true });
 fs.writeFileSync(output, 'x'.repeat(1000));
 const tick = (part, done, total, status) => '[tube-vault-progress]\\tdownload\\t' + part + '\\t' + status + '\\t' + done + '\\t' + total + '\\tNA\\t500\\t1\\n';
+// Post-processing ticks go to stderr and the rest to stdout, two pipes the helper
+// reads independently; the real yt-dlp spends time between them (fetching,
+// downloading, running ffmpeg), so the stand-in pauses at each switch too.
+const pause = () => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 40);
+const postprocess = (name, status) => { pause(); process.stderr.write('[tube-vault-progress]\\tpostprocess\\t' + name + '\\t' + status + '\\n'); pause(); };
 if (args.includes('--progress-template')) {
+  if (args.includes('--sponsorblock-mark')) { postprocess('SponsorBlock', 'started'); postprocess('SponsorBlock', 'finished'); }
   if (args.some((arg) => arg.startsWith('video:[tube-vault-progress]'))) {
     process.stdout.write('[tube-vault-progress]\\tplan\\t137+140\\t["137", "140"]\\t[600, 400]\\t[600, 400]\\tNA\\t1000\\n');
   }
+  if (args.includes('--convert-thumbnails')) { postprocess('ThumbnailsConvertor', 'started'); postprocess('ThumbnailsConvertor', 'finished'); }
   process.stdout.write(tick(137, 300, 600, 'downloading'));
   process.stdout.write(tick(137, 600, 600, 'finished'));
   process.stdout.write(tick(140, 200, 400, 'downloading'));
   process.stdout.write(tick(140, 400, 400, 'finished'));
-  process.stderr.write('[tube-vault-progress]\\tpostprocess\\tMerger\\tstarted\\n');
+  postprocess('Merger', 'started');
 }
 process.stdout.write(output + '\\tFake title\\tUploader\\t20200101\\t1\\t19\\tfakeid\\n');
 `;
@@ -269,4 +278,34 @@ test('custom downloads stream progress before the result only when the caller as
   const oneShot = await nativeConversation({ ...request, jobId: `oneshot-${process.pid}` }, binDirectory);
   assert.equal(oneShot.length, 1);
   assert.equal(oneShot[0].ok, true);
+});
+
+test('a download with SponsorBlock and a thumbnail starts at downloading, not at finishing up', async () => {
+  const binDirectory = fs.mkdtempSync(path.join(testRoot, 'bin-'));
+  const outputRoot = fs.mkdtempSync(path.join(testRoot, 'out-'));
+  writeFakeYtDlp(binDirectory);
+  const streamed = await nativeConversation({
+    action: 'custom',
+    url: 'https://www.youtube.com/watch?v=jNQXAC9IVRw',
+    components: { video: { quality: 'best', format: 'mp4' }, thumbnail: true },
+    jobId: `preprocess-${process.pid}`,
+    expectedBytes: 2000,
+    progress: true,
+    options: {
+      outputRoot,
+      sponsorblock: 'mark',
+      naming: { titleFiles: true, summaryTxt: false, categoryFolders: false, numbering: false, includeId: true },
+    },
+  }, binDirectory);
+  const progress = streamed
+    .filter((message) => message.type === 'progress')
+    .map((message) => message.progress as { phase: string; percent: number | null });
+  assert.ok(progress.length >= 2, `expected progress ticks, got ${JSON.stringify(streamed)}`);
+  assert.equal(progress[0].phase, 'downloading', `the first tick is the download, got ${JSON.stringify(progress)}`);
+  const firstProcessing = progress.findIndex((tick) => tick.phase === 'processing');
+  assert.equal(firstProcessing, progress.length - 1, `finishing up comes last and once, got ${JSON.stringify(progress)}`);
+  for (let index = 1; index < progress.length; index += 1) {
+    assert.ok((progress[index].percent ?? 0) >= (progress[index - 1].percent ?? 0), `the percent never goes back: ${JSON.stringify(progress)}`);
+  }
+  assert.equal(streamed.at(-1)?.ok, true);
 });

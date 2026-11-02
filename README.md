@@ -28,7 +28,7 @@ They remain deliberate backlog items because both require additional privacy, lo
 extension/          Chrome MV3 extension, React UI, service worker, and content script
 helper/             Node.js native messaging helper that calls yt-dlp and ffmpeg
 native-messaging/   Native messaging host manifest template
-scripts/            Build deployment, release, registration, and launcher scripts
+scripts/            Windows sync, registration, launcher, and screenshot scripts
 tests/e2e/          Playwright Chromium smoke tests
 SETUP.md            Installation and troubleshooting guide
 ```
@@ -38,10 +38,10 @@ SETUP.md            Installation and troubleshooting guide
 Install all three dependency sets from the repository root:
 
 ```bash
-npm ci
-npm ci --prefix extension
-npm ci --prefix helper
+npm run install:all   # npm ci at the root, in extension/ and in helper/
 ```
+
+The root `.npmrc` sets `allow-git=root`, because npm 12 refuses git dependencies by default and release-kit is one.
 
 Build both packages:
 
@@ -63,8 +63,7 @@ npm run typecheck   # Type-check both packages
 npm run lint        # Lint source, tests, and build scripts
 npm test            # Run script, extension, and helper unit tests
 npm run test:e2e    # Build and run unpacked-extension Chromium smoke tests
-npm run changelog   # Regenerate CHANGELOG.md from release commits
-npm run check       # Lint, type-check, unit test, check the changelog, and build
+npm run check       # Lint, type-check, unit test, and build
 ```
 
 Install the bundled Playwright browser before the first local E2E run:
@@ -114,18 +113,32 @@ Files outside the allowlist are never deleted.
 
 Reload the unpacked extension at `chrome://extensions` after syncing.
 
-## Patch Release
+## Releases
 
-Create a local patch release commit with:
+TubeVault releases with [release-kit](https://github.com/n8watkins/release-kit), like the owner's other repositories.
+[RELEASING.md](RELEASING.md) is the full standard; this section covers what is specific to TubeVault.
+
+- Every commit is a Conventional Commit, checked by the `commit-msg` hook and the Commit messages workflow.
+  `feat`, `fix`, `perf` and `security` subjects become the release notes, so write them for users; add `Release-note: skip` to the body of one no user would notice.
+- Pull requests are squash-merged with the PR title as the subject, so the commit ends in `(#N)`; release-kit links that to the pull request in the notes.
+  Nothing has to happen after a merge: there is no changelog to regenerate and no release PR.
+- Releases are cut from `review/tube-vault-v0.3.81`, the branch Chrome runs, or from `master` (`.release.json` `branches`).
+  There is no release train, because it only runs on `main` or `master`.
+- `npm run release` bumps every version file together: `package.json` and its lock, `extension/package.json` and its lock, `extension/manifest.json`, and `helper/package.json` and its lock (`.release.json` `versionFiles`).
+  It prepends the release's section to `CHANGELOG.md`, commits `chore(release): vX.Y.Z` and tags it.
+
+Cut a release from an up-to-date checkout of the release branch:
 
 ```bash
-npm run release:patch
+npm run release -- --dry-run          # preview the version and the notes
+npm run release -- patch --push       # check, bump, changelog, commit, tag, push
+npm run sync:windows -- --target /mnt/c/Users/natha/Projects/Tools/tube-vault
 ```
 
-The release command requires clean tracked and staged files, while unrelated untracked files are allowed.
-It verifies matching package, manifest, and lockfile versions, runs the full check, increments all four version records across those three files, regenerates `CHANGELOG.md`, rebuilds, stages the release files, and commits `build(tube-vault): vX.Y.Z`.
-If changelog generation, rebuilding, staging, or committing fails after the version change, the command restores the original release files and Git index.
-It does not sync to Windows or push.
+With `--push`, release-kit first runs `npm run release:check` (it installs the extension and helper dependencies, then lints, type-checks, tests and builds), and pushes the branch and the tag together.
+The tag runs the Release workflow, which checks the tag against every version file, runs the same checks and publishes the GitHub Release with the notes.
+The sync refuses to publish a tree whose version files disagree, then builds and copies the bundles, `extension/manifest.json` and the helper package files, so Chrome and the helper report the released version.
+Reload the unpacked extension at `chrome://extensions` afterwards.
 
 ## Options Page
 
@@ -177,6 +190,6 @@ YouTube and `yt-dlp` still operate under their own network behavior and terms.
 
 ## Changelog
 
-See [CHANGELOG.md](CHANGELOG.md).
-The changelog is generated from Git release boundaries and conventional commit subjects with `npm run changelog`.
-Use `npm run changelog:check` to verify that the committed file is current.
+See [CHANGELOG.md](CHANGELOG.md) and the repository's GitHub Releases.
+From v0.3.108 on, `npm run release` writes each section from the Conventional Commits since the previous tag; the sections below it were written by the generator TubeVault used before release-kit.
+Never edit the file by hand.

@@ -6,7 +6,7 @@ Chrome MV3 extension plus a local native messaging helper for archiving YouTube 
 
 - `extension/` contains the React and TypeScript Chrome extension bundled with esbuild.
 - `helper/` contains the Node.js native messaging host that launches `yt-dlp` and `ffmpeg`.
-- `scripts/` contains explicit deployment, release, registration, and launcher scripts.
+- `scripts/` contains the Windows sync, registration, launcher, and screenshot scripts.
 - `tests/e2e/` contains Playwright smoke tests for the unpacked extension.
 
 This directory is its own Git repository.
@@ -17,9 +17,7 @@ Do not create or use a parent repository.
 Install each lockfile from the repository root:
 
 ```bash
-npm ci
-npm ci --prefix extension
-npm ci --prefix helper
+npm run install:all
 ```
 
 ## Build and Verification
@@ -31,7 +29,6 @@ npm run build
 npm run typecheck
 npm run lint
 npm test
-npm run changelog:check
 npm run check
 ```
 
@@ -64,16 +61,19 @@ The target must be the absolute root of an existing Git repository with TubeVaul
 See [README.md](README.md) for the sync publication and allowlist guarantees.
 Reload the unpacked extension at `chrome://extensions` after syncing.
 
-## Patch Release
+## Releases
 
-Create a checked local patch release with:
+TubeVault releases with release-kit; see the Releases section of [README.md](README.md) and [RELEASING.md](RELEASING.md).
 
 ```bash
-npm run release:patch
+npm run release -- --dry-run
+npm run release -- patch --push
+npm run sync:windows -- --target /mnt/c/Users/natha/Projects/Tools/tube-vault
 ```
 
-See [README.md](README.md) for the release validation, rollback, commit, and publication contract.
-The release command regenerates and stages `CHANGELOG.md`; never edit that generated file manually.
+Releases are cut from `review/tube-vault-v0.3.81` (the branch Chrome runs) or `master`.
+`npm run release` bumps every version file, prepends the `CHANGELOG.md` section, commits `chore(release): vX.Y.Z` and tags it; never edit `CHANGELOG.md` or a version by hand.
+Squash-merge pull requests with the PR title as the subject; the `(#N)` GitHub adds is expected and links to the PR in the notes.
 
 ## Key Files
 

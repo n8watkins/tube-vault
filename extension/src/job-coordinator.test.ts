@@ -34,7 +34,7 @@ function job(id: string, status: Job['status'], extra: Partial<Job> = {}): Job {
 function harness(options: {
   jobs?: Job[];
   settings?: Partial<CoordinatorSettings>;
-  native?: (payload: Record<string, unknown>) => Promise<NativeResponse | null>;
+  native?: (payload: Record<string, unknown>, onProgress?: (progress: unknown) => void) => Promise<NativeResponse | null>;
   values?: Record<string, unknown>;
   beforeGetValues?: () => Promise<void>;
   beforeSetValues?: (values: Record<string, unknown>) => Promise<void>;
@@ -79,9 +79,9 @@ function harness(options: {
         Object.assign(values, next);
       },
     },
-    sendNative: async (payload) => {
+    sendNative: async (payload, onProgress) => {
       calls.push(payload);
-      if (options.native) return options.native(payload);
+      if (options.native) return options.native(payload, onProgress);
       if (payload.action === 'probe') return { ok: true, bytes: 25, title: 'Probed title' };
       if (payload.action === 'cancel') return { ok: true, status: 'cancelled' };
       return { ok: true, folderPath: '/videos/item' };
@@ -109,6 +109,57 @@ function harness(options: {
 }
 
 describe('JobCoordinator', () => {
+  it('streams rate-limited download progress into the running job and clears it when done', async () => {
+    const download = deferred<NativeResponse>();
+    let report: ((progress: unknown) => void) | undefined;
+    const test = harness({
+      native: async (payload, onProgress) => {
+        if (payload.action !== 'custom') return { ok: true };
+        report = onProgress;
+        return download.promise;
+      },
+    });
+    await test.coordinator.enqueue({ items: [{ url: 'one', title: 'One', bytes: 2000 }] });
+    await vi.waitFor(() => expect(report).toBeTypeOf('function'));
+    expect(test.calls).toContainEqual(expect.objectContaining({ action: 'custom', expectedBytes: 2000 }));
+
+    report!({ phase: 'downloading', downloadedBytes: 500, totalBytes: 2000, speed: 250, eta: 6 });
+    await vi.waitFor(() => expect(test.jobs[0].progress).toEqual({
+      phase: 'downloading', downloadedBytes: 500, totalBytes: 2000, speed: 250, eta: 6, updatedAt: 1_000_000,
+    }));
+
+    test.setNow(1_000_400);
+    report!({ phase: 'downloading', downloadedBytes: 600, totalBytes: 2000, speed: 250, eta: 6 });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(test.jobs[0].progress?.downloadedBytes).toBe(500);
+
+    test.setNow(1_001_100);
+    report!({ phase: 'downloading', downloadedBytes: 1500, totalBytes: 2000, speed: 'fast', eta: -1 });
+    await vi.waitFor(() => expect(test.jobs[0].progress).toMatchObject({ downloadedBytes: 1500, speed: null, eta: null }));
+
+    test.setNow(1_001_200);
+    report!({ phase: 'processing', downloadedBytes: 2000, totalBytes: 2000, speed: null, eta: null });
+    await vi.waitFor(() => expect(test.jobs[0].progress?.phase).toBe('processing'));
+
+    report!({ downloadedBytes: 'garbage' });
+    download.resolve({ ok: true, folderPath: '/videos/one' });
+    await test.coordinator.whenIdle();
+    report!({ phase: 'downloading', downloadedBytes: 1, totalBytes: 2000, speed: 1, eta: 1 });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(test.jobs[0].status).toBe('done');
+    expect(test.jobs[0]).not.toHaveProperty('progress');
+  });
+
+  it('drops leftover progress when a running job is interrupted', async () => {
+    const test = harness({
+      jobs: [job('a', 'running', { progress: { phase: 'downloading', downloadedBytes: 1, totalBytes: 2, speed: 1, eta: 1, updatedAt: 1 } })],
+    });
+    await test.coordinator.initialize();
+    await test.coordinator.whenIdle();
+    expect(test.jobs[0]).toMatchObject({ status: 'failed', error: 'Interrupted' });
+    expect(test.jobs[0]).not.toHaveProperty('progress');
+  });
+
   it('enqueues a single job with a stable label and no batch numbering', async () => {
     const download = deferred<NativeResponse>();
     const test = harness({ native: async (payload) => payload.action === 'custom' ? download.promise : { ok: true, bytes: 10 } });

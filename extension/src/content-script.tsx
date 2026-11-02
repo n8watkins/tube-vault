@@ -1,6 +1,8 @@
 // Injected into all youtube.com pages.
-// - Watch/Live pages: button in the video action row (replaces download button).
-// - Shorts pages:     button at top of reel-action-bar-view-model, above like button.
+// - Watch/Live pages: button in the video action row (YouTube's own Download
+//                     button is hidden with CSS, never removed).
+// - Shorts pages:     button in its own container just above YouTube's
+//                     reel-action-bar-view-model (a sibling, never inside it).
 // - Playlist pages:   "Archive Playlist" button after shuffle button.
 //   Works on both standalone /playlist pages and /watch?list= pages (sidebar panel).
 
@@ -13,7 +15,6 @@ const PLAYLIST_BTN_ID = 'tube-vault-playlist-btn';
 const CHANNEL_BTN_ID = 'tube-vault-channel-btn';
 
 let currentUrl = location.href;
-let videoInjected = false;
 let playlistInjected = false;
 let channelInjected = false;
 
@@ -29,11 +30,42 @@ let channelTimerId: ReturnType<typeof setTimeout> | null = null;
 // (e.g. Home → Videos, including our own Popular-sort click) doesn't tear it down.
 let channelKey: string | null = null;
 
-// Shorts-specific observers — kept alive across scroll navigation
-let shortsIo: IntersectionObserver | null = null;
-let shortsMo: MutationObserver | null = null;
+// Quiet by default. Turn on with `localStorage.tubeVaultDebug = '1'` in the
+// YouTube tab's console (content scripts share the page's localStorage), then reload.
+const DEBUG = (() => {
+  try { return localStorage.getItem('tubeVaultDebug') === '1'; } catch { return false; }
+})();
+function debug(...args: unknown[]): void {
+  if (DEBUG) console.log('[TubeVault]', ...args);
+}
+
+// One stylesheet for the rules that let us leave YouTube's own nodes alone.
+const STYLE_ID = 'tube-vault-style';
+const STYLE_RULES = `
+/* Shorts: our container sits just before the action bar inside its flex-row
+   wrapper; stack the two so the button lands above the like button. */
+div:has(> #${BUTTON_ID}[data-tv-shorts]) {
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: flex-end !important;
+}
+/* Watch: TubeVault takes the place of YouTube's own Download button in the row. */
+#${BUTTON_ID} ~ ytd-download-button-renderer { display: none !important; }
+`;
+
+function ensureStyle(): void {
+  if (document.getElementById(STYLE_ID)) return;
+  const style = document.createElement('style');
+  style.id = STYLE_ID;
+  style.textContent = STYLE_RULES;
+  (document.head ?? document.documentElement).appendChild(style);
+}
 
 // ── Page detection ────────────────────────────────────────────────────────────
+
+function isShortsPage() {
+  return location.pathname.startsWith('/shorts/');
+}
 
 function isWatchPage() {
   return (
@@ -158,101 +190,77 @@ function getWatchActionRow(): Element | null {
   return null;
 }
 
-// ── Shorts observer (handles re-injection on every scroll) ────────────────────
+// ── Shorts ────────────────────────────────────────────────────────────────────
+// YouTube keeps one reel renderer (and one action bar) and swaps its data as you
+// scroll between Shorts. Our button lives in its own container placed just
+// before that bar, is created once, and stays mounted from Short to Short; it
+// reads the current URL only when clicked. If YouTube ever swaps in a new bar,
+// the same container (and React root) is moved next to it.
 
-function mountShortsButton(actionBar: Element): void {
-  if (actionBar.querySelector(`#${BUTTON_ID}`)) return;
+// Kept even while YouTube has it detached, so a re-placement reuses the mounted root.
+let shortsContainer: HTMLElement | null = null;
 
-  document.getElementById(BUTTON_ID)?.remove();
-  videoRoot?.unmount();
-  videoRoot = null;
+function shortsButtonPlaced(): boolean {
+  if (!shortsContainer?.isConnected) return false;
+  const bar = shortsContainer.nextElementSibling;
+  return !!bar && bar.tagName.toLowerCase() === 'reel-action-bar-view-model' && isVisibleElement(bar);
+}
 
-  const container = makeContainer(BUTTON_ID);
-  container.style.marginBottom = '16px';
+function placeShortsButton(): boolean {
+  if (shortsButtonPlaced()) return true;
+  const actionBar = getVisibleReelActionBar();
+  if (!actionBar?.parentElement) return false;
 
-  if (actionBar.firstElementChild) {
-    actionBar.insertBefore(container, actionBar.firstElementChild);
-  } else {
-    actionBar.appendChild(container);
+  if (!shortsContainer) {
+    removeVideoButton();
+    shortsContainer = makeContainer(BUTTON_ID);
+    shortsContainer.dataset.tvShorts = '';
+    shortsContainer.style.marginBottom = '16px';
+    videoRoot = createRoot(shortsContainer);
+    videoRoot.render(<ArchiveButton getUrl={getVideoUrl} playlist={false} compact />);
   }
-  videoRoot = createRoot(container);
-  videoRoot.render(<ArchiveButton getUrl={getVideoUrl} playlist={false} compact />);
-  videoInjected = true;
-}
-
-function startShortsObservers(): void {
-  if (shortsIo) return;
-
-  shortsIo = new IntersectionObserver((entries) => {
-    for (const entry of entries) {
-      if (entry.isIntersecting) mountShortsButton(entry.target);
-    }
-  }, { threshold: 0.5 });
-
-  document.querySelectorAll('reel-action-bar-view-model').forEach(el => shortsIo!.observe(el));
-
-  shortsMo = new MutationObserver((mutations) => {
-    for (const mutation of mutations) {
-      for (const node of mutation.addedNodes) {
-        if (!(node instanceof Element)) continue;
-        if (node.tagName.toLowerCase() === 'reel-action-bar-view-model') {
-          shortsIo!.observe(node);
-        }
-        node.querySelectorAll('reel-action-bar-view-model').forEach(el => shortsIo!.observe(el));
-      }
-    }
-  });
-  shortsMo.observe(document.body, { childList: true, subtree: true });
-}
-
-function stopShortsObservers(): void {
-  shortsIo?.disconnect();
-  shortsIo = null;
-  shortsMo?.disconnect();
-  shortsMo = null;
+  ensureStyle();
+  actionBar.parentElement.insertBefore(shortsContainer, actionBar);
+  debug('shorts: button placed', location.pathname);
+  return true;
 }
 
 // ── Video / Shorts injection ──────────────────────────────────────────────────
 
 function injectVideoButton(): void {
-  if (document.getElementById(BUTTON_ID)) return;
   if (!isWatchPage()) return;
 
-  const isShorts = location.pathname.startsWith('/shorts/');
-
-  if (isShorts) {
-    startShortsObservers();
-    const actionBar = getVisibleReelActionBar();
-    if (!actionBar) return; // caller will retry
-    mountShortsButton(actionBar);
-  } else {
-    // Watch / Live: anchor to the actions row itself (#top-level-buttons-computed,
-    // inside ytd-menu-renderer). The like button is now a deeply-nested
-    // segmented-like-dislike-button-view-model, so anchoring to *it* buries our
-    // button inside the like/dislike pill where it's invisible. Insert as a direct
-    // child of the row, right after the like/dislike segment.
-    const actionRow = getWatchActionRow();
-    if (!actionRow) return; // caller will retry while YouTube finishes mounting
-
-    const container = makeContainer(BUTTON_ID);
-    const downloadBtn = actionRow.querySelector('ytd-download-button-renderer');
-    const segmented = actionRow.querySelector('segmented-like-dislike-button-view-model');
-
-    if (downloadBtn) {
-      downloadBtn.parentElement!.insertBefore(container, downloadBtn);
-      downloadBtn.remove();
-    } else if (segmented) {
-      segmented.insertAdjacentElement('afterend', container);
-    } else {
-      actionRow.appendChild(container);
-    }
-
-    container.style.margin = '0 8px';
-    videoRoot = createRoot(container);
-    videoRoot.render(<ArchiveButton getUrl={getVideoUrl} playlist={false} dropUp />);
-    videoInjected = true;
-    console.log('[TubeVault] watch: button injected ✓', location.pathname);
+  if (isShortsPage()) {
+    placeShortsButton(); // no-op while the button already sits by the visible bar
+    return;
   }
+  if (document.getElementById(BUTTON_ID)) return;
+  // Watch / Live: anchor to the actions row itself (#top-level-buttons-computed,
+  // inside ytd-menu-renderer). The like button is now a deeply-nested
+  // segmented-like-dislike-button-view-model, so anchoring to *it* buries our
+  // button inside the like/dislike pill where it's invisible. Insert as a direct
+  // child of the row, right after the like/dislike segment.
+  const actionRow = getWatchActionRow();
+  if (!actionRow) return; // caller will retry while YouTube finishes mounting
+
+  const container = makeContainer(BUTTON_ID);
+  const downloadBtn = actionRow.querySelector('ytd-download-button-renderer');
+  const segmented = actionRow.querySelector('segmented-like-dislike-button-view-model');
+
+  ensureStyle();
+  if (downloadBtn?.parentElement) {
+    // Take the Download button's slot; the stylesheet hides it while we're there.
+    downloadBtn.parentElement.insertBefore(container, downloadBtn);
+  } else if (segmented) {
+    segmented.insertAdjacentElement('afterend', container);
+  } else {
+    actionRow.appendChild(container);
+  }
+
+  container.style.margin = '0 8px';
+  videoRoot = createRoot(container);
+  videoRoot.render(<ArchiveButton getUrl={getVideoUrl} playlist={false} dropUp />);
+  debug('watch: button injected', location.pathname);
 }
 
 // ── Playlist injection ────────────────────────────────────────────────────────
@@ -427,8 +435,9 @@ function removeChannelButton() {
 function removeVideoButton() {
   videoRoot?.unmount();
   videoRoot = null;
+  shortsContainer?.remove();
+  shortsContainer = null;
   document.getElementById(BUTTON_ID)?.remove();
-  videoInjected = false;
 }
 
 function removePlaylistButton() {
@@ -442,17 +451,16 @@ function removePlaylistButton() {
 
 function onNavigate() {
   if (location.href === currentUrl) return;
-  const wasShorts = currentUrl.includes('/shorts/');
+  const wasShorts = new URL(currentUrl).pathname.startsWith('/shorts/');
   currentUrl = location.href;
-  const isNowShorts = location.pathname.startsWith('/shorts/');
 
   if (videoTimerId !== null) { clearTimeout(videoTimerId); videoTimerId = null; }
   if (playlistTimerId !== null) { clearTimeout(playlistTimerId); playlistTimerId = null; }
   if (channelTimerId !== null) { clearTimeout(channelTimerId); channelTimerId = null; }
 
-  if (wasShorts && !isNowShorts) stopShortsObservers();
-
-  removeVideoButton();
+  // Scrolling from one Short to the next keeps the Shorts button mounted where
+  // it is; every other move tears the page's buttons down and re-injects them.
+  if (!(wasShorts && isShortsPage())) removeVideoButton();
   removePlaylistButton();
   // Only drop the channel button when we actually leave the channel — keep it
   // mounted (and in its loading state) during same-channel nav like our own
@@ -462,6 +470,9 @@ function onNavigate() {
     removeChannelButton();
     channelKey = newChannelKey;
   }
+  settleUntil = Date.now() + SETTLE_MS;
+  stopMountWatch(); // the caller restarts it, with a fresh time limit for this page
+  debug('navigate', location.pathname);
   if (isWatchPage()) videoTimerId = setTimeout(() => tryInjectVideo(10), 500);
   if (isPlaylistContext()) playlistTimerId = setTimeout(() => tryInjectPlaylist(10), 500);
   // Re-inject on every channel nav. The guard inside tryInjectChannel makes this a
@@ -471,9 +482,9 @@ function onNavigate() {
 }
 
 function tryInjectVideo(attempts: number) {
-  if (document.getElementById(BUTTON_ID)) return;
+  if (videoButtonReady()) return;
   injectVideoButton();
-  if (!videoInjected && attempts > 0) {
+  if (!videoButtonReady() && attempts > 0) {
     videoTimerId = setTimeout(() => tryInjectVideo(attempts - 1), 400);
   }
 }
@@ -487,11 +498,7 @@ function tryInjectPlaylist(attempts: number) {
 }
 
 // Channel headers (yt-flexible-actions-view-model) mount noticeably later than
-// the watch/playlist anchors, so — like those — channel needs its own retry chain
-// rather than waiting on the 1.5s heartbeat. Without this, a freshly-loaded
-// channel's button only appears on a later heartbeat tick (or not at all if the
-// anchor settled between ticks); the persisted button on same-channel back-nav
-// masked the gap.
+// the watch/playlist anchors, so — like those — channel needs its own retry chain.
 function tryInjectChannel(attempts: number) {
   if (document.getElementById(CHANNEL_BTN_ID)) return;
   injectChannelButton();
@@ -500,31 +507,81 @@ function tryInjectChannel(attempts: number) {
   }
 }
 
-// Re-inject any button that's missing for the current page. The observer below
-// calls this repeatedly as YouTube builds the new page, so injection lands as
-// soon as the anchor element exists — no fixed retry budget needed.
+function videoButtonReady(): boolean {
+  return isShortsPage() ? shortsButtonPlaced() : !!document.getElementById(BUTTON_ID);
+}
+
+// True once every button the current page should have is in place.
+function buttonsReady(): boolean {
+  if (isWatchPage() && !videoButtonReady()) return false;
+  if (isPlaylistContext() && !document.getElementById(PLAYLIST_BTN_ID)) return false;
+  if (isChannelPage() && !document.getElementById(CHANNEL_BTN_ID)) return false;
+  return true;
+}
+
+// Inject any button that's missing for the current page. Idempotent.
 function ensureButtons() {
-  if (isWatchPage() && !document.getElementById(BUTTON_ID)) {
-    console.log('[TubeVault] ensure: watch page, button missing → injecting', location.pathname);
-    injectVideoButton();
-  }
+  if (isWatchPage() && !videoButtonReady()) injectVideoButton();
   if (isPlaylistContext() && !document.getElementById(PLAYLIST_BTN_ID)) injectPlaylistButton();
-  if (isChannelPage() && !document.getElementById(CHANNEL_BTN_ID)) {
-    console.log('[TubeVault] ensure: channel page, button missing → injecting', location.pathname);
-    injectChannelButton();
-  }
+  if (isChannelPage() && !document.getElementById(CHANNEL_BTN_ID)) injectChannelButton();
 }
 
 function syncForCurrentPage() {
   if (!extAlive()) { teardown(); return; }  // extension reloaded — stop touching dead chrome.* APIs
   if (location.href !== currentUrl) onNavigate(); // URL changed → tear down old page's buttons
   ensureButtons();
+  const settling = Date.now() < settleUntil;
+  if (buttonsReady() && !settling) stopMountWatch();
+  else startMountWatch();
+  if (settling) scheduleSettleCheck();
+}
+
+// ── Mount watch ───────────────────────────────────────────────────────────────
+// While a button is still missing (YouTube is building the page), watch the DOM
+// so it lands as soon as its anchor exists. The observer disconnects as soon as
+// every button for the current URL is in place, or after MOUNT_WATCH_MAX_MS for
+// pages that never grow an anchor; it is not left running on a settled page.
+const MOUNT_WATCH_MAX_MS = 20_000;
+// YouTube often fires the URL change before it re-renders the page, so a button
+// injected straight away can land in the outgoing action row and be thrown out
+// with it. Keep watching for this long after each navigation (and the first
+// load) even once the buttons exist.
+const SETTLE_MS = 6_000;
+let settleUntil = Date.now() + SETTLE_MS;
+let settleTimer: ReturnType<typeof setTimeout> | null = null;
+let mountObserver: MutationObserver | null = null;
+let mountWatchTimer: ReturnType<typeof setTimeout> | null = null;
+let mountSyncQueued = false;
+
+function scheduleSettleCheck(): void {
+  if (settleTimer !== null) clearTimeout(settleTimer);
+  settleTimer = setTimeout(() => { settleTimer = null; syncForCurrentPage(); }, Math.max(0, settleUntil - Date.now()) + 50);
+}
+
+function startMountWatch(): void {
+  if (mountObserver || tornDown) return;
+  mountObserver = new MutationObserver(() => {
+    if (mountSyncQueued) return;
+    mountSyncQueued = true;
+    setTimeout(() => { mountSyncQueued = false; syncForCurrentPage(); }, 200);
+  });
+  mountObserver.observe(document.documentElement, { childList: true, subtree: true });
+  mountWatchTimer = setTimeout(stopMountWatch, MOUNT_WATCH_MAX_MS);
+  debug('mount watch: started', location.pathname);
+}
+
+function stopMountWatch(): void {
+  if (!mountObserver) return;
+  mountObserver.disconnect();
+  mountObserver = null;
+  if (mountWatchTimer !== null) { clearTimeout(mountWatchTimer); mountWatchTimer = null; }
+  debug('mount watch: stopped', location.pathname);
 }
 
 // When the extension is reloaded/updated, this content script keeps running on the
 // already-open page but its chrome.* APIs are invalidated — every storage/runtime
 // call then throws "Cannot read properties of undefined (reading 'local')". Detect
-// that and go quiet (stop the heartbeat + observers) until the page is reloaded.
+// that and go quiet (stop the watchdog + observers) until the page is reloaded.
 function extAlive(): boolean {
   try { return !!chrome.runtime?.id; } catch { return false; }
 }
@@ -532,60 +589,52 @@ let tornDown = false;
 function teardown(): void {
   if (tornDown) return;
   tornDown = true;
-  try { clearInterval(beatTimer); } catch { /* ignore */ }
-  try { navObserver.disconnect(); } catch { /* ignore */ }
-  stopShortsObservers();
+  try { clearInterval(watchdogTimer); } catch { /* ignore */ }
+  if (settleTimer !== null) clearTimeout(settleTimer);
+  stopMountWatch();
   window.removeEventListener('popstate', syncForCurrentPage);
-  window.removeEventListener('yt-navigate-finish', onYtNav);
-  document.removeEventListener('yt-navigate-finish', onYtNav);
-  document.removeEventListener('yt-page-data-updated', onYtNav);
-  console.log('[TubeVault] extension context invalidated — content script stopped; reload the page');
+  window.removeEventListener('yt-navigate-finish', syncForCurrentPage);
+  document.removeEventListener('yt-navigate-finish', syncForCurrentPage);
+  document.removeEventListener('yt-page-data-updated', syncForCurrentPage);
+  navigationApi()?.removeEventListener('currententrychange', syncForCurrentPage);
+  debug('extension context invalidated — content script stopped; reload the page');
 }
 
-// YouTube is an SPA, but a content script runs in an ISOLATED world: it cannot
-// intercept the page's history.pushState (a different world's object), and the
-// page's yt-navigate-* events don't reliably cross the world boundary. The one
-// thing both worlds share is the DOM — which YouTube rebuilds on every nav — so
-// we watch that directly. Throttled so steady-state mutations stay cheap.
-let syncQueued = false;
-function queueSync() {
-  if (syncQueued) return;
-  syncQueued = true;
-  setTimeout(() => { syncQueued = false; syncForCurrentPage(); }, 200);
+// ── Navigation signals ────────────────────────────────────────────────────────
+// The content script runs in an isolated world, so it can't hook the page's
+// history.pushState. It can still hear about every URL change: the Navigation
+// API's currententrychange fires for pushState/replaceState from any world
+// (Shorts scrolling included), and YouTube's own yt-navigate-finish /
+// yt-page-data-updated DOM events cross the world boundary. ensureButtons is
+// idempotent, so overlapping signals are harmless.
+interface NavigationLike {
+  addEventListener(type: string, listener: () => void): void;
+  removeEventListener(type: string, listener: () => void): void;
+}
+function navigationApi(): NavigationLike | null {
+  return (window as unknown as { navigation?: NavigationLike }).navigation ?? null;
 }
 
-const navObserver = new MutationObserver(queueSync);
-navObserver.observe(document.documentElement, { childList: true, subtree: true });
-
-// Belt-and-suspenders nav signals — ensureButtons is idempotent, so firing from
-// several sources is harmless and just makes injection land sooner.
+navigationApi()?.addEventListener('currententrychange', syncForCurrentPage);
 window.addEventListener('popstate', syncForCurrentPage);
-// YouTube's own SPA nav events DO reach content-script listeners on document/
-// window (DOM events cross the isolated world even though page JS variables don't).
-const onYtNav = () => syncForCurrentPage();
-window.addEventListener('yt-navigate-finish', onYtNav);
-document.addEventListener('yt-navigate-finish', onYtNav);
-document.addEventListener('yt-page-data-updated', onYtNav);
+window.addEventListener('yt-navigate-finish', syncForCurrentPage);
+document.addEventListener('yt-navigate-finish', syncForCurrentPage);
+document.addEventListener('yt-page-data-updated', syncForCurrentPage);
 
-// Diagnostic markers readable from the PAGE console (shared DOM): confirms which
-// content-script version is live and that its timer is actually ticking.
-//   document.documentElement.dataset.tvVersion  → loaded version
-//   document.documentElement.dataset.tvBeat      → updates every 1.5s if alive
+// Loaded version, readable from the page console: document.documentElement.dataset.tvVersion
 let tvVersion = '?';
 try { tvVersion = chrome.runtime.getManifest().version; document.documentElement.dataset.tvVersion = tvVersion; } catch { /* ignore */ }
-console.log(`[TubeVault] content script loaded v${tvVersion} — watching for navigation`);
+debug(`content script loaded v${tvVersion}`);
 
-// Guaranteed safety net: a cheap periodic check re-injects any missing button
-// even if every signal above is somehow missed. When buttons are already present
-// this is just a few getElementById checks.
-let tvBeat = 0;
-const beatTimer = setInterval(() => {
+// Slow safety net for anything the signals above miss (for example YouTube
+// re-rendering an action row in place): a few cheap lookups, skipped while the
+// tab is hidden, that re-arm the mount watch only when a button is missing.
+const WATCHDOG_MS = 5_000;
+const watchdogTimer = setInterval(() => {
   if (!extAlive()) { teardown(); return; }
-  tvBeat++;
-  document.documentElement.dataset.tvBeat = String(tvBeat);
-  if (tvBeat % 4 === 0) console.log(`[TubeVault] alive (beat ${tvBeat}) — path ${location.pathname}`);
-  syncForCurrentPage();
-}, 1500);
+  if (document.hidden) return;
+  if (location.href !== currentUrl || !buttonsReady()) syncForCurrentPage();
+}, WATCHDOG_MS);
 
 // Initial injection on first load. A fresh channel URL doesn't pass through
 // onNavigate, so kick its retry chain here too.

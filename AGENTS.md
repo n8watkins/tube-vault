@@ -85,13 +85,20 @@ The release command regenerates and stages `CHANGELOG.md`; never edit that gener
 - `extension/src/types.ts` contains shared extension types and defaults.
 - `helper/src/downloader.ts` builds and runs `yt-dlp` commands.
 - `helper/src/index.ts` handles native messaging protocol actions.
+- `helper/src/progress.ts` turns `yt-dlp` progress lines into the live progress the helper streams to the extension.
+
+Queue downloads run over a long-lived native messaging port (`connectNative`).
+The helper sends `{ type: 'progress' }` messages before the final response, and the coordinator stores them on the running job for the popup and Downloads page.
+
+The content script is quiet by default.
+Set `localStorage.tubeVaultDebug = '1'` in a YouTube tab's console and reload to see its injection and navigation logs.
 
 ## Injection Points
 
 | Page type | Target | Style |
 | --- | --- | --- |
-| Watch or Live | `#top-level-buttons-computed` action row | Full text button |
-| Shorts | Visible `reel-action-bar-view-model` | Compact icon button |
+| Watch or Live | `#top-level-buttons-computed` action row (YouTube's Download button is hidden with CSS, not removed) | Full text button |
+| Shorts | Own container placed just before the visible `reel-action-bar-view-model` (never inside it), kept mounted across Shorts | Compact icon button |
 | Playlist or Mix | Playlist panel or header actions | Full text button |
 | Channel | Flexible header actions or subscribe area | Full text button |
 

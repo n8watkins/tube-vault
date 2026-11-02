@@ -502,3 +502,95 @@ describe('service worker startup', () => {
     expect(nativeCalls.filter((call) => call.action === 'custom')).toHaveLength(1);
   });
 });
+
+describe('service worker native downloads', () => {
+  afterEach(() => {
+    vi.resetModules();
+    vi.unstubAllGlobals();
+  });
+
+  function stubChrome(onPost: (port: FakePort, payload: Record<string, unknown>) => void) {
+    let jobs: Record<string, unknown>[] = [{
+      id: 'queued',
+      videoUrl: 'https://youtube.test/queued',
+      label: 'Queued',
+      components: {},
+      status: 'queued',
+      estBytes: 1000,
+      createdAt: 1,
+    }];
+    const storageWrites: Record<string, unknown>[][] = [];
+    const runtime = {
+      sendNativeMessage: vi.fn((_host: string, _payload: Record<string, unknown>, callback: (response: unknown) => void) => callback({ ok: true })),
+      connectNative: vi.fn(() => {
+        const port = new FakePort(onPost);
+        return port;
+      }),
+      onMessage: { addListener: vi.fn() },
+      lastError: undefined as { message?: string } | undefined,
+    };
+    vi.stubGlobal('chrome', {
+      storage: {
+        local: {
+          get: vi.fn((defaults: Record<string, unknown> | string[], callback: (values: Record<string, unknown>) => void) => {
+            callback(Array.isArray(defaults) ? { tvBatchSummarySchemaVersion: 1 } : 'tvJobs' in defaults ? { tvJobs: structuredClone(jobs) } : {});
+          }),
+          set: vi.fn((values: Record<string, unknown>, callback: () => void) => {
+            if (Array.isArray(values.tvJobs)) {
+              jobs = structuredClone(values.tvJobs);
+              storageWrites.push(structuredClone(jobs));
+            }
+            callback();
+          }),
+        },
+        onChanged: { addListener: vi.fn() },
+      },
+      runtime,
+      alarms: { create: vi.fn(), onAlarm: { addListener: vi.fn() } },
+      notifications: { create: vi.fn() },
+    });
+    return { runtime, storageWrites, get jobs() { return jobs; } };
+  }
+
+  class FakePort {
+    readonly messageListeners: ((message: unknown) => void)[] = [];
+    readonly disconnectListeners: (() => void)[] = [];
+    disconnected = false;
+    onMessage = { addListener: (listener: (message: unknown) => void) => this.messageListeners.push(listener) };
+    onDisconnect = { addListener: (listener: () => void) => this.disconnectListeners.push(listener) };
+    constructor(private readonly onPost: (port: FakePort, payload: Record<string, unknown>) => void) {}
+    postMessage(payload: Record<string, unknown>) { this.onPost(this, payload); }
+    disconnect() { this.disconnected = true; }
+    emit(message: unknown) { this.messageListeners.forEach((listener) => listener(message)); }
+    drop() { this.disconnectListeners.forEach((listener) => listener()); }
+  }
+
+  it('streams a download over a native port and records its progress', async () => {
+    let port: FakePort | undefined;
+    let posted: Record<string, unknown> | undefined;
+    const test = stubChrome((nextPort, payload) => { port = nextPort; posted = payload; });
+    await import('./service-worker');
+
+    await vi.waitFor(() => expect(posted).toMatchObject({ action: 'custom', progress: true, expectedBytes: 1000 }));
+    port!.emit({ type: 'progress', jobId: 'queued', progress: { phase: 'downloading', downloadedBytes: 400, totalBytes: 1000, speed: 100, eta: 6 } });
+    await vi.waitFor(() => expect(test.jobs[0]).toMatchObject({ status: 'running', progress: { downloadedBytes: 400, totalBytes: 1000 } }));
+
+    port!.emit({ ok: true, status: 'complete', folderPath: '/videos/queued' });
+    await vi.waitFor(() => expect(test.jobs[0]).toMatchObject({ status: 'done', folder: '/videos/queued' }));
+    expect(test.jobs[0]).not.toHaveProperty('progress');
+    expect(port!.disconnected).toBe(true);
+    expect(test.runtime.sendNativeMessage).not.toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ action: 'custom' }), expect.anything());
+  });
+
+  it('fails the job with the port error when the helper disconnects early', async () => {
+    let port: FakePort | undefined;
+    const test = stubChrome((nextPort) => { port = nextPort; });
+    await import('./service-worker');
+
+    await vi.waitFor(() => expect(port).toBeDefined());
+    test.runtime.lastError = { message: 'Native host has exited.' };
+    port!.drop();
+    test.runtime.lastError = undefined;
+    await vi.waitFor(() => expect(test.jobs[0]).toMatchObject({ status: 'failed', error: 'Native host has exited.' }));
+  });
+});

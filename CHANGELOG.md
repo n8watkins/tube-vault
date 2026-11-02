@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+### Added
+
+- Live download progress, a lighter Shorts button and quieter YouTube pages.
+
 ### Fixed
 
 - Exclude merge commits from changelog.
@@ -14,7 +18,7 @@
 
 ### Maintenance
 
-- Adopt release-kit 2.0.0 as a dev dependency.
+- Adopt release-kit 2.0.0 as a dev dependency (#4).
 
 ## v0.3.106
 

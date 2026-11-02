@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { FiFolder, FiRefreshCw, FiGithub, FiDownload, FiSettings, FiActivity, FiTool } from 'react-icons/fi';
+import type { JobProgress } from './job-coordinator';
+import { describeProgress, formatBytes } from './job-progress';
+import { ProgressBar } from './components/ProgressBar';
 import { DEFAULT_CHANNEL_COUNTS, DEFAULT_CHANNEL_COUNT, NamingOptions, defaultNaming, NAMING_KEYS, MenuState, defaultMenuState, VideoQuality, VideoFormat, AudioFormat } from './types';
 
 // Empty = "let the helper pick the OS-appropriate default". The real path is
@@ -22,6 +25,7 @@ interface Job {
   finishedAt?: number;
   folder?: string;
   error?: string;
+  progress?: JobProgress;
 }
 
 const BADGE: Record<string, { bg: string; fg: string; text: string }> = {
@@ -30,19 +34,22 @@ const BADGE: Record<string, { bg: string; fg: string; text: string }> = {
   cancelled: { bg: 'rgba(136,136,136,0.15)', fg: '#aaa',    text: 'Cancelled' },
 };
 
-function formatBytes(b?: number): string {
-  if (!b || b <= 0) return '';
-  if (b >= 1e9) return `${(b / 1e9).toFixed(1)} GB`;
-  if (b >= 1e6) return `${Math.round(b / 1e6)} MB`;
-  return `${Math.round(b / 1e3)} KB`;
-}
-
-function agoText(ts: number): string {
-  const s = Math.floor((Date.now() - ts) / 1000);
+function agoText(ts: number, now = Date.now()): string {
+  const s = Math.floor((now - ts) / 1000);
   if (s < 60) return 'just now';
   const m = Math.floor(s / 60);
   if (m < 60) return `${m}m ago`;
   return `${Math.floor(m / 60)}h ago`;
+}
+
+// Re-renders the caller every `intervalMs` so relative times ("5m ago") stay current.
+function useNow(intervalMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), intervalMs);
+    return () => clearInterval(timer);
+  }, [intervalMs]);
+  return now;
 }
 
 // ── App shell with tabs ───────────────────────────────────────────────────────
@@ -127,6 +134,8 @@ function HistorySection() {
     return () => chrome.storage.onChanged.removeListener(onChg);
   }, []);
 
+  const active = jobs.filter((j) => j.status === 'running' || j.status === 'probing' || j.status === 'cancelling');
+  const queuedCount = jobs.filter((j) => j.status === 'queued').length;
   const finished = jobs.filter((j) => j.status === 'done' || j.status === 'failed' || j.status === 'cancelled').reverse();
   const shown = filter === 'all' ? finished : finished.filter((j) => j.status === filter);
 
@@ -183,6 +192,28 @@ function HistorySection() {
   return (
     <div>
       <SectionHeader title="Download history" subtitle={`${finished.length} finished`} />
+      {(active.length > 0 || queuedCount > 0) && (
+        <div style={{ ...card, marginBottom: 18 }}>
+          <div style={{ ...sectionLabel, padding: '14px 20px 0', marginBottom: 0 }}>In progress</div>
+          {active.map((j) => {
+            const live = j.status === 'running' ? describeProgress(j.progress, j.estBytes) : null;
+            const fallback = j.status === 'probing' ? 'Checking size…' : j.status === 'cancelling' ? 'Stopping…' : 'Starting…';
+            return (
+              <div key={j.id} style={{ ...histRow, display: 'block' }}>
+                <div style={histTitle}>{j.label}</div>
+                {j.status === 'running' && <ProgressBar percent={live?.percent ?? null} marginTop={9} />}
+                <div style={{ ...histMeta, color: '#90caf9', marginTop: 7 }}>{live?.detail || fallback}</div>
+              </div>
+            );
+          })}
+          {queuedCount > 0 && (
+            <div style={{ ...histMeta, padding: active.length ? '0 20px 15px' : '12px 20px 15px', marginTop: 0 }}>
+              {queuedCount} queued · manage them from the toolbar popup
+            </div>
+          )}
+        </div>
+      )}
+
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
         <div style={{ display: 'flex', gap: 8 }}>
           {(['all', 'done', 'failed', 'cancelled'] as const).map((f) => (
@@ -492,6 +523,7 @@ function StatusSection() {
   const [diag, setDiag] = useState<{ ytdlp: string | null; ffmpeg: string | null; outputRoot: string | null } | null>(null);
   const [helper, setHelper] = useState<'idle' | 'checking' | 'ok' | 'error'>('idle');
   const [lastChecked, setLastChecked] = useState(0);
+  const now = useNow(60_000);
 
   // Only show the "Checking…" state when there's no cached result yet; otherwise
   // refresh silently in the background so returning to this tab doesn't flash a
@@ -530,7 +562,7 @@ function StatusSection() {
         <span style={{ width: 12, height: 12, borderRadius: '50%', background: connected ? '#4caf50' : helper === 'checking' ? '#888' : '#ef5350' }} />
         <span style={{ fontSize: 17, fontWeight: 700 }}>{helper === 'checking' ? 'Checking…' : connected ? 'Connected' : 'Not connected'}</span>
         <span style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 12 }}>
-          {lastChecked > 0 && <span style={{ fontSize: 12, color: '#777' }}>Checked {agoText(lastChecked)}</span>}
+          {lastChecked > 0 && <span style={{ fontSize: 12, color: '#777' }}>Checked {agoText(lastChecked, Math.max(now, lastChecked))}</span>}
           <button onClick={check} style={textBtn}><FiRefreshCw size={13} style={{ verticalAlign: -2, marginRight: 5 }} />Re-check</button>
         </span>
       </div>

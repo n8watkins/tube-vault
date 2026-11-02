@@ -50,10 +50,46 @@ chrome.storage.onChanged.addListener((changes, area) => {
   applySettings(Object.fromEntries(Object.entries(changes).map(([key, change]) => [key, change.newValue])));
 });
 
-function sendNative(payload: Record<string, unknown>): Promise<NativeResponse | null> {
+function sendNative(payload: Record<string, unknown>, onProgress?: (progress: unknown) => void): Promise<NativeResponse | null> {
+  if (onProgress && typeof chrome.runtime.connectNative === 'function') return streamNative(payload, onProgress);
   return new Promise((resolve) => chrome.runtime.sendNativeMessage(NATIVE_HOST, payload, (response) => {
     resolve(chrome.runtime.lastError ? { ok: false, error: chrome.runtime.lastError.message } : response as NativeResponse);
   }));
+}
+
+// A download runs on a long-lived port so the helper can stream progress messages
+// ({ type: 'progress' }) before its final response. An open native port also keeps
+// the service worker alive for the length of the download. A helper that predates
+// progress simply answers with the final response, so downloads still work with it.
+function streamNative(payload: Record<string, unknown>, onProgress: (progress: unknown) => void): Promise<NativeResponse | null> {
+  return new Promise((resolve) => {
+    let settled = false;
+    const settle = (response: NativeResponse) => {
+      if (settled) return;
+      settled = true;
+      resolve(response);
+    };
+    let port: chrome.runtime.Port;
+    try {
+      port = chrome.runtime.connectNative(NATIVE_HOST);
+    } catch (error) {
+      settle({ ok: false, error: error instanceof Error ? error.message : 'Native helper failed' });
+      return;
+    }
+    port.onMessage.addListener((message: unknown) => {
+      if (settled) return;
+      if (message && typeof message === 'object' && (message as { type?: unknown }).type === 'progress') {
+        onProgress((message as { progress?: unknown }).progress);
+        return;
+      }
+      settle((message ?? { ok: false, error: 'Native helper failed' }) as NativeResponse);
+      port.disconnect();
+    });
+    port.onDisconnect.addListener(() => {
+      settle({ ok: false, error: chrome.runtime.lastError?.message || 'Native helper disconnected' });
+    });
+    port.postMessage({ ...payload, progress: true });
+  });
 }
 
 function getLocalValues(keys: Record<string, unknown> | string[]): Promise<Record<string, unknown>> {

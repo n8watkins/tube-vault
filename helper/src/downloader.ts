@@ -4,7 +4,7 @@ import fs from 'fs';
 import os from 'os';
 import { createHash, randomUUID } from 'crypto';
 import { wslToWindowsPath, windowsToWslPath, sanitizeFilename, IS_WSL } from './sanitize';
-import { LineSplitter, ProgressTracker, parseProgressLine, progressArgs, type DownloadProgress } from './progress';
+import { LineSplitter, ProgressTracker, parseProgressLine, planArgs, progressArgs, type DownloadProgress } from './progress';
 
 // Discover the Windows user profile (for example, C:\Users\<user>) from inside WSL, cached.
 // The native host runs with a stripped PATH, so cmd.exe is called by absolute path.
@@ -86,7 +86,7 @@ export interface DownloadRequest {
   index?: number;         // 1-based rank within the selected batch (for numbering)
   total?: number;         // size of the selected batch (numbering pad width)
   category?: string;      // 'Most Popular' | 'Latest' | 'Playlist' (batches only)
-  expectedBytes?: number; // probe estimate, a floor for the progress total
+  expectedBytes?: number; // probe estimate, a floor for the progress total until yt-dlp's plans arrive
   options?: {
     outputRoot?: string;
     naming?: NamingOptions;
@@ -468,13 +468,16 @@ export async function handle(req: DownloadRequest, hooks: HandleHooks = {}): Pro
       const tracker = hooks.onProgress
         ? new ProgressTracker(hooks.onProgress, { expectedBytes: req.expectedBytes })
         : null;
-      const progressFlags = tracker ? progressArgs() : [];
-      const runWithProgress = (args: string[]) => {
-        const runIndex = jobs.length;
-        return run('yt-dlp', [...progressFlags, ...args], tracker ? (line) => {
+      // `media`: the run downloads video or audio, so it prints a plan of the
+      // streams it will fetch (see progress.ts) before each video.
+      const runWithProgress = (args: string[], media: boolean) => {
+        if (!tracker) return run('yt-dlp', args);
+        const runIndex = tracker.addRun({ plans: media });
+        const flags = media ? [...progressArgs(), ...planArgs()] : progressArgs();
+        return run('yt-dlp', [...flags, ...args], (line) => {
           const event = parseProgressLine(line);
           if (event) tracker.update(runIndex, event);
-        } : undefined);
+        });
       };
 
       // Video download run (also carries thumbnail/metadata/subtitle flags when applicable)
@@ -517,7 +520,7 @@ export async function handle(req: DownloadRequest, hooks: HandleHooks = {}): Pro
         }
 
         args.push(...limitFlag, ...noPlaylistFlag, '--', ...targets);
-        jobs.push(runWithProgress(args));
+        jobs.push(runWithProgress(args, hasVideo));
       }
 
       // Separate audio extraction run (format conversion requires its own pass)
@@ -530,10 +533,11 @@ export async function handle(req: DownloadRequest, hooks: HandleHooks = {}): Pro
           ...sbFlags, ...fastFlags,
           ...limitFlag, ...noPlaylistFlag, '--', ...targets,
         ];
-        jobs.push(runWithProgress(args));
+        jobs.push(runWithProgress(args, true));
       }
 
       const results = await Promise.all(jobs);
+      tracker?.stop();
       const failures = results.filter(r => r.code !== 0);
 
       if (failures.length === results.length) {

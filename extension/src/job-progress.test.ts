@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { describeProgress, formatBytePair, formatEta, formatSpeed } from './job-progress';
+import { computePercent, describeProgress, formatBytePair, formatEta, formatSpeed } from './job-progress';
 
-const base = { phase: 'downloading' as const, updatedAt: 1 };
+const base = { phase: 'downloading' as const, percent: null, updatedAt: 1 };
 
 describe('job progress formatting', () => {
   it('shows percent, sizes in one unit, speed and time left', () => {
@@ -24,6 +24,17 @@ describe('job progress formatting', () => {
       percent: null,
       detail: '5 MB · 200 KB/s',
     });
+  });
+
+  it('shows the held percent next to the exact byte counts', () => {
+    // 67 of 103 MB is 65%, but 66% was already shown: the percent holds, the bytes stay exact.
+    expect(describeProgress({ ...base, percent: 66, downloadedBytes: 67e6, totalBytes: 103e6, speed: null, eta: null })).toEqual({
+      percent: 66,
+      detail: '66% · 67 / 103 MB',
+    });
+    expect(describeProgress({ ...base, percent: 100, downloadedBytes: 1, totalBytes: 1, speed: null, eta: null })?.percent).toBe(99);
+    expect(computePercent({ downloadedBytes: 1, totalBytes: null })).toBeNull();
+    expect(computePercent({ downloadedBytes: 1, totalBytes: null }, 4)).toBe(25);
   });
 
   it('reports post-processing as finishing up', () => {

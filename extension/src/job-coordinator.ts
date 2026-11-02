@@ -2,6 +2,16 @@ import { NamingOptions } from './types';
 
 export type JobStatus = 'queued' | 'probing' | 'running' | 'cancelling' | 'done' | 'failed' | 'cancelled';
 
+// Live progress the helper streams while a job downloads (only on running jobs).
+export interface JobProgress {
+  phase: 'downloading' | 'processing';
+  downloadedBytes: number;
+  totalBytes: number | null;
+  speed: number | null;   // bytes per second
+  eta: number | null;     // seconds
+  updatedAt: number;
+}
+
 export interface Job {
   id: string;
   batchId?: string;
@@ -23,6 +33,7 @@ export interface Job {
   summaryReceiptCleaned?: boolean;
   nativeCancellationCleaned?: boolean;
   allowDateNamedLegacySummary?: boolean;
+  progress?: JobProgress;
 }
 
 export interface CoordinatorSettings {
@@ -55,7 +66,9 @@ export interface NativeResponse {
 
 export interface CoordinatorEffects {
   storage: JobStorage;
-  sendNative(payload: Record<string, unknown>): Promise<NativeResponse | null>;
+  // With `onProgress`, the download runs on a long-lived connection that streams
+  // progress snapshots before the final response.
+  sendNative(payload: Record<string, unknown>, onProgress?: (progress: unknown) => void): Promise<NativeResponse | null>;
   now(): number;
   generateId(): string;
   notify(label: string, folder: string): void;
@@ -83,6 +96,28 @@ const MAX_QUEUE_WRITE_RETRY_DELAY_MS = 1_000;
 const INITIAL_QUEUE_WAKE_DELAY_MS = 1_000;
 const MAX_QUEUE_WAKE_DELAY_MS = 60_000;
 const MAX_SUMMARY_BACKGROUND_RETRIES = 3;
+// Progress is written to storage (which the popup and Downloads page watch) at
+// most this often; phase changes are written straight away.
+const PROGRESS_WRITE_INTERVAL_MS = 1_000;
+
+function finiteOrNull(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+export function sanitizeProgress(raw: unknown, now: number): JobProgress | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const value = raw as Record<string, unknown>;
+  const downloadedBytes = finiteOrNull(value.downloadedBytes);
+  if (downloadedBytes === null) return null;
+  return {
+    phase: value.phase === 'processing' ? 'processing' : 'downloading',
+    downloadedBytes,
+    totalBytes: finiteOrNull(value.totalBytes),
+    speed: finiteOrNull(value.speed),
+    eta: finiteOrNull(value.eta),
+    updatedAt: now,
+  };
+}
 const isActive = (job: Job) => job.status === 'queued' || job.status === 'probing'
   || job.status === 'running' || job.status === 'cancelling';
 const isInFlight = (job: Job) => job.status === 'probing' || job.status === 'running' || job.status === 'cancelling';
@@ -385,6 +420,7 @@ export class JobCoordinator {
     }
 
     const settings = this.effects.getSettings();
+    const progress = this.progressWriter(job.id);
     const response = await this.safeNative({
       action: 'custom',
       url: job.videoUrl,
@@ -393,13 +429,15 @@ export class JobCoordinator {
       index: job.index,
       total: job.total,
       category: job.category,
+      ...(job.estBytes ? { expectedBytes: job.estBytes } : {}),
       options: {
         outputRoot: settings.outputRoot,
         naming: settings.naming,
         sponsorblock: settings.sponsorblock,
         fasterDownloads: settings.fasterDownloads,
       },
-    });
+    }, progress.report);
+    await progress.stop();
     const terminalPatch: Partial<Job> = !response?.ok ? {
       status: 'failed',
       error: typeof response?.error === 'string' ? response.error : 'Download failed',
@@ -427,9 +465,52 @@ export class JobCoordinator {
     await this.maybeWriteBatchSummary(job.batchId).catch(() => undefined);
   }
 
-  private async safeNative(payload: Record<string, unknown>): Promise<NativeResponse | null> {
+  // Coalesces the helper's progress snapshots into rate-limited storage writes:
+  // at most one write in flight, always carrying the newest snapshot.
+  private progressWriter(jobId: string): { report: (raw: unknown) => void; stop: () => Promise<void> } {
+    let latest: JobProgress | null = null;
+    let lastWriteAt = Number.NEGATIVE_INFINITY;
+    let lastPhase: JobProgress['phase'] | null = null;
+    let writing: Promise<void> | null = null;
+    let stopped = false;
+
+    const write = (snapshot: JobProgress) => {
+      lastWriteAt = snapshot.updatedAt;
+      lastPhase = snapshot.phase;
+      latest = null;
+      writing = this.mutateJobs((jobs) => {
+        const index = jobs.findIndex((job) => job.id === jobId);
+        if (index < 0 || jobs[index].status !== 'running') return { changed: false, value: undefined };
+        jobs[index] = { ...jobs[index], progress: snapshot };
+        return { changed: true, value: undefined, options: true };
+      }).catch(() => undefined).then(() => {
+        writing = null;
+        if (!stopped && latest && latest.phase !== lastPhase) write(latest);
+      });
+    };
+
+    return {
+      report: (raw) => {
+        if (stopped) return;
+        const snapshot = sanitizeProgress(raw, this.effects.now());
+        if (!snapshot) return;
+        latest = snapshot;
+        if (writing) return;
+        if (snapshot.phase !== lastPhase || snapshot.updatedAt - lastWriteAt >= PROGRESS_WRITE_INTERVAL_MS) write(snapshot);
+      },
+      stop: async () => {
+        stopped = true;
+        while (writing) await writing;
+      },
+    };
+  }
+
+  private async safeNative(
+    payload: Record<string, unknown>,
+    onProgress?: (progress: unknown) => void,
+  ): Promise<NativeResponse | null> {
     try {
-      return await this.effects.sendNative(payload);
+      return await (onProgress ? this.effects.sendNative(payload, onProgress) : this.effects.sendNative(payload));
     } catch (error) {
       return { ok: false, error: error instanceof Error ? error.message : 'Native helper failed' };
     }
@@ -496,6 +577,9 @@ export class JobCoordinator {
     persistUntilStored = false,
   ): Promise<void> {
     const preserveAllFinished = options === true;
+    for (const job of jobs) {
+      if (job.progress && job.status !== 'running') delete job.progress;
+    }
     const retainedJobs = preserveAllFinished ? jobs : this.trim(jobs, typeof options === 'object' ? options : {});
     let failures = 0;
     while (true) {

@@ -1,6 +1,13 @@
 // Chrome Native Messaging wire format: 4-byte LE uint32 length + UTF-8 JSON body
 
+// Once Chrome closes the port (extension reloaded, browser closed) further writes
+// fail with EPIPE. Stop writing instead of crashing, so a running download still
+// finishes or is cancelled through its job owner record like before.
+let outputClosed = false;
+process.stdout.on('error', () => { outputClosed = true; });
+
 export function writeMessage(obj: unknown): void {
+  if (outputClosed) return;
   const json = JSON.stringify(obj);
   const len = Buffer.byteLength(json, 'utf8');
   const buf = Buffer.allocUnsafe(4 + len);

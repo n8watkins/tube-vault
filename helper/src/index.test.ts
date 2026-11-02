@@ -186,3 +186,80 @@ test('native cancellation rejects a symlinked registry directory', async () => {
     fs.rmSync(controlledDirectory, { recursive: true, force: true });
   }
 });
+
+// A stand-in yt-dlp: writes the media file named by the first `-o` template,
+// prints the capture line, and (only when asked for progress templates) emits
+// progress ticks on stdout and a post-processing tick on stderr like the real one.
+function writeFakeYtDlp(directory: string): void {
+  const script = `#!${process.execPath}
+const fs = require('fs');
+const path = require('path');
+const args = process.argv.slice(2);
+const output = args[args.indexOf('-o') + 1].replace('%(title)s', 'Fake title').replace('%(ext)s', 'mp4');
+fs.mkdirSync(path.dirname(output), { recursive: true });
+fs.writeFileSync(output, 'x'.repeat(1000));
+const tick = (done, status) => '[tube-vault-progress]\\tdownload\\t18\\t' + status + '\\t' + done + '\\t1000\\tNA\\t500\\t1\\n';
+if (args.includes('--progress-template')) {
+  process.stdout.write(tick(250, 'downloading'));
+  process.stdout.write(tick(1000, 'finished'));
+  process.stderr.write('[tube-vault-progress]\\tpostprocess\\tMerger\\tstarted\\n');
+}
+process.stdout.write(output + '\\tFake title\\tUploader\\t20200101\\t1\\t19\\tfakeid\\n');
+`;
+  fs.writeFileSync(path.join(directory, 'yt-dlp'), script, { mode: 0o755 });
+}
+
+async function nativeConversation(payload: Record<string, unknown>, binDirectory: string): Promise<Record<string, unknown>[]> {
+  const host = spawn(process.execPath, ['-r', 'ts-node/register/transpile-only', path.join(__dirname, 'index.ts')], {
+    cwd: path.join(__dirname, '..'),
+    env: { ...process.env, NODE_ENV: 'test', TUBE_VAULT_TEST_JOBS_DIR: jobsDirectory, PATH: `${binDirectory}:${process.env.PATH}` },
+    stdio: ['pipe', 'pipe', 'inherit'],
+  });
+  const body = Buffer.from(JSON.stringify(payload));
+  const header = Buffer.alloc(4);
+  header.writeUInt32LE(body.length);
+  let output = Buffer.alloc(0);
+  host.stdout.on('data', (chunk: Buffer) => { output = Buffer.concat([output, chunk]); });
+  host.stdin.end(Buffer.concat([header, body]));
+  const [code] = await once(host, 'exit');
+  assert.equal(code, 0);
+  const messages: Record<string, unknown>[] = [];
+  while (output.length >= 4) {
+    const length = output.readUInt32LE(0);
+    messages.push(JSON.parse(output.subarray(4, 4 + length).toString('utf8')) as Record<string, unknown>);
+    output = output.subarray(4 + length);
+  }
+  return messages;
+}
+
+test('custom downloads stream progress before the result only when the caller asks', async () => {
+  const binDirectory = fs.mkdtempSync(path.join(testRoot, 'bin-'));
+  const outputRoot = fs.mkdtempSync(path.join(testRoot, 'out-'));
+  writeFakeYtDlp(binDirectory);
+  const request = {
+    action: 'custom',
+    url: 'https://www.youtube.com/watch?v=jNQXAC9IVRw',
+    components: { video: { quality: 'best', format: 'mp4' } },
+    jobId: `progress-${process.pid}`,
+    expectedBytes: 2000,
+    options: { outputRoot, naming: { titleFiles: true, summaryTxt: false, categoryFolders: false, numbering: false, includeId: true } },
+  };
+
+  const streamed = await nativeConversation({ ...request, progress: true }, binDirectory);
+  const progress = streamed.filter((message) => message.type === 'progress');
+  assert.ok(progress.length >= 2, `expected progress ticks, got ${JSON.stringify(streamed)}`);
+  assert.deepEqual(progress[0], {
+    type: 'progress',
+    jobId: request.jobId,
+    progress: { phase: 'downloading', downloadedBytes: 250, totalBytes: 2000, speed: 500, eta: 4 },
+  });
+  assert.equal((progress.at(-1)?.progress as { phase: string }).phase, 'processing');
+  const result = streamed.at(-1)!;
+  assert.equal(result.type, undefined);
+  assert.equal(result.ok, true);
+  assert.equal(result.status, 'complete');
+
+  const oneShot = await nativeConversation({ ...request, jobId: `oneshot-${process.pid}` }, binDirectory);
+  assert.equal(oneShot.length, 1);
+  assert.equal(oneShot[0].ok, true);
+});

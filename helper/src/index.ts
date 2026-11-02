@@ -1,5 +1,6 @@
 import { readMessages, writeMessage } from './protocol';
 import { handle, killActive, probeVideo, listVideos, createBatchSummary, removeBatchSummaryReceipt, defaultOutputRoot, readProcessIdentity, type DownloadRequest, type Action, type DownloadComponents, type BatchSummaryItem } from './downloader';
+import type { DownloadProgress } from './progress';
 import { isValidJobId, isValidYouTubeUrl, wslToWindowsPath, IS_WSL } from './sanitize';
 import { spawn } from 'child_process';
 import * as fs from 'fs';
@@ -305,8 +306,16 @@ readMessages(async (raw) => {
     return;
   }
   const jobId = req.jobId;
+  // Only a caller on a long-lived port asks for progress: a one-shot
+  // sendNativeMessage caller would take the first progress message as its reply.
+  const hooks = action === 'custom' && req.progress === true
+    ? { onProgress: (progress: DownloadProgress) => writeMessage({ type: 'progress', jobId, progress }) }
+    : {};
+  const expectedBytes = typeof req.expectedBytes === 'number' && Number.isFinite(req.expectedBytes) && req.expectedBytes > 0
+    ? req.expectedBytes
+    : undefined;
   try {
-    const res = await withJobOwner(jobId, () => handle(req as unknown as DownloadRequest));
+    const res = await withJobOwner(jobId, () => handle({ ...(req as unknown as DownloadRequest), expectedBytes }, hooks));
     writeMessage(res);
   } catch (error) {
     writeMessage({ ok: false, status: 'failed', error: error instanceof Error ? error.message : 'Download failed' });

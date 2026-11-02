@@ -1,6 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { FiSettings, FiClock, FiFolder } from 'react-icons/fi';
+import type { JobProgress } from './job-coordinator';
+import { describeProgress, formatBytes } from './job-progress';
+import { ProgressBar } from './components/ProgressBar';
 
 // Empty = let the helper resolve the OS-appropriate default; the real path comes
 // back on ping (helperDefault). No hardcoded username — works on any platform.
@@ -23,6 +26,7 @@ interface Job {
   finishedAt?: number;
   folder?: string;
   error?: string;
+  progress?: JobProgress;
 }
 
 const STATUS_META: Record<JobStatus, { dot: string; text: string; label: string }> = {
@@ -34,13 +38,6 @@ const STATUS_META: Record<JobStatus, { dot: string; text: string; label: string 
   failed:    { dot: '#ef5350', text: '#ef9a9a', label: 'Failed' },
   cancelled: { dot: '#888',    text: '#999',    label: 'Cancelled' },
 };
-
-function formatBytes(b?: number): string {
-  if (!b || b <= 0) return '';
-  if (b >= 1e9) return `${(b / 1e9).toFixed(1)} GB`;
-  if (b >= 1e6) return `${Math.round(b / 1e6)} MB`;
-  return `${Math.round(b / 1e3)} KB`;
-}
 
 function App() {
   const version = chrome.runtime.getManifest().version;
@@ -96,14 +93,18 @@ function App() {
   const jobRowEl = (job: Job, cancellable: boolean, indent = false) => {
     const m = STATUS_META[job.status];
     const size = formatBytes(job.estBytes);
+    const live = job.status === 'running' ? describeProgress(job.progress, job.estBytes) : null;
     return (
       <div key={job.id} style={{ ...jobRow, paddingLeft: indent ? 34 : 14 }}>
         <span style={{ ...dot, background: m.dot }} />
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={jobLabel}>{job.label}</div>
           <div style={{ ...jobStatus, color: m.text }}>
-            {m.label}{size ? ` · ${size}` : ''}{job.status === 'failed' && job.error ? ` · ${job.error.slice(0, 36)}` : ''}
+            {live?.detail
+              ? live.detail
+              : <>{m.label}{size ? ` · ${size}` : ''}{job.status === 'failed' && job.error ? ` · ${job.error.slice(0, 36)}` : ''}</>}
           </div>
+          {job.status === 'running' && <ProgressBar percent={live?.percent ?? null} />}
         </div>
         {cancellable && cancelBtn(job.id, () => cancel(job.id))}
       </div>

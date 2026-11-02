@@ -36,6 +36,7 @@ export const SYNC_FILES = [
   'extension/dist/options.js',
   'helper/dist/downloader.js',
   'helper/dist/index.js',
+  'helper/dist/progress.js',
   'helper/dist/protocol.js',
   'helper/dist/sanitize.js',
   'helper/package.json',

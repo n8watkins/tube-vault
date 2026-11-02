@@ -4,6 +4,7 @@ import fs from 'fs';
 import os from 'os';
 import { createHash, randomUUID } from 'crypto';
 import { wslToWindowsPath, windowsToWslPath, sanitizeFilename, IS_WSL } from './sanitize';
+import { LineSplitter, ProgressTracker, parseProgressLine, progressArgs, type DownloadProgress } from './progress';
 
 // Discover the Windows user profile (for example, C:\Users\<user>) from inside WSL, cached.
 // The native host runs with a stripped PATH, so cmd.exe is called by absolute path.
@@ -85,6 +86,7 @@ export interface DownloadRequest {
   index?: number;         // 1-based rank within the selected batch (for numbering)
   total?: number;         // size of the selected batch (numbering pad width)
   category?: string;      // 'Most Popular' | 'Latest' | 'Playlist' (batches only)
+  expectedBytes?: number; // probe estimate, a floor for the progress total
   options?: {
     outputRoot?: string;
     naming?: NamingOptions;
@@ -143,15 +145,29 @@ export function killActive(): void {
   activeChildren.clear();
 }
 
-function run(cmd: string, args: string[]): Promise<{ out: string; err: string; code: number }> {
+// `onProgressLine` receives yt-dlp's progress-template lines (see progress.ts);
+// they are kept out of `out` and `err` so capture parsing and error text stay clean.
+function run(
+  cmd: string,
+  args: string[],
+  onProgressLine?: (line: string) => void,
+): Promise<{ out: string; err: string; code: number }> {
   return new Promise((resolve) => {
     const proc = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     activeChildren.add(proc);
     let out = '';
     let err = '';
-    proc.stdout.on('data', (d: Buffer) => (out += d.toString()));
-    proc.stderr.on('data', (d: Buffer) => (err += d.toString()));
-    proc.on('close', (code) => { activeChildren.delete(proc); resolve({ out, err, code: code ?? 1 }); });
+    const ignore = () => undefined;
+    const stdout = new LineSplitter(onProgressLine ?? ignore, (text) => (out += text));
+    const stderr = new LineSplitter(onProgressLine ?? ignore, (text) => (err += text));
+    proc.stdout.on('data', (d: Buffer) => (onProgressLine ? stdout.push(d.toString()) : (out += d.toString())));
+    proc.stderr.on('data', (d: Buffer) => (onProgressLine ? stderr.push(d.toString()) : (err += d.toString())));
+    proc.on('close', (code) => {
+      activeChildren.delete(proc);
+      stdout.end();
+      stderr.end();
+      resolve({ out, err, code: code ?? 1 });
+    });
     proc.on('error', () => { activeChildren.delete(proc); resolve({ out, err: 'spawn failed', code: 1 }); });
   });
 }
@@ -393,7 +409,12 @@ export async function listVideos(url: string): Promise<PlanItem[]> {
   return vids.map((v) => ({ url: watchUrl(v.id), title: v.title, bytes: null }));
 }
 
-export async function handle(req: DownloadRequest): Promise<DownloadResult> {
+export interface HandleHooks {
+  // Streams live progress for the `custom` download (the queue's only download path).
+  onProgress?: (progress: DownloadProgress) => void;
+}
+
+export async function handle(req: DownloadRequest, hooks: HandleHooks = {}): Promise<DownloadResult> {
   const rawRoot = req.options?.outputRoot || defaultOutputRoot();
   // Accept Windows paths (C:\...) from extension storage; convert to WSL paths for yt-dlp
   const root = /^[A-Za-z]:/.test(rawRoot) ? windowsToWslPath(rawRoot) : rawRoot;
@@ -444,6 +465,17 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
       const CAPTURE = '%(filepath)s\t%(title)s\t%(uploader)s\t%(upload_date)s\t%(view_count)s\t%(duration)s\t%(id)s';
 
       const jobs: Promise<{ out: string; err: string; code: number }>[] = [];
+      const tracker = hooks.onProgress
+        ? new ProgressTracker(hooks.onProgress, { expectedBytes: req.expectedBytes })
+        : null;
+      const progressFlags = tracker ? progressArgs() : [];
+      const runWithProgress = (args: string[]) => {
+        const runIndex = jobs.length;
+        return run('yt-dlp', [...progressFlags, ...args], tracker ? (line) => {
+          const event = parseProgressLine(line);
+          if (event) tracker.update(runIndex, event);
+        } : undefined);
+      };
 
       // Video download run (also carries thumbnail/metadata/subtitle flags when applicable)
       if (hasVideo || hasMeta || hasThumb || hasSubs) {
@@ -485,7 +517,7 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
         }
 
         args.push(...limitFlag, ...noPlaylistFlag, '--', ...targets);
-        jobs.push(run('yt-dlp', args));
+        jobs.push(runWithProgress(args));
       }
 
       // Separate audio extraction run (format conversion requires its own pass)
@@ -498,7 +530,7 @@ export async function handle(req: DownloadRequest): Promise<DownloadResult> {
           ...sbFlags, ...fastFlags,
           ...limitFlag, ...noPlaylistFlag, '--', ...targets,
         ];
-        jobs.push(run('yt-dlp', args));
+        jobs.push(runWithProgress(args));
       }
 
       const results = await Promise.all(jobs);

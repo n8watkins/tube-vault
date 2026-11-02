@@ -4,7 +4,7 @@ import { hostname, tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import test from 'node:test';
-import { main, readProcessIdentity, recoverSyncTransactions, syncArtifacts, targetArgument, validateTarget } from './sync-windows.mjs';
+import { SYNC_FILES, main, readProcessIdentity, recoverSyncTransactions, syncArtifacts, targetArgument, validateTarget } from './sync-windows.mjs';
 
 function transactionJournal(transaction, entries, state = 'pending') {
   return JSON.stringify({
@@ -654,4 +654,12 @@ test('blocks a third sync while restoring a claimed replacement lock', async () 
   assert.deepEqual(JSON.parse(await readFile(lockPath, 'utf8')), replacementOwner);
   assert.equal(await readFile(join(target, relativePath), 'utf8'), 'old\n');
   assert.deepEqual((await readdir(target)).filter((name) => name.includes('.intent-')), []);
+});
+
+test('publishes every helper module the helper build emits', async () => {
+  const sources = await readdir(new URL('../helper/src/', import.meta.url));
+  const modules = sources.filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts'));
+  for (const name of modules) {
+    assert.ok(SYNC_FILES.includes(`helper/dist/${name.replace(/\.ts$/, '.js')}`), `${name} is missing from SYNC_FILES`);
+  }
 });

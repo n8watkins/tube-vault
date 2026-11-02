@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.109 - 2026-11-02
+
+### Fixed
+
+- The download bar no longer flashes "Finishing up" before the download starts ([#10](https://github.com/n8watkins/tube-vault/pull/10))
+
 ## 0.3.108 - 2026-11-02
 
 ### Fixed

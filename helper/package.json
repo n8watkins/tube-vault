@@ -1,6 +1,6 @@
 {
   "name": "tube-vault-helper",
-  "version": "0.3.108",
+  "version": "0.3.109",
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",

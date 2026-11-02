@@ -4,7 +4,7 @@ name: Commit messages
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, review/tube-vault-v0.3.81]
   pull_request:
   workflow_dispatch: # the release train runs it on its release commit
 

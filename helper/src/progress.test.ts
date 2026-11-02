@@ -143,6 +143,60 @@ test('post-processing shows 100%, and a second video in the same run adds to the
   assert.equal(emitted.at(-1)?.percent, 100);
 });
 
+// yt-dlp runs some post-processors before the download and reports them as
+// "started" too: SponsorBlock (after_filter, before the plan) and the thumbnail
+// convert (before_dl, after the plan). Neither is the job finishing up.
+const phases = (emitted: DownloadProgress[]) => emitted.map((progress) => `${progress.phase} ${progress.percent}`);
+
+test('converting the thumbnail before the download does not show the job finishing up', () => {
+  const { tracker, emitted } = tracked({ expectedBytes: 1000 });
+  tracker.addRun({ plans: true });
+  tracker.update(0, event(plan('137+140', '["137", "140"]', '[800, 200]', '[800, 200]')));
+  tracker.update(0, event(postprocess('ThumbnailsConvertor', 'started')));
+  tracker.update(0, event(postprocess('ThumbnailsConvertor', 'finished')));
+  tracker.update(0, event(download('137', 'downloading', '100', '800', 'NA', '100', '7')));
+  tracker.update(0, event(download('137', 'finished', '800', '800', 'NA', 'NA', 'NA')));
+  tracker.update(0, event(download('140', 'finished', '200', '200', 'NA', 'NA', 'NA')));
+  tracker.update(0, event(postprocess('Merger', 'started')));
+  assert.deepEqual(phases(emitted), ['downloading 10', 'downloading 80', 'downloading 99', 'processing 100']);
+});
+
+test('fetching SponsorBlock segments before the plan does not show the job finishing up', () => {
+  const { tracker, emitted } = tracked({ expectedBytes: 1000 });
+  tracker.addRun({ plans: true });
+  tracker.update(0, event(postprocess('SponsorBlock', 'started')));
+  tracker.update(0, event(postprocess('SponsorBlock', 'finished')));
+  tracker.update(0, event(plan('18', '[]', '[]', '[]', '1000')));
+  tracker.update(0, event(postprocess('ThumbnailsConvertor', 'started')));
+  tracker.update(0, event(download('18', 'downloading', '100', '1000', 'NA', '100', '9')));
+  tracker.update(0, event(download('18', 'finished', '1000', '1000', 'NA', 'NA', 'NA')));
+  tracker.update(0, event(postprocess('ModifyChapters', 'started')));
+  assert.deepEqual(phases(emitted), ['downloading 10', 'downloading 99', 'processing 100']);
+});
+
+test('one run finishing up while a parallel run still has to download is not the job finishing up', () => {
+  const { tracker, emitted } = tracked();
+  const video = tracker.addRun({ plans: true });
+  const audio = tracker.addRun({ plans: true });
+  tracker.update(video, event(plan('18', '[]', '[]', '[]', '500')));
+  tracker.update(video, event(download('18', 'finished', '500', '500', 'NA', 'NA', 'NA')));
+  tracker.update(video, event(postprocess('Merger', 'started')));
+  assert.equal(emitted.at(-1)?.phase, 'downloading', 'the audio run has not planned or downloaded yet');
+  tracker.update(audio, event(postprocess('SponsorBlock', 'started')));
+  tracker.update(audio, event(plan('251', '[]', '[]', '[]', '500')));
+  tracker.update(audio, event(download('251', 'finished', '500', '500', 'NA', 'NA', 'NA')));
+  tracker.update(audio, event(postprocess('ExtractAudio', 'started')));
+  assert.equal(emitted.filter((progress) => progress.phase === 'processing').length, 1);
+  assert.deepEqual(emitted.at(-1), { phase: 'processing', downloadedBytes: 1000, totalBytes: 1000, percent: 100, speed: null, eta: null });
+});
+
+test('a metadata and thumbnail only job still shows its thumbnail convert as finishing up', () => {
+  const { tracker, emitted } = tracked();
+  tracker.addRun({ plans: false });
+  tracker.update(0, event(postprocess('ThumbnailsConvertor', 'started')));
+  assert.equal(emitted.at(-1)?.phase, 'processing');
+});
+
 test('ProgressTracker reports post-processing and rate-limits steady ticks', () => {
   let clock = 0;
   const emitted: DownloadProgress[] = [];

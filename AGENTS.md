@@ -91,6 +91,7 @@ Queue downloads run over a long-lived native messaging port (`connectNative`).
 The helper sends `{ type: 'progress' }` messages before the final response, and the coordinator stores them on the running job for the popup and Downloads page.
 Before each video, yt-dlp prints a plan of every stream it will fetch (`planArgs()`), so the job total covers the audio stream of a merged video before it starts.
 The percent only moves forward: the helper and the coordinator both hold the highest percent shown, so the bar pauses, rather than dipping, when a stream turns out larger than its estimate, while the byte, speed and time-left text stays exact.
+The phase only moves forward too: "Finishing up" starts once every planned stream has downloaded, because yt-dlp also reports post-processors that run before the download (SponsorBlock, the thumbnail convert), and once shown it stays.
 
 The content script is quiet by default.
 Set `localStorage.tubeVaultDebug = '1'` in a YouTube tab's console and reload to see its injection and navigation logs.

@@ -31,7 +31,13 @@ native-messaging/   Native messaging host manifest template
 scripts/            Windows sync, registration, launcher, and screenshot scripts
 tests/e2e/          Playwright Chromium smoke tests
 SETUP.md            Installation and troubleshooting guide
+OWNER-TODO.md       What only the owner can do (decisions, manual tests)
+docs/HANDOFF.md     Current state and open work, for the next session
+LICENSE             MIT
 ```
+
+`review/tube-vault-v0.3.81` is the default branch and the only working line: Chrome runs it and releases are cut from it.
+`master` is frozen at 0.3.80 and kept for its history.
 
 ## Install and Build
 

@@ -28,4 +28,6 @@ jobs:
     permissions:
       contents: write # merge the pull request
       pull-requests: write # turn on auto-merge
-    uses: n8watkins/release-kit/.github/workflows/auto-merge.yml@v2.5.1
+      checks: read # merge when green: read the checks on the pull request
+      statuses: read
+    uses: n8watkins/release-kit/.github/workflows/auto-merge.yml@v2.5.2

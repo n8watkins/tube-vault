@@ -18,6 +18,7 @@ Architecture, build commands and injection points are in [`../CLAUDE.md`](../CLA
   It is kept, protected, for its history; nothing new lands there.
 - PR #1 (the review branch into `master`, 151 commits, with conflicts) was closed as superseded: making its head branch the default branch landed everything it carried without rewriting history.
 - release-kit owns `CHANGELOG.md` and the version files (PR #9); `npm run release` cuts releases from the default branch.
+- CI (`.github/workflows/ci.yml`) runs lint, types and build, unit tests per package and the Playwright browser tests as parallel lanes on GitHub-hosted runners; `CI result` and the Commit messages check (`check / check`) are required on the working branch and `master` (README, Continuous Integration).
 - `npm run build` is pure: it builds `extension/dist` and `helper/dist` with no version bump, commit or sync.
 
 ### Open problems

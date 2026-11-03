@@ -12,5 +12,6 @@
   ],
   "node": "24",
   "timeZone": "America/Los_Angeles",
-  "workflows": "package"
+  "workflows": "package",
+  "repository": "n8watkins/tube-vault"
 }

@@ -78,7 +78,7 @@ Install the bundled Playwright browser before the first local E2E run:
 npx playwright install chromium
 ```
 
-On Linux CI or a new Linux workstation, install Chromium and its system dependencies with:
+On a new Linux workstation without Chromium's system libraries, install them along with the browser (CI doesn't need this: the GitHub-hosted runner image already has them):
 
 ```bash
 npx playwright install --with-deps chromium

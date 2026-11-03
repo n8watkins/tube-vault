@@ -24,4 +24,4 @@ permissions:
 
 jobs:
   osv:
-    uses: n8watkins/release-kit/.github/workflows/security.yml@v2.3.2
+    uses: n8watkins/release-kit/.github/workflows/security.yml@v2.3.3

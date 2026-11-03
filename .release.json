@@ -13,5 +13,11 @@
   "node": "24",
   "timeZone": "America/Los_Angeles",
   "workflows": "package",
-  "repository": "n8watkins/tube-vault"
+  "repository": "n8watkins/tube-vault",
+  "protect": {
+    "checks": [
+      "CI result",
+      "check / check"
+    ]
+  }
 }

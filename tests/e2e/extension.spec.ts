@@ -15,6 +15,10 @@ const test = base.extend<{ context: BrowserContext; extensionId: string }>({
         `--load-extension=${extensionPath}`,
       ],
     });
+    // No real network: each test fulfils the YouTube pages it needs from a
+    // fixture (a page route wins over this one), and every other web request,
+    // such as a thumbnail or a video stream, is aborted.
+    await context.route(/^https?:\/\//, (route) => route.abort('blockedbyclient'));
     await use(context);
     await context.close();
   },

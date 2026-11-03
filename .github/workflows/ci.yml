@@ -1,54 +1,190 @@
+# CI with lanes (release-kit docs/CI_LANES.md): "What changed" classifies the
+# diff, each job runs only in the lanes that need it (a job-level `if:`, never
+# a workflow `paths` filter), and "CI result" is the one required check.
+# Pushes to the working branches and manual runs always run everything.
+# Everything runs on GitHub-hosted runners: free for a public repo, the same
+# machine for pull requests and pushes, and nothing runs on the owner's PC.
 name: CI
 
 on:
   push:
+    branches: [review/tube-vault-v0.3.81, master]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.ref }}
+  # A new push to a pull request replaces its run; every push to a working branch finishes.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  test:
-    runs-on: ${{ github.event_name == 'push' && fromJSON('["self-hosted", "tube-vault"]') || fromJSON('["ubuntu-latest"]') }}
-    timeout-minutes: 20
+  changes:
+    name: What changed
+    uses: n8watkins/release-kit/.github/workflows/changes.yml@v2.3.3
+
+  # A kit-only update (Dependabot, or a re-run of apply): about a minute.
+  kit:
+    name: Kit update
+    needs: changes
+    if: needs.changes.outputs.kit == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 24
-          cache: ${{ github.event_name == 'pull_request' && 'npm' || '' }}
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npx --no-install release-kit verify
+
+  lint:
+    name: Lint
+    needs: changes
+    if: needs.changes.outputs.checks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run lint
+
+  # Both packages' types, then the same pure build Chrome loads (no version bump, no sync).
+  build:
+    name: Types and build
+    needs: changes
+    if: needs.changes.outputs.checks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            extension/package-lock.json
+            helper/package-lock.json
+      - run: |
+          npm ci --prefix extension --no-audit --no-fund
+          npm ci --prefix helper --no-audit --no-fund
+      - run: npm run typecheck
+      - run: npm run build
+
+  # One job per package. The helper's tests drive a stand-in yt-dlp script;
+  # nothing downloads or reaches YouTube.
+  unit:
+    name: Unit tests (${{ matrix.package }})
+    needs: changes
+    if: needs.changes.outputs.checks == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [extension, helper, scripts]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          # The scripts' tests use only Node's own modules: nothing to install or cache.
+          cache: ${{ matrix.package != 'scripts' && 'npm' || '' }}
+          cache-dependency-path: ${{ matrix.package }}/package-lock.json
+      - name: Install
+        if: matrix.package != 'scripts'
+        run: npm ci --prefix ${{ matrix.package }} --no-audit --no-fund
+      - name: Test
+        run: |
+          if [ "${{ matrix.package }}" = scripts ]; then
+            node --test scripts/*.test.mjs
+          else
+            npm test --prefix ${{ matrix.package }}
+          fi
+
+  # The unpacked extension in headless Chromium against fixture YouTube pages.
+  # The tests fulfil every YouTube request from fixtures and abort any other
+  # web request, run without a native helper, and mute audio.
+  e2e:
+    name: Browser tests
+    needs: changes
+    if: needs.changes.outputs.full == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
           cache-dependency-path: |
             package-lock.json
             extension/package-lock.json
-            helper/package-lock.json
-      - name: Install dependencies
-        run: |
-          npm ci
-          npm ci --prefix extension
-          npm ci --prefix helper
-      - name: Install Chromium and Linux dependencies
-        if: github.event_name == 'pull_request'
-        run: npx playwright install --with-deps chromium
-      - name: Install Chromium
-        if: github.event_name == 'push'
-        run: npx playwright install chromium
-      - name: Check
-        run: npm run check
-      - name: Browser smoke tests
-        run: npm run test:e2e
-      - name: Upload browser artifacts
-        if: failure()
-        uses: actions/upload-artifact@v4
+      - run: |
+          npm ci --no-audit --no-fund
+          npm ci --prefix extension --no-audit --no-fund
+      - name: Playwright version
+        id: playwright
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - name: Cache Chromium
+        id: browsers
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          name: playwright-artifacts
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}
+      # The runner image already has Chromium's system libraries.
+      - name: Install Chromium
+        if: steps.browsers.outputs.cache-hit != 'true'
+        run: npx playwright install chromium
+      - run: npm run build --prefix extension
+      - run: npx playwright test
+      - name: Upload the report and traces
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: playwright-report
           path: |
             playwright-report
             test-results
           if-no-files-found: ignore
+          retention-days: 7
+
+  # The only required check. It always runs, and passes when every job above
+  # passed or was skipped on purpose by its lane.
+  result:
+    name: CI result
+    if: always()
+    needs: [changes, kit, lint, build, unit, e2e]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job passed, or was skipped by its lane
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          echo "Results: $RESULTS"
+          for result in $RESULTS; do
+            case "$result" in
+              success|skipped) ;;
+              *) echo "::error::A job ended with '$result'."; exit 1 ;;
+            esac
+          done

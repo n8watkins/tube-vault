@@ -19,5 +19,6 @@
       "CI result",
       "check / check"
     ]
-  }
+  },
+  "visibility": "public"
 }

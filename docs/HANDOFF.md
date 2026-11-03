@@ -55,8 +55,7 @@ PR #1 "fix: harden download recovery and Windows publication" (`review/tube-vaul
 
 ### Blocked on the owner
 
-- Decide who owns `CHANGELOG.md` (release-kit or the existing build flow); this gates PR #1, the review branch's CI, and release-kit on `master`.
-- Decide whether and how PR #1 should land (rebase onto `master` and merge, or split).
+Two decisions (who owns `CHANGELOG.md`, and how PR #1 lands) are tracked in [../OWNER-TODO.md](../OWNER-TODO.md); keep that file current instead of listing them here.
 
 ### Next steps, in order
 

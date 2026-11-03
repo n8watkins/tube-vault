@@ -24,6 +24,7 @@ native-messaging/   Chrome native messaging host manifest
 scripts/            Windows helper launcher and install script
 DOWNLOADS_PLAN.md   Product and queue architecture plan
 SETUP.md            Local install and troubleshooting guide
+OWNER-TODO.md       What only the owner can do (decisions, manual tests)
 CHANGELOG.md        Version history
 ```
 

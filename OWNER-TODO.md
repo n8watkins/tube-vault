@@ -27,7 +27,20 @@ GitHub's rename keeps all history, retargets open pull requests and redirects ol
 **Unblocks.**
 Nothing urgent; the current name works.
 
-### 2. Check the Shorts comments bug in Chrome
+### 2. Optional: retire the self-hosted runner
+
+- [ ] Done.
+
+**What.**
+CI now runs only on GitHub-hosted runners (free for a public repo), so the `n8desktop-tube-vault` runner on this PC gets no more jobs.
+
+**Steps.**
+Stop and remove the `github-actions-tube-vault.service` user service and the runner folder `/home/natkins/actions-runners/tube-vault`, or ask Claude to do it.
+
+**Why.**
+It frees a background service on the PC.
+
+### 3. Check the Shorts comments bug in Chrome
 
 - [ ] Done.
 

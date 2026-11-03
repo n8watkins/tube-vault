@@ -86,11 +86,20 @@ npx playwright install --with-deps chromium
 
 ## Continuous Integration
 
-GitHub Actions runs the full `npm run check` pipeline and Chromium smoke suite for pushes and pull requests.
-Trusted pushes use the repository-scoped `n8desktop-tube-vault` self-hosted WSL runner with the `tube-vault` label.
-Because this repository is public, pull requests continue to use a GitHub-hosted Ubuntu runner so untrusted changes cannot execute on the development machine.
-The local runner is installed outside the repository at `/home/natkins/actions-runners/tube-vault` and managed by the `github-actions-tube-vault.service` user service.
-If the development machine is offline, push jobs remain queued until the local runner reconnects.
+The CI workflow (`.github/workflows/ci.yml`) runs on every pull request, on pushes to `review/tube-vault-v0.3.81` and `master`, and on demand.
+Its jobs run in parallel on GitHub-hosted Ubuntu runners:
+
+| Job | What it runs |
+| --- | --- |
+| What changed | release-kit's lane classifier: a docs-only change skips the code jobs, a kit-only update runs Kit update instead |
+| Lint | `npm run lint` |
+| Types and build | `npm run typecheck`, then the pure `npm run build` |
+| Unit tests (extension, helper, scripts) | Vitest for the extension, `node --test` for the helper (against a stand-in `yt-dlp`) and for the scripts |
+| Browser tests | The Playwright smoke tests: the built extension in headless Chromium with muted audio, fixture YouTube pages, every other web request aborted, and no native helper |
+| CI result | Passes when every job above passed or was skipped by its lane; the one required check |
+
+Pushes to the working branches and manual runs always run every job.
+There is no Windows job: the native helper always runs under Node in WSL (Chrome starts it through `scripts/run-helper.bat`, which calls `wsl.exe node`), and the Windows sync also runs in WSL, so the code that touches Windows is path conversion and file copying that the Linux unit tests already cover.
 
 Watch all four extension entry points without release side effects:
 

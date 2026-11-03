@@ -160,7 +160,18 @@ Releases still work:
 - `--admin-bypass` lets repository admins push straight to the branch again, for a repo that wants that trade-off.
 
 `npm run release:check` warns when the rulesets drift from what protect would set (a rule removed by hand, a different bypass list, other required checks than `.release.json` names), whenever gh can read them.
-Rulesets need a public repo, or GitHub Pro for a private one; protect says so instead of failing halfway.
+Rulesets need a public repo, or GitHub Pro for a private one.
+
+### A private repo on GitHub Free
+
+There protect sets up the free safeguards instead, and says what GitHub still lets through (see release-kit's [docs/PRIVATE_REPOS.md](https://github.com/n8watkins/release-kit/blob/main/docs/PRIVATE_REPOS.md)):
+
+- **The pre-push guard** (`.githooks/pre-push`) refuses, before anything is sent, a push straight to `main` or a release branch, a force push or deletion of one, and a moved or deleted `v*` tag.
+  Push a branch and open a pull request instead.
+  `npm run release -- --push` still works: the guard recognizes its one release commit, and when the release would carry unpushed work along it goes through a release pull request.
+  In an emergency, `RELEASE_KIT_ALLOW_DIRECT_PUSH=1 git push ...` lets a push through and logs it to `.git/release-kit/direct-push.log`.
+- **The Direct push alarm** (`.github/workflows/direct-push.yml`) checks every push to those branches on GitHub; a commit that came from no merged pull request, a force push or a moved tag fails the run and opens an issue labeled `release-kit: direct push`.
+- **Merge when green** (`.github/workflows/auto-merge.yml`) merges update pull requests once every check has passed.
 
 ## Baselines and backfills
 

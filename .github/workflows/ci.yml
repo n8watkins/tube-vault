@@ -23,7 +23,7 @@ concurrency:
 jobs:
   changes:
     name: What changed
-    uses: n8watkins/release-kit/.github/workflows/changes.yml@v2.3.3
+    uses: n8watkins/release-kit/.github/workflows/changes.yml@v2.4.0
 
   # A kit-only update (Dependabot, or a re-run of apply): about a minute.
   kit:

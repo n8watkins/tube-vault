@@ -21,7 +21,7 @@
     "eslint": "^9.31.0",
     "eslint-plugin-react-hooks": "^5.2.0",
     "globals": "^16.3.0",
-    "release-kit": "github:n8watkins/release-kit#v2.3.3",
+    "release-kit": "github:n8watkins/release-kit#v2.4.0",
     "typescript-eslint": "^8.38.0"
   }
 }

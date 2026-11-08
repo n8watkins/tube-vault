@@ -609,12 +609,12 @@ async function acquireSyncLock(target, hooks = {}) {
         if (await ownerIsAlive(existingOwner, owner)) {
           const readyOwner = await readLockOwner(readyPath).catch(() => null);
           if (readyOwner?.token === existingOwner.token) {
-            throw new Error(`Another sync is already running for target: ${target}`);
+            throw new Error(`Another sync is already running for target: ${target}`, { cause: error });
           }
           const existingIntentPath = join(target, `${LOCK_INTENT_PREFIX}${existingOwner.token}`);
           const existingIntent = await readLockOwner(existingIntentPath).catch(() => null);
           if (existingIntent?.token !== existingOwner.token) {
-            throw new Error(`Another sync is already running for target: ${target}`);
+            throw new Error(`Another sync is already running for target: ${target}`, { cause: error });
           }
           await new Promise((resolveRetry) => setTimeout(resolveRetry, 10));
           continue;
@@ -802,7 +802,7 @@ export async function syncArtifacts(sourceRoot, target, files = SYNC_FILES, hook
             await restoreTransaction(target, transactionRoot, entries);
             removeTransaction = true;
           } catch (rollbackError) {
-            throw new AggregateError([error, rollbackError], 'Artifact sync and rollback both failed', { cause: error });
+            throw new AggregateError([error, rollbackError], 'Artifact sync and rollback both failed', { cause: rollbackError });
           }
           throw error;
         }

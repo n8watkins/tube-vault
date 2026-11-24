@@ -7,7 +7,7 @@ priority: high
 project_kind: single
 
 local:
-  path: /home/natkins/personal/tools/extensions/tube-vault
+  path: /home/natkins/projects/extensions/tube-vault
   dev_command:
   build_command: npm run build --prefix extension && npm run build --prefix helper
   test_command:
@@ -19,7 +19,7 @@ links:
     url: https://github.com/n8watkins/tube-vault
   - label: Local Folder
     type: local
-    url: /home/natkins/personal/tools/extensions/tube-vault
+    url: /home/natkins/projects/extensions/tube-vault
 
 parts:
   - name: Extension
